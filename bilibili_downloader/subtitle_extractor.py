@@ -192,22 +192,47 @@ class SubtitleExtractor:
                 # 尝试通过 API 获取字幕
                 subtitle_url = None
                 
-                # 方法 1: 从页面数据中获取
+                # 方法 1: 从页面数据中获取字幕
                 try:
                     result = page.evaluate('''() => {
+                        // 尝试多种方式获取字幕数据
+                        // 方式 1: 从 __INITIAL_STATE__ 获取
                         const jsonText = document.querySelector('#__INITIAL_STATE__')?.textContent;
                         if (jsonText) {
                             const data = JSON.parse(jsonText);
-                            const subtitle = data?.videoData?.subtitle;
+                            // 尝试不同的路径
+                            const subtitle = data?.videoData?.subtitle || data?.subtitle;
                             if (subtitle?.list && subtitle.list.length > 0) {
-                                return subtitle.list[0].subtitle_url;
+                                return { type: 'init_state', url: subtitle.list[0].subtitle_url };
                             }
                         }
+                        
+                        // 方式 2: 从 playerInitState 获取
+                        const playerState = document.querySelector('#__playback__INITIAL_STATE__')?.textContent;
+                        if (playerState) {
+                            const data = JSON.parse(playerState);
+                            const subtitle = data?.subtitle;
+                            if (subtitle?.list && subtitle.list.length > 0) {
+                                return { type: 'player_state', url: subtitle.list[0].subtitle_url };
+                            }
+                        }
+                        
+                        // 方式 3: 从 videoInfo 获取
+                        const videoInfo = document.querySelector('script[data-url^="https://api.bilibili.com/x/player/wbi/v2"]')?.textContent;
+                        if (videoInfo) {
+                            try {
+                                const data = JSON.parse(videoInfo);
+                                if (data?.data?.subtitle?.list?.length > 0) {
+                                    return { type: 'video_info', url: data.data.subtitle.list[0].subtitle_url };
+                                }
+                            } catch(e) {}
+                        }
+                        
                         return null;
                     }''')
                     if result:
-                        subtitle_url = result
-                        print(f"  从页面数据获取字幕：{subtitle_url}")
+                        subtitle_url = result.get('url') if isinstance(result, dict) else result
+                        print(f"  从页面数据获取字幕 (类型：{result.get('type', 'unknown')}): {subtitle_url}")
                 except Exception as e:
                     print(f"  从页面数据获取失败：{e}")
                 
