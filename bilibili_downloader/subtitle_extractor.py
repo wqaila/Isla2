@@ -231,7 +231,8 @@ class SubtitleExtractor:
                         subtitle_url = subtitle_responses[0]
                         print(f"  捕获字幕 URL: {subtitle_url}")
                     
-                    page.off('response', handle_response)
+                    # 使用 remove_listener 替代 off
+                    page.remove_listener('response', handle_response)
                 
                 # 方法 3: 直接调用 API
                 if not subtitle_url:
@@ -250,7 +251,7 @@ class SubtitleExtractor:
                             if resp and resp.get('code') == 0:
                                 cid = resp.get('data', {}).get('cid')
                                 if cid:
-                                    # 获取字幕
+                                    # 获取字幕 - 使用 x/player/wbi/v2 API
                                     sub_url = f"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&bvid={video_id}"
                                     sub_resp = page.evaluate(f'''() => fetch("{sub_url}", {{
                                         headers: {{
