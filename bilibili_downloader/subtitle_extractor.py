@@ -219,8 +219,10 @@ class SubtitleExtractor:
                     def handle_response(response):
                         try:
                             url = response.url
-                            if 'subtitle' in url or 'langsub' in url:
+                            # 过滤掉日志 URL，只捕获真正的字幕 URL
+                            if ('subtitle' in url or 'langsub' in url) and 'log/web' not in url:
                                 subtitle_responses.append(url)
+                                print(f"  捕获到潜在字幕 URL: {url[:100]}...")
                         except:
                             pass
                     
@@ -228,11 +230,11 @@ class SubtitleExtractor:
                     
                     # 重新加载页面以捕获请求
                     page.reload(wait_until='networkidle', timeout=60000)
-                    time.sleep(2)
+                    time.sleep(3)
                     
                     if subtitle_responses:
                         subtitle_url = subtitle_responses[0]
-                        print(f"  捕获字幕 URL: {subtitle_url}")
+                        print(f"  使用字幕 URL: {subtitle_url[:100]}...")
                     
                     # 使用 remove_listener 替代 off
                     page.remove_listener('response', handle_response)
@@ -278,17 +280,40 @@ class SubtitleExtractor:
                     output_path = os.path.join(output_dir, f"{safe_title}.txt")
                     
                     try:
-                        resp = page.evaluate(f'''() => fetch("{subtitle_url}").then(r => r.json())''')
-                        if resp and 'body' in resp:
-                            lines = resp.get('body', [])
-                            text_lines = [line.get('content', '') for line in lines if line.get('content')]
+                        # 首先检查 URL 是否有效
+                        if 'log/web' in subtitle_url:
+                            print("  错误：捕获到日志 URL 而非字幕 URL")
+                        else:
+                            resp = page.evaluate(f'''() => fetch("{subtitle_url}", {{
+                                headers: {{
+                                    'User-Agent': 'Mozilla/5.0',
+                                    'Referer': '{video_url}'
+                                }}
+                            }}).then(r => r.text())''')
                             
-                            with open(output_path, 'w', encoding='utf-8') as f:
-                                f.write('\n'.join(text_lines))
-                            
-                            print(f"  字幕已保存：{output_path}")
-                            browser.close()
-                            return output_path
+                            if resp:
+                                # 尝试解析 JSON
+                                try:
+                                    subtitle_data = json.loads(resp)
+                                    if 'body' in subtitle_data:
+                                        lines = subtitle_data.get('body', [])
+                                        text_lines = [line.get('content', '') for line in lines if line.get('content')]
+                                        
+                                        with open(output_path, 'w', encoding='utf-8') as f:
+                                            f.write('\n'.join(text_lines))
+                                        
+                                        print(f"  字幕已保存：{output_path}")
+                                        print(f"  共提取 {len(text_lines)} 行字幕")
+                                        browser.close()
+                                        return output_path
+                                    else:
+                                        print(f"  字幕数据格式错误：缺少 'body' 字段")
+                                        print(f"  响应内容：{resp[:200]}...")
+                                except json.JSONDecodeError as e:
+                                    print(f"  JSON 解析失败：{e}")
+                                    print(f"  响应内容：{resp[:200]}...")
+                                except Exception as e:
+                                    print(f"  处理字幕数据失败：{e}")
                     except Exception as e:
                         print(f"  下载字幕失败：{e}")
                 
