@@ -159,10 +159,11 @@ class SubtitleExtractor:
             from playwright.sync_api import sync_playwright
             
             print("  启动浏览器...")
+            print("  请在浏览器中手动点击字幕按钮，然后按回车键继续...")
             
             with sync_playwright() as p:
-                # 启动浏览器
-                browser = p.chromium.launch(headless=True)
+                # 启动浏览器（非无头模式，让用户可以看到并操作）
+                browser = p.chromium.launch(headless=False)
                 context = browser.new_context(
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 )
@@ -183,8 +184,10 @@ class SubtitleExtractor:
                 print(f"  访问页面：{video_url}")
                 page.goto(video_url, wait_until='networkidle', timeout=60000)
                 
-                # 等待页面加载
-                time.sleep(3)
+                # 等待用户操作
+                input("  请在浏览器中点击字幕按钮，然后按回车键继续...")
+                
+                print("  正在提取字幕...")
                 
                 # 尝试通过 API 获取字幕
                 subtitle_url = None
@@ -208,7 +211,7 @@ class SubtitleExtractor:
                 except Exception as e:
                     print(f"  从页面数据获取失败：{e}")
                 
-                # 方法 2: 监听网络请求
+                # 方法 2: 监听网络请求（重新加载页面以捕获字幕请求）
                 if not subtitle_url:
                     print("  监听字幕 API 请求...")
                     subtitle_responses = []
