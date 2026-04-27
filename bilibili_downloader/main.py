@@ -381,6 +381,12 @@ def main_cli(args: Optional[list] = None):
     )
     
     parser.add_argument(
+        "--subtitle-only",
+        action="store_true",
+        help="仅下载字幕（不下载视频）"
+    )
+    
+    parser.add_argument(
         "-p", "--playlist",
         action="store_true",
         help="下载播放列表"
@@ -407,11 +413,26 @@ def main_cli(args: Optional[list] = None):
     # 下载视频
     from downloader import BilibiliDownloader
     from cookie_manager import CookieManager
+    from subtitle_extractor import SubtitleExtractor
     cookie_manager = CookieManager()
     cookie_path = cookie_manager.cookie_path if cookie_manager.is_logged_in() else None
     downloader = BilibiliDownloader(cookie_path=cookie_path)
+    extractor = SubtitleExtractor(cookie_path=cookie_path)
     
     try:
+        # 仅下载字幕
+        if parsed_args.subtitle_only:
+            print("正在下载 AI 字幕...")
+            subtitle_file = extractor.extract_subtitle(
+                parsed_args.url,
+                output_dir=parsed_args.output
+            )
+            if subtitle_file:
+                print(f"字幕已保存：{subtitle_file}")
+            else:
+                print("该视频没有 AI 字幕")
+            return
+        
         if parsed_args.playlist:
             results = downloader.download_playlist(
                 parsed_args.url,
@@ -430,11 +451,6 @@ def main_cli(args: Optional[list] = None):
         
         # 下载字幕
         if parsed_args.subtitle:
-            from subtitle_extractor import SubtitleExtractor
-            from cookie_manager import CookieManager
-            cookie_manager = CookieManager()
-            cookie_path = cookie_manager.cookie_path if cookie_manager.is_logged_in() else None
-            extractor = SubtitleExtractor(cookie_path=cookie_path)
             subtitle_file = extractor.extract_subtitle(
                 parsed_args.url,
                 output_dir=parsed_args.output
