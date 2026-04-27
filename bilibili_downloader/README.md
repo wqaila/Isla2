@@ -71,10 +71,10 @@ python -m bilibili_downloader --search "Python 教程" --max 5
 
 ```bash
 # 只下载 AI 字幕（纯文本格式）
-python -m bilibili_downloader "https://www.bilibili.com/video/BV1xx411c7mD" --sub-only
+python -m bilibili_downloader "https://www.bilibili.com/video/BV1xx411c7mD" --subtitle-only
 
 # 下载 SRT 格式字幕
-python -m bilibili_downloader "https://www.bilibili.com/video/BV1xx411c7mD" --sub-only --format srt
+python -m bilibili_downloader "https://www.bilibili.com/video/BV1xx411c7mD" --subtitle-only --format srt
 ```
 
 #### 交互式模式
@@ -87,21 +87,14 @@ python -m bilibili_downloader --interactive
 
 | 参数 | 简写 | 说明 |
 |------|------|------|
-| `--url` | `-u` | 视频 URL |
-| `--channel` | `-c` | 频道 URL |
-| `--search` | `-s` | 搜索关键词 |
-| `--interactive` | `-i` | 交互式模式 |
-| `--audio` | `-a` | 只下载音频 |
-| `--max` | `-m` | 最大下载数量（默认：10） |
-| `--order` | `-o` | 排序方式 |
-| `--output` | `-O` | 输出目录 |
-| `--cookie` | | Cookie 文件路径 |
-| `--sub` | | 下载 AI 字幕 |
-| `--sub-only` | | 只下载字幕 |
-| `--format` | `--fmt` | 字幕格式（text/srt） |
-| `--api-first` | | 优先使用 API 获取字幕 |
-| `--no-api` | | 不使用 API，仅通过浏览器提取 |
-| `--force-sub` | | 强制使用 Playwright 提取字幕 |
+| `url` | | 视频 URL（位置参数） |
+| `-o`, `--output` | `-o` | 输出目录（默认：downloads） |
+| `-q`, `--quality` | `-q` | 视频质量（best/1080/720/480） |
+| `-a`, `--audio-only` | `-a` | 仅下载音频 |
+| `-s`, `--subtitle` | `-s` | 下载字幕（同时下载视频） |
+| `--subtitle-only` | | 仅下载字幕（不下载视频） |
+| `-p`, `--playlist` | `-p` | 下载播放列表 |
+| `--cookie` | | Bilibili Cookie |
 | `--version` | `-v` | 显示版本信息 |
 
 ### 排序方式
