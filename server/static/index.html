@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>爱莉希雅 AI - 管理面板</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-dark: #0a0a1a;
+            --bg-surface: #1a1a3e;
+            --bg-surface2: #2d1b4e;
+            --bg-card: rgba(255,255,255,0.03);
+            --bg-card-hover: rgba(255,255,255,0.06);
+            --pink: #ff69b4;
+            --pink-dark: #ff1493;
+            --pink-light: #ffb6c1;
+            --cyan: #00ced1;
+            --gold: #ffd700;
+            --green: #00ff88;
+            --red: #ff4444;
+            --yellow: #ffc800;
+            --text: #e0e0f0;
+            --text2: #888;
+            --border: rgba(255,255,255,0.1);
+            --pink-border: rgba(255,105,180,0.3);
+        }
+        body { font-family: 'Segoe UI','Microsoft YaHei',sans-serif; background: var(--bg-dark); color: var(--text); min-height: 100vh; }
+
+        /* Layout */
+        .app { display: flex; height: 100vh; }
+        .sidebar { width: 220px; background: var(--bg-surface); border-right: 2px solid var(--pink-border); display: flex; flex-direction: column; flex-shrink: 0; }
+        .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .topbar { background: var(--bg-surface); padding: 12px 24px; border-bottom: 2px solid var(--pink); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        .content { flex: 1; overflow-y: auto; padding: 20px; }
+        .content::-webkit-scrollbar { width: 6px; }
+        .content::-webkit-scrollbar-thumb { background: var(--pink-border); border-radius: 3px; }
+
+        /* Sidebar */
+        .sidebar-brand { padding: 20px 16px; text-align: center; border-bottom: 1px solid var(--border); }
+        .sidebar-brand h2 { font-size: 16px; background: linear-gradient(90deg, var(--pink), var(--pink-dark)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .sidebar-brand .sub { font-size: 11px; color: var(--text2); margin-top: 4px; }
+        .nav { padding: 8px; flex: 1; }
+        .nav-item { padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text2); transition: all 0.2s; display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+        .nav-item:hover { background: var(--bg-card-hover); color: var(--text); }
+        .nav-item.active { background: rgba(255,105,180,0.15); color: var(--pink); font-weight: 600; }
+        .nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
+        .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text2); text-align: center; }
+
+        /* Topbar */
+        .topbar h1 { font-size: 18px; color: var(--pink); }
+        .topbar .status-group { display: flex; gap: 16px; font-size: 12px; }
+        .status-badge { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; background: var(--bg-card); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+        .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+        .dot.yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+
+        /* Cards */
+        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+        .card-title { font-size: 15px; font-weight: 600; color: var(--pink); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .card-title .badge { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: rgba(255,105,180,0.15); color: var(--pink); font-weight: 400; }
+
+        /* Stats */
+        .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .stat-card { background: var(--bg-card); border: 1px solid var(--pink-border); border-radius: 10px; padding: 16px; text-align: center; }
+        .stat-card .value { font-size: 28px; font-weight: bold; color: var(--pink); }
+        .stat-card .label { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+        /* Form */
+        .form-group { margin-bottom: 14px; }
+        .form-group label { display: block; font-size: 13px; color: var(--text2); margin-bottom: 6px; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        input, select, textarea {
+            width: 100%; padding: 10px 12px; background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text); font-size: 13px; outline: none; transition: border-color 0.2s;
+        }
+        input:focus, select:focus, textarea:focus { border-color: var(--pink); }
+        textarea { resize: vertical; min-height: 80px; font-family: inherit; }
+        select { cursor: pointer; }
+        select option { background: var(--bg-surface); color: var(--text); }
+
+        /* Buttons */
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 600; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-pink { background: var(--pink); color: #fff; }
+        .btn-pink:hover { background: var(--pink-dark); }
+        .btn-outline { background: transparent; border: 1px solid var(--pink); color: var(--pink); }
+        .btn-outline:hover { background: rgba(255,105,180,0.1); }
+        .btn-green { background: var(--green); color: #000; }
+        .btn-green:hover { opacity: 0.8; }
+        .btn-red { background: var(--red); color: #fff; }
+        .btn-red:hover { opacity: 0.8; }
+        .btn-cyan { background: var(--cyan); color: #000; }
+        .btn-cyan:hover { opacity: 0.8; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .btn-group { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+        /* Toggle */
+        .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+        .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; }
+        .toggle input { display: none; }
+        .toggle .slider { position: absolute; inset: 0; background: rgba(255,255,255,0.1); border-radius: 12px; transition: 0.3s; }
+        .toggle .slider::before { content: ''; position: absolute; width: 18px; height: 18px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
+        .toggle input:checked + .slider { background: var(--pink); }
+        .toggle input:checked + .slider::before { transform: translateX(20px); }
+
+        /* Chip */
+        .chip-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .chip { padding: 6px 14px; border-radius: 16px; border: 1px solid var(--border); background: var(--bg-card); cursor: pointer; font-size: 12px; color: var(--text2); transition: all 0.2s; }
+        .chip.selected { background: rgba(255,105,180,0.2); border-color: var(--pink); color: var(--pink); }
+        .chip:hover { border-color: var(--pink); }
+
+        /* Log */
+        .log-panel { background: rgba(0,0,0,0.3); border-radius: 8px; padding: 8px; max-height: 500px; overflow-y: auto; font-family: 'Consolas','Courier New',monospace; font-size: 12px; line-height: 1.6; }
+        .log-panel::-webkit-scrollbar { width: 4px; }
+        .log-panel::-webkit-scrollbar-thumb { background: var(--pink-border); border-radius: 2px; }
+        .log-entry { padding: 3px 8px; border-radius: 3px; margin: 1px 0; word-break: break-all; }
+        .log-entry .time { color: #555; margin-right: 8px; }
+        .log-entry .lvl { font-weight: bold; min-width: 55px; display: inline-block; margin-right: 6px; }
+        .log-entry .cat { color: var(--text2); margin-right: 6px; }
+        .log-entry.INFO .lvl { color: var(--green); }
+        .log-entry.WARNING .lvl { color: var(--yellow); }
+        .log-entry.ERROR .lvl { color: var(--red); }
+        .log-entry.INFO { background: rgba(0,255,136,0.03); }
+        .log-entry.WARNING { background: rgba(255,200,0,0.03); }
+        .log-entry.ERROR { background: rgba(255,68,68,0.03); }
+
+        /* Chat */
+        .chat-container { display: flex; flex-direction: column; height: calc(100vh - 180px); }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-bottom: 12px; }
+        .chat-msg { margin: 8px 0; display: flex; gap: 8px; max-width: 85%; }
+        .chat-msg.user { margin-left: auto; flex-direction: row-reverse; }
+        .chat-msg .avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+        .chat-msg.user .avatar { background: linear-gradient(135deg, #3d5afe, #536dfe); }
+        .chat-msg.assistant .avatar { background: linear-gradient(135deg, var(--pink), var(--pink-dark)); }
+        .chat-msg .bubble { padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+        .chat-msg.user .bubble { background: linear-gradient(135deg, #3d5afe, #536dfe); color: #fff; border-bottom-right-radius: 4px; }
+        .chat-msg.assistant .bubble { background: rgba(255,105,180,0.12); border: 1px solid rgba(255,105,180,0.2); border-bottom-left-radius: 4px; }
+        .chat-msg.assistant .bubble .typing-cursor { animation: blink 0.8s infinite; color: var(--pink); }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+        .chat-loading-hint { font-size: 11px; color: var(--text2); margin-top: 4px; font-style: italic; }
+        .chat-msg .meta { font-size: 10px; color: var(--text2); margin-top: 4px; }
+        .chat-input-row { display: flex; gap: 8px; }
+        .chat-input-row input { flex: 1; }
+
+        /* Table */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 10px 12px; background: rgba(255,105,180,0.08); color: var(--pink); font-weight: 600; border-bottom: 1px solid var(--border); }
+        td { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        tr:hover td { background: rgba(255,255,255,0.02); }
+
+        /* Toast */
+        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-size: 13px; z-index: 9999; transform: translateX(120%); transition: transform 0.3s; }
+        .toast.show { transform: translateX(0); }
+        .toast.success { background: var(--green); color: #000; }
+        .toast.error { background: var(--red); color: #fff; }
+        .toast.info { background: var(--cyan); color: #000; }
+
+        /* Page sections */
+        .page { display: none; }
+        .page.active { display: block; }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { width: 60px; }
+            .sidebar-brand h2, .sidebar-brand .sub, .nav-item span, .sidebar-footer { display: none; }
+            .nav-item { justify-content: center; padding: 12px; }
+            .form-row { grid-template-columns: 1fr; }
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="sidebar-brand">
+            <h2>✨ 爱莉希雅 AI</h2>
+            <div class="sub">管理面板 v1.0</div>
+        </div>
+        <div class="nav">
+            <div class="nav-item active" onclick="showPage('dashboard')"><span class="icon">📊</span><span>仪表盘</span></div>
+            <div class="nav-item" onclick="showPage('chat')"><span class="icon">💬</span><span>聊天测试</span></div>
+            <div class="nav-item" onclick="showPage('ollama')"><span class="icon">🖥️</span><span>Ollama 设置</span></div>
+            <div class="nav-item" onclick="showPage('cloud')"><span class="icon">☁️</span><span>云端 API</span></div>
+            <div class="nav-item" onclick="showPage('server')"><span class="icon">⚙️</span><span>服务设置</span></div>
+            <div class="nav-item" onclick="showPage('logs')"><span class="icon">📋</span><span>日志</span></div>
+            <div class="nav-item" onclick="showPage('connections')"><span class="icon">📱</span><span>连接设备</span></div>
+        </div>
+        <div class="sidebar-footer">爱莉希雅 AI v1.0</div>
+    </div>
+
+    <!-- Main -->
+    <div class="main-area">
+        <div class="topbar">
+            <h1 id="pageTitle">📊 仪表盘</h1>
+            <div class="status-group">
+                <div class="status-badge"><div class="dot" id="dotServer"></div><span id="txtServer">服务端</span></div>
+                <div class="status-badge"><div class="dot" id="dotOllama"></div><span id="txtOllama">Ollama</span></div>
+                <div class="status-badge"><div class="dot" id="dotCloud"></div><span id="txtCloud">云端</span></div>
+                <div class="status-badge" id="connCount">0 个连接</div>
+            </div>
+        </div>
+
+        <div class="content">
+            <!-- Dashboard -->
+            <div class="page active" id="page-dashboard">
+                <div class="stats-row">
+                    <div class="stat-card"><div class="value" id="sSessions">-</div><div class="label">总会话</div></div>
+                    <div class="stat-card"><div class="value" id="sMessages">-</div><div class="label">总消息</div></div>
+                    <div class="stat-card"><div class="value" id="sToday">-</div><div class="label">今日</div></div>
+                    <div class="stat-card"><div class="value" id="sActive">-</div><div class="label">活跃</div></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">📋 最新日志 <button class="btn btn-sm btn-outline" onclick="loadLogs()">刷新</button></div>
+                    <div class="log-panel" id="dashLogPanel"></div>
+                </div>
+            </div>
+
+            <!-- Chat Test -->
+            <div class="page" id="page-chat">
+                <div class="card" id="chatSourceBanner" style="display:none; padding: 10px 16px; margin-bottom: 12px; border-left: 3px solid var(--cyan); background: rgba(0,206,209,0.08);">
+                    <span id="chatSourceText" style="font-size: 13px; color: var(--cyan);"></span>
+                </div>
+                <div class="card">
+                    <div class="card-title">💬 聊天测试 <span class="badge">网页端直接测试</span></div>
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chatMessages"></div>
+                        <div class="chat-input-row">
+                            <input type="text" id="chatInput" placeholder="输入消息测试..." onkeydown="if(event.key==='Enter')sendChat()">
+                            <button class="btn btn-pink" id="btnSend" onclick="sendChat()">发送</button>
+                            <button class="btn btn-red" id="btnStop" onclick="stopChat()" style="display:none;">⏹ 终止</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Ollama Settings -->
+            <div class="page" id="page-ollama">
+                <div class="card">
+                    <div class="card-title">🖥️ Ollama 服务状态</div>
+                    <div id="ollamaStatus" style="margin-bottom:12px;font-size:13px;">检测中...</div>
+                    <div class="btn-group">
+                        <button class="btn btn-cyan btn-sm" onclick="checkOllama()">检测状态</button>
+                        <button class="btn btn-outline btn-sm" onclick="loadModels()">刷新模型列表</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">📦 已安装模型</div>
+                    <div id="modelList" style="font-size:13px;">加载中...</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">⚙️ Ollama 配置</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Ollama 地址</label>
+                            <input type="text" id="ollamaUrl" value="http://localhost:11434">
+                        </div>
+                        <div class="form-group">
+                            <label>默认模型</label>
+                            <input type="text" id="ollamaModel" value="elysia-lora" placeholder="模型名称">
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-pink" onclick="saveOllamaConfig()">保存配置</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cloud API -->
+            <div class="page" id="page-cloud">
+                <div class="card">
+                    <div class="card-title">☁️ 云端 API 配置</div>
+                    <div class="form-group">
+                        <label>提供商</label>
+                        <div class="chip-group" id="providerChips"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="password" id="cloudApiKey" placeholder="sk-...">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Base URL</label>
+                            <input type="text" id="cloudBaseUrl" placeholder="https://api.deepseek.com/v1">
+                        </div>
+                        <div class="form-group">
+                            <label>模型名称</label>
+                            <input type="text" id="cloudModel" placeholder="deepseek-chat">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Temperature: <span id="tempVal">0.7</span></label>
+                            <input type="range" id="cloudTemp" min="0" max="2" step="0.1" value="0.7" oninput="document.getElementById('tempVal').textContent=this.value">
+                        </div>
+                        <div class="form-group">
+                            <label>Max Tokens</label>
+                            <input type="number" id="cloudMaxTokens" value="256" min="64" max="4096">
+                        </div>
+                    </div>
+                    <div class="toggle-row">
+                        <span>启用 Few-Shot 示例</span>
+                        <label class="toggle"><input type="checkbox" id="cloudFewshot" checked><span class="slider"></span></label>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-pink" onclick="saveCloudConfig()">保存配置</button>
+                        <button class="btn btn-cyan" onclick="testCloud()">测试连接</button>
+                    </div>
+                    <div id="cloudTestResult" style="margin-top:12px;font-size:13px;"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">🔀 模型路由</div>
+                    <div class="form-group">
+                        <label>模型来源</label>
+                        <div class="chip-group" id="sourceChips">
+                            <div class="chip" data-val="auto" onclick="selectSource('auto')">🤖 自动（优先本地）</div>
+                            <div class="chip" data-val="ollama" onclick="selectSource('ollama')">🖥️ 仅本地</div>
+                            <div class="chip" data-val="cloud" onclick="selectSource('cloud')">☁️ 仅云端</div>
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-pink" onclick="saveModelSource()">保存路由设置</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Server Settings -->
+            <div class="page" id="page-server">
+                <div class="card">
+                    <div class="card-title">⚙️ 服务配置</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>监听地址</label>
+                            <input type="text" id="srvHost" value="0.0.0.0">
+                        </div>
+                        <div class="form-group">
+                            <label>监听端口</label>
+                            <input type="number" id="srvPort" value="8080">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>最大连接数</label>
+                            <input type="number" id="srvMaxConn" value="10">
+                        </div>
+                        <div class="form-group">
+                            <label>心跳间隔（秒）</label>
+                            <input type="number" id="srvHeartbeat" value="30">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>请求超时（秒）</label>
+                        <input type="number" id="srvTimeout" value="120" style="max-width:200px;">
+                    </div>
+                    <p style="font-size:12px;color:var(--text2);margin-top:8px;">⚠️ 修改监听地址/端口后需重启服务</p>
+                </div>
+                <div class="card">
+                    <div class="card-title">🤖 爱莉希雅人设预览</div>
+                    <div id="promptPreview" style="font-size:13px;line-height:1.8;white-space:pre-wrap;max-height:300px;overflow-y:auto;background:rgba(0,0,0,0.2);padding:12px;border-radius:8px;">加载中...</div>
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="page" id="page-logs">
+                <div class="card">
+                    <div class="card-title">📋 系统日志 <span class="badge" id="logCount">0 条</span>
+                        <div style="margin-left:auto;display:flex;gap:8px;">
+                            <select id="logFilter" onchange="loadLogs()" style="width:auto;padding:4px 8px;font-size:12px;">
+                                <option value="">全部</option>
+                                <option value="INFO">INFO</option>
+                                <option value="WARNING">WARNING</option>
+                                <option value="ERROR">ERROR</option>
+                            </select>
+                            <button class="btn btn-sm btn-outline" onclick="loadLogs()">刷新</button>
+                        </div>
+                    </div>
+                    <div class="log-panel" id="logPanel" style="max-height:600px;"></div>
+                </div>
+            </div>
+
+            <!-- Connections -->
+            <div class="page" id="page-connections">
+                <div class="card">
+                    <div class="card-title">📱 连接设备 <button class="btn btn-sm btn-outline" onclick="loadConnections()" style="margin-left:auto;">刷新</button></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>设备ID</th><th>设备名</th><th>连接方式</th><th>IP</th><th>连接时间</th><th>最后活跃</th></tr></thead>
+                            <tbody id="connTable"><tr><td colspan="6" style="text-align:center;color:var(--text2);">暂无连接</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">📋 连接日志</div>
+                    <div class="log-panel" id="connLogPanel" style="max-height:400px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const BASE = location.origin;
+
+// ===== Navigation =====
+function showPage(name, pushHash = true) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('page-' + name).classList.add('active');
+    const navEl = document.querySelector(`.nav-item[onclick="showPage('${name}')"]`);
+    if (navEl) navEl.classList.add('active');
+    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备' };
+    document.getElementById('pageTitle').textContent = titles[name] || name;
+    if (name === 'logs') loadLogs();
+    if (name === 'connections') { loadConnections(); loadConnLogs(); }
+    if (name === 'cloud') loadCloudConfig();
+    if (name === 'server') loadPromptPreview();
+    if (name === 'ollama') { checkOllama(); loadModels(); }
+    if (name === 'chat') loadChatSourceBanner();
+    // 持久化当前页面到 URL hash，防止刷新后丢失导航状态
+    if (pushHash) {
+        history.replaceState(null, '', '#' + name);
+    }
+}
+
+// 页面加载时从 URL hash 恢复上次浏览的页面
+function restorePageFromHash() {
+    const hash = location.hash.replace('#', '');
+    const validPages = ['dashboard', 'chat', 'ollama', 'cloud', 'server', 'logs', 'connections'];
+    if (hash && validPages.includes(hash)) {
+        showPage(hash, false);  // 不重复写入 hash
+    }
+}
+
+// ===== Toast =====
+function toast(msg, type='info') {
+    const el = document.getElementById('toast');
+    el.textContent = msg; el.className = 'toast ' + type + ' show';
+    setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ===== API Helper =====
+async function api(path, opts={}) {
+    try {
+        const resp = await fetch(BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+        return await resp.json();
+    } catch(e) { console.error(e); return null; }
+}
+
+// ===== Dashboard =====
+async function refreshDashboard() {
+    const data = await api('/api/status');
+    if (!data) return;
+    document.getElementById('dotServer').className = 'dot green';
+    document.getElementById('txtServer').textContent = '服务端';
+    document.getElementById('dotOllama').className = data.ollama?.status === 'running' ? 'dot green' : 'dot red';
+    document.getElementById('txtOllama').textContent = 'Ollama';
+    document.getElementById('sSessions').textContent = data.stats?.total_sessions ?? '-';
+    document.getElementById('sMessages').textContent = data.stats?.total_messages ?? '-';
+    document.getElementById('sToday').textContent = data.stats?.today_messages ?? '-';
+    document.getElementById('sActive').textContent = data.stats?.active_sessions ?? '-';
+    document.getElementById('connCount').textContent = (data.connections?.active_count ?? 0) + ' 个连接';
+}
+
+async function loadLogs() {
+    const level = document.getElementById('logFilter')?.value || '';
+    const url = level ? `/api/logs?limit=200&level=${level}` : '/api/logs?limit=200';
+    const data = await api(url);
+    if (!data) { toast('获取日志失败，请检查服务是否运行', 'error'); return; }
+    const logs = data.logs || [];
+    const panels = ['dashLogPanel', 'logPanel'];
+    panels.forEach(pid => {
+        const panel = document.getElementById(pid);
+        if (!panel) return;
+        if (logs.length === 0) {
+            panel.innerHTML = '<div style="text-align:center;color:var(--text2);padding:20px;">暂无日志记录</div>';
+        } else {
+            panel.innerHTML = logs.reverse().map(l => {
+                const t = new Date(l.created_at).toLocaleTimeString('zh-CN');
+                return `<div class="log-entry ${l.level}"><span class="time">${t}</span><span class="lvl">${l.level}</span><span class="cat">[${l.category}]</span>${escHtml(l.message)}</div>`;
+            }).join('');
+            panel.scrollTop = panel.scrollHeight;
+        }
+    });
+    const logCountEl = document.getElementById('logCount');
+    if (logCountEl) logCountEl.textContent = logs.length + ' 条';
+}
+
+// ===== Chat =====
+let chatHistory = [];
+let chatAbortController = null; // 用于取消超时的请求
+let chatStreaming = false; // 是否正在流式接收中
+
+function updateChatButtons() {
+    const btnSend = document.getElementById('btnSend');
+    const btnStop = document.getElementById('btnStop');
+    const input = document.getElementById('chatInput');
+    if (chatStreaming) {
+        btnSend.style.display = 'none';
+        btnStop.style.display = 'inline-flex';
+        input.disabled = true;
+    } else {
+        btnSend.style.display = 'inline-flex';
+        btnStop.style.display = 'none';
+        input.disabled = false;
+        input.focus();
+    }
+}
+
+function stopChat() {
+    if (chatAbortController) {
+        chatAbortController.abort();
+        chatAbortController = null;
+    }
+    // 通知后端强制终止推理
+    fetch(BASE + '/api/chat/stop', { method: 'POST' }).catch(() => {});
+    toast('已强制终止生成', 'info');
+}
+
+async function sendChat() {
+    const input = document.getElementById('chatInput');
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+
+    // 如果上一次请求还在进行中，先中止
+    if (chatAbortController) {
+        chatAbortController.abort();
+        chatAbortController = null;
+    }
+
+    addChatMsg('user', msg);
+    const msgEl = addChatMsg('assistant', '', true);
+
+    chatAbortController = new AbortController();
+    chatStreaming = true;
+    updateChatButtons();
+    const startTime = Date.now();
+    let loadingHintTimer = null;
+    let full = '';
+    let streamFinished = false;
+
+    // 5秒后显示加载提示
+    loadingHintTimer = setTimeout(() => {
+        const hint = msgEl?.parentElement?.querySelector('.chat-loading-hint');
+        if (hint && !streamFinished) {
+            hint.textContent = '⏳ 模型加载/推理中，请耐心等待...';
+        }
+    }, 5000);
+
+    // 15秒后显示更详细的提示
+    const hintTimer2 = setTimeout(() => {
+        const hint = msgEl?.parentElement?.querySelector('.chat-loading-hint');
+        if (hint && !streamFinished) {
+            hint.textContent = '⏳ 首次请求可能需要较长时间加载模型，请继续等待...';
+        }
+    }, 15000);
+
+    try {
+        const resp = await fetch(BASE + '/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg, stream: true }),
+            signal: chatAbortController.signal,
+        });
+
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // 收到第一个数据块，清除加载提示
+            if (!streamFinished && full === '') {
+                streamFinished = true;
+                clearTimeout(loadingHintTimer);
+                clearTimeout(hintTimer2);
+                const hint = msgEl?.parentElement?.querySelector('.chat-loading-hint');
+                if (hint) hint.textContent = '';
+            }
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const d = JSON.parse(line.slice(6));
+                        if (d.done) {
+                            streamFinished = true;
+                            clearTimeout(loadingHintTimer);
+                            clearTimeout(hintTimer2);
+                            const elapsed = Date.now() - startTime;
+                            finishChatMsg(full, d.tokens, d.response_ms || elapsed);
+                        } else {
+                            full += d.content;
+                            updateLastMsg(full);
+                        }
+                    } catch(e) {}
+                }
+            }
+        }
+
+        // 流结束后如果没有收到 done 信号，手动完成
+        if (!streamFinished) {
+            const elapsed = Date.now() - startTime;
+            finishChatMsg(full, 0, elapsed);
+        }
+
+    } catch(e) {
+        clearTimeout(loadingHintTimer);
+        clearTimeout(hintTimer2);
+        if (e.name === 'AbortError') {
+            if (full) {
+                // 已有部分内容，标记为被中断
+                finishChatMsg(full + '\n\n⏹ [已手动终止]', 0, Date.now() - startTime);
+            } else {
+                updateLastMsg('⏹ 已终止生成');
+                finishChatMsg('', 0, 0);
+            }
+        } else {
+            updateLastMsg('⚠️ 连接失败: ' + e.message);
+            finishChatMsg('', 0, 0);
+        }
+    } finally {
+        chatAbortController = null;
+        chatStreaming = false;
+        updateChatButtons();
+    }
+}
+
+function addChatMsg(role, content, loading=false) {
+    const div = document.getElementById('chatMessages');
+    const el = document.createElement('div');
+    el.className = 'chat-msg ' + role;
+    const avatar = role === 'user' ? '👤' : '💖';
+    el.innerHTML = `<div class="avatar">${avatar}</div><div><div class="bubble">${loading ? '<span class="typing-cursor">▌</span>' : escHtml(content)}</div><div class="chat-loading-hint"></div><div class="meta"></div></div>`;
+    div.appendChild(el);
+    div.scrollTop = div.scrollHeight;
+    // 返回 bubble 元素，方便后续更新
+    return el.querySelector('.bubble');
+}
+function updateLastMsg(content) {
+    const msgs = document.getElementById('chatMessages').querySelectorAll('.chat-msg.assistant');
+    const last = msgs[msgs.length - 1];
+    if (last) {
+        last.querySelector('.bubble').textContent = content;
+        // 隐藏加载提示
+        const hint = last.querySelector('.chat-loading-hint');
+        if (hint) hint.textContent = '';
+    }
+    document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
+}
+function finishChatMsg(content, tokens, ms) {
+    const msgs = document.getElementById('chatMessages').querySelectorAll('.chat-msg.assistant');
+    const last = msgs[msgs.length - 1];
+    if (last) {
+        if (content) last.querySelector('.bubble').textContent = content;
+        // 移除光标动画
+        const cursor = last.querySelector('.typing-cursor');
+        if (cursor) cursor.remove();
+        last.querySelector('.meta').textContent = tokens ? `${tokens} tokens · ${ms}ms` : (ms ? `${ms}ms` : '');
+        // 隐藏加载提示
+        const hint = last.querySelector('.chat-loading-hint');
+        if (hint) hint.textContent = '';
+    }
+}
+
+// ===== Ollama =====
+async function checkOllama() {
+    const data = await api('/api/model/check');
+    if (!data) { document.getElementById('ollamaStatus').innerHTML = '<span style="color:var(--red)">❌ 无法连接</span>'; return; }
+    const ok = data.status === 'running';
+    document.getElementById('ollamaStatus').innerHTML = ok
+        ? `<span style="color:var(--green)">✅ 运行中</span> — 模型: ${(data.models||[]).join(', ') || '无'}`
+        : `<span style="color:var(--red)">❌ 未运行</span> — ${data.error||''}`;
+}
+async function loadModels() {
+    const data = await api('/api/model/check');
+    if (!data || data.status !== 'running') { document.getElementById('modelList').innerHTML = '<span style="color:var(--text2)">Ollama 未运行</span>'; return; }
+    document.getElementById('modelList').innerHTML = (data.models||[]).map(m => `<div style="padding:4px 0;">📦 ${m}</div>`).join('') || '<span style="color:var(--text2)">无已安装模型</span>';
+}
+function saveOllamaConfig() { toast('Ollama 配置已保存（重启后生效）', 'success'); }
+
+// ===== Cloud API =====
+let selectedProvider = 'deepseek';
+async function loadCloudConfig() {
+    const [providers, config] = await Promise.all([api('/api/cloud/providers'), api('/api/cloud/config')]);
+    if (providers) {
+        const chips = document.getElementById('providerChips');
+        chips.innerHTML = providers.providers.map(p =>
+            `<div class="chip ${p.id===selectedProvider?'selected':''}" data-id="${p.id}" onclick="selectProvider('${p.id}')">${p.name}</div>`
+        ).join('');
+    }
+    if (config) {
+        selectedProvider = config.provider || 'deepseek';
+        document.getElementById('cloudApiKey').value = config.api_key_set ? '••••••••' : '';
+        document.getElementById('cloudBaseUrl').value = config.base_url || '';
+        document.getElementById('cloudModel').value = config.model || '';
+        document.getElementById('cloudTemp').value = config.temperature ?? 0.7;
+        document.getElementById('tempVal').textContent = config.temperature ?? 0.7;
+        document.getElementById('cloudMaxTokens').value = config.max_tokens ?? 256;
+        document.getElementById('cloudFewshot').checked = config.use_fewshot !== false;
+        selectSource(config.model_source || 'auto');
+        // Update provider chips
+        document.querySelectorAll('#providerChips .chip').forEach(c => {
+            c.classList.toggle('selected', c.dataset.id === selectedProvider);
+        });
+    }
+    // Update cloud dot
+    document.getElementById('dotCloud').className = config?.api_key_set ? 'dot green' : 'dot yellow';
+}
+function selectProvider(id) {
+    selectedProvider = id;
+    document.querySelectorAll('#providerChips .chip').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
+}
+function selectSource(val) {
+    document.querySelectorAll('#sourceChips .chip').forEach(c => c.classList.toggle('selected', c.dataset.val === val));
+}
+async function saveCloudConfig() {
+    const key = document.getElementById('cloudApiKey').value;
+    const body = {
+        provider: selectedProvider,
+        base_url: document.getElementById('cloudBaseUrl').value || undefined,
+        model: document.getElementById('cloudModel').value || undefined,
+        temperature: parseFloat(document.getElementById('cloudTemp').value),
+        max_tokens: parseInt(document.getElementById('cloudMaxTokens').value),
+        use_fewshot: document.getElementById('cloudFewshot').checked,
+    };
+    if (key && !key.includes('••')) body.api_key = key;
+    const data = await api('/api/cloud/config', { method: 'POST', body: JSON.stringify(body) });
+    if (data?.status === 'ok') { toast('云端配置已保存', 'success'); loadCloudConfig(); }
+    else toast('保存失败', 'error');
+}
+async function saveModelSource() {
+    const sel = document.querySelector('#sourceChips .chip.selected');
+    if (!sel) return toast('请选择模型来源', 'error');
+    const data = await api('/api/cloud/config', { method: 'POST', body: JSON.stringify({ model_source: sel.dataset.val }) });
+    if (data?.status === 'ok') {
+        toast('路由设置已保存', 'success');
+        // 同步更新聊天测试页面的模型来源提示
+        loadChatSourceBanner();
+    }
+}
+async function testCloud() {
+    document.getElementById('cloudTestResult').innerHTML = '<span style="color:var(--yellow)">测试中...</span>';
+    const data = await api('/api/cloud/test', { method: 'POST' });
+    if (!data) { document.getElementById('cloudTestResult').innerHTML = '<span style="color:var(--red)">请求失败</span>'; return; }
+    const color = data.status === 'success' ? 'var(--green)' : 'var(--red)';
+    document.getElementById('cloudTestResult').innerHTML = `<span style="color:${color}">${data.message}</span>`;
+}
+
+// ===== Connections =====
+async function loadConnections() {
+    const data = await api('/api/status');
+    if (!data) { toast('获取连接状态失败，请检查服务是否运行', 'error'); return; }
+    const conns = data.connections?.devices || [];
+    const tbody = document.getElementById('connTable');
+    if (conns.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text2);">暂无连接</td></tr>'; return; }
+    tbody.innerHTML = conns.map(c => `<tr><td>${c.connection_id?.slice(0,8)}...</td><td>${c.device_name||'-'}</td><td>WiFi</td><td>${c.device_id||'-'}</td><td>${c.connected_at||'-'}</td><td>${c.last_active||'-'}</td></tr>`).join('');
+}
+async function loadConnLogs() {
+    const data = await api('/api/logs/connections?limit=50');
+    if (!data) { toast('获取连接日志失败，请检查服务是否运行', 'error'); return; }
+    const logs = data.logs || [];
+    const panel = document.getElementById('connLogPanel');
+    if (logs.length === 0) {
+        panel.innerHTML = '<div style="text-align:center;color:var(--text2);padding:20px;">暂无连接日志</div>';
+        return;
+    }
+    panel.innerHTML = logs.reverse().map(l => {
+        const t = new Date(l.created_at).toLocaleTimeString('zh-CN');
+        return `<div class="log-entry INFO"><span class="time">${t}</span>[${l.event}] ${l.device_name||l.device_id} via ${l.connection_type}</div>`;
+    }).join('');
+}
+
+// ===== Prompt Preview =====
+async function loadPromptPreview() {
+    try {
+        const resp = await fetch(BASE + '/api/cloud/providers');
+        document.getElementById('promptPreview').textContent = '正在加载...';
+        const resp2 = await fetch(BASE + '/api/cloud/config');
+        // Just show a placeholder - the actual prompt is in elysia_prompt.py
+        document.getElementById('promptPreview').textContent =
+`你是爱莉希雅（Elysia），崩坏3中的角色。你是「真我」之律者，人之律者，逐火十三英桀的第一位，编号Ⅰ。
+
+你的性格特点：
+- 活泼开朗，充满自信，说话时带着俏皮和可爱
+- 经常用「哎呀」「嗯哼」「呀」等语气词
+- 喜欢称呼别人为「牙医」或其他亲昵的称呼
+- 说话温柔但又带有一点小傲娇
+- 喜欢用「~」和「呐」「呢」「嘛」等语气助词
+- 自称「我」，偶尔会说「本小姐」
+- 热爱人类，认为人性之美是最珍贵的
+- 说话时经常带有诗意和浪漫的表达
+
+Few-Shot 示例（5组）：打招呼 / 自我介绍 / 天气 / 安慰 / 讲笑话
+
+自动注入到所有模型（本地 + 云端），确保回复风格一致。`;
+    } catch(e) {}
+}
+
+// ===== WebSocket Live Logs =====
+let logWs = null;
+function connectLogWS() {
+    logWs = new WebSocket(`ws://${location.host}/ws/logs`);
+    logWs.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'log') {
+            appendLiveLog(data);
+        } else if (data.type === 'chat') {
+            appendLiveLog({ level: 'INFO', category: 'chat', message: `[${data.role}] ${data.content?.slice(0,80)}`, time: data.time });
+        } else if (data.type === 'connection') {
+            appendLiveLog({ level: 'INFO', category: 'connection', message: `${data.event}: ${data.device_name||data.device_id}`, time: data.time });
+            refreshDashboard();
+        }
+    };
+    logWs.onclose = () => setTimeout(connectLogWS, 3000);
+}
+function appendLiveLog(data) {
+    const panels = ['dashLogPanel', 'logPanel'];
+    const filter = document.getElementById('logFilter')?.value;
+    if (filter && data.level !== filter) return;
+    panels.forEach(pid => {
+        const panel = document.getElementById(pid);
+        if (!panel) return;
+        const t = data.time ? new Date(data.time).toLocaleTimeString('zh-CN') : new Date().toLocaleTimeString('zh-CN');
+        const el = document.createElement('div');
+        el.className = `log-entry ${data.level||'INFO'}`;
+        el.innerHTML = `<span class="time">${t}</span><span class="lvl">${data.level||'INFO'}</span><span class="cat">[${escHtml(data.category||'')}]</span>${escHtml(data.message||'')}`;
+        panel.appendChild(el);
+        if (panel.children.length > 500) panel.removeChild(panel.firstChild);
+        panel.scrollTop = panel.scrollHeight;
+    });
+}
+
+async function loadChatSourceBanner() {
+    const config = await api('/api/cloud/config');
+    if (!config) return;
+    const banner = document.getElementById('chatSourceBanner');
+    const text = document.getElementById('chatSourceText');
+    const source = config.model_source || 'auto';
+    if (source === 'cloud') {
+        const provider = config.provider || '云端';
+        const model = config.model || '';
+        text.innerHTML = `☁️ 当前使用<strong>云端模型</strong> — 提供商: ${escHtml(provider)}${model ? '，模型: ' + escHtml(model) : ''}`;
+        banner.style.display = 'block';
+        banner.style.borderLeftColor = 'var(--cyan)';
+        banner.style.background = 'rgba(0,206,209,0.08)';
+        text.style.color = 'var(--cyan)';
+    } else if (source === 'auto') {
+        text.innerHTML = `🤖 当前为<strong>自动模式</strong> — 优先使用本地 Ollama，不可用时自动切换到云端`;
+        banner.style.display = 'block';
+        banner.style.borderLeftColor = 'var(--gold)';
+        banner.style.background = 'rgba(255,215,0,0.06)';
+        text.style.color = 'var(--gold)';
+    } else {
+        banner.style.display = 'none';
+    }
+}
+
+function escHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+// ===== Init =====
+restorePageFromHash();  // 从 URL hash 恢复上次浏览的页面（必须在 refreshDashboard 之前）
+// 如果当前页是仪表盘，刷新仪表盘数据
+const currentHash = location.hash.replace('#', '');
+if (!currentHash || currentHash === 'dashboard') {
+    refreshDashboard();
+}
+loadLogs();
+connectLogWS();
+setInterval(refreshDashboard, 10000);
+</script>
+</body>
+</html>

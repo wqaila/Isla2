@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# Server runtime config (may contain API keys / tokens)
+server/data/
+server/config.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Ollama
+Modelfile.lock
+
+# Cloudflare tunnel binary
+server/cloudflared-windows-amd64.exe
+
+# Website (standalone display page, not core project)
+website/
+$null
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+
+# Large model files
+*.gguf

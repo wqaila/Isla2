@@ -1,0 +1,11 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+websockets==14.1
+cryptography>=41.0.0
+slowapi==0.1.9
+
+# Optional memory backends:
+# chromadb>=0.4.0     # Precise semantic search, high memory usage (~400MB)
+# scikit-learn>=1.3.0  # TF-IDF vectorization, more accurate than keyword matching (~30MB)
