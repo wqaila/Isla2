@@ -8,6 +8,7 @@ import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.elysia.ai.data.ConnectionState
@@ -44,8 +45,8 @@ fun ElysiaApp(viewModel: ChatViewModel) {
     val serverConfig by viewModel.serverConfig.collectAsStateWithLifecycle()
     val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
 
-    // 当前页面
-    var currentScreen by remember { mutableStateOf("chat") }
+    // 当前页面（用 rememberSaveable：旋转屏幕重建 Activity 时不会被打回聊天页）
+    var currentScreen by rememberSaveable { mutableStateOf("chat") }
 
     // 监听错误消息
     LaunchedEffect(Unit) {

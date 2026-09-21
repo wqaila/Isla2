@@ -75,7 +75,8 @@ class TokenManager:
             # 尝试加载 Qwen 的 tokenizer
             try:
                 self._tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
-            except:
+            except Exception:
+                # 拿不到编码就退化为字符估算，属预期降级
                 pass
         except ImportError:
             pass

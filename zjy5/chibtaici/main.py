@@ -176,7 +176,8 @@ class RoleLineExtractor:
                 if paddle.device.cuda.device_count() > 0:
                     use_gpu = True
                     print(f"Paddle GPU 可用，设备：{paddle.device.cuda.get_device_name()}")
-            except:
+            except Exception:
+                # 探测 GPU 失败属正常（没装 CUDA 版 paddle），继续用 CPU
                 pass
             if not use_gpu:
                 print("Paddle GPU 不可用，将使用 CPU")

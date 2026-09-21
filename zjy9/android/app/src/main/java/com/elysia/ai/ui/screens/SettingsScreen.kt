@@ -77,6 +77,11 @@ fun SettingsScreen(
             ipError = "IP 格式不正确 (如 192.168.1.100)"
             return false
         }
+        // 每段必须在 0-255 之间：否则 999.999.999.999 也能过校验，连接时才报错
+        if (trimmed.split(".").any { (it.toIntOrNull() ?: 256) > 255 }) {
+            ipError = "IP 每段取值范围 0-255"
+            return false
+        }
         ipError = null
         return true
     }
@@ -113,10 +118,12 @@ fun SettingsScreen(
         publicUrl = publicUrl.trim()
     )
 
-    fun doSave() {
-        if (!validateIp() || !validatePort() || !validateUrl()) return
+    /** 保存配置；校验失败返回 false（调用方据此决定要不要继续连接） */
+    fun doSave(): Boolean {
+        if (!validateIp() || !validatePort() || !validateUrl()) return false
         onSave(buildConfig())
         showSaveSuccess = true
+        return true
     }
 
     fun doTest() {
@@ -475,11 +482,13 @@ fun SettingsScreen(
                 // 连接/断开按钮
                 Button(
                     onClick = {
-                        doSave()
-                        if (connectionState == ConnectionState.CONNECTED) {
-                            onDisconnect()
-                        } else {
-                            onConnect()
+                        // 校验不通过时不要继续连接：否则会拿旧配置去连并直接跳回聊天页
+                        if (doSave()) {
+                            if (connectionState == ConnectionState.CONNECTED) {
+                                onDisconnect()
+                            } else {
+                                onConnect()
+                            }
                         }
                     },
                     modifier = Modifier.weight(1f),

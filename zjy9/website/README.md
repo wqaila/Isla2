@@ -22,18 +22,19 @@ python -m http.server 8000
 # 然后打开 http://localhost:8000/index.html
 ```
 
-## ⚠️ 已知的重复维护点
+## ✅ 重复维护点已处理（2026-09-21）
 
-`website/projects.html` 和 `server/static/projects.html` 是**同一份内容的两代版本**，
-但标题、配色、CSS 写法都已经不一样了：
+`website/projects.html` 和 `server/static/projects.html` 原本是同一份内容的**两代版本**：
 
-- `website/projects.html` —— 较新（标题「次元萌盒 · 项目全景汇总」，重写过样式）
-- `server/static/projects.html` —— 较早（标题「赛博玩具 AI · 项目全景汇总」）
+| 版本 | 编号方式 | 状态 |
+|------|---------|------|
+| `server/static/projects.html` | `zjy2`~`zjy9`（与实际目录一致） | ✅ **已定为唯一版本** |
+| `website/projects.html`（旧） | `c1`~`c6` | ❌ 已废弃 |
 
-**改其中一份不会影响另一份。** 如果只想保留一个版本，建议：
+**决定：保留 zjy 编号版**（因为它和仓库实际的目录结构一一对应，不会让人对不上号）。
 
-1. 确定以哪一份为准；
-2. 把它复制到另一处覆盖；
-3. 或者删掉 `server/static/projects.html`（该页面目前没有任何入口链接，属于孤儿页面）。
+现在两份文件**内容完全一致**（同一个 SHA），任改一份都要同步另一份。
+如果以后只想保留一份，删掉 `website/projects.html` 即可 ——
+该页面在 `website/` 里也没有任何入口链接，属于独立文件。
 
-在此之前，请记住「改一处要同步另一处」，或者干脆只维护 `website/` 这一份。
+> 旧的 c1~c6 版本仍可从 git 历史中找回（提交 `88504321` 之前的版本）。

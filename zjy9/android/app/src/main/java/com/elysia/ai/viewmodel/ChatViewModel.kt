@@ -95,10 +95,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         
-        // 监听流式内容
+        // 监听流式内容：累加文本，同时增量写入最后一条 AI 消息，让气泡逐字显示
         viewModelScope.launch {
             wsClient.streamContent.collect { chunk ->
+                // 非当前轮次（上一轮迟到的分片）直接丢弃，避免串到新一轮回复里
+                if (!_isStreaming.value) return@collect
                 _currentStreamingMessage.value += chunk
+                val list = _messages.value
+                val lastIndex = list.lastIndex
+                if (lastIndex >= 0 && list[lastIndex].role == "assistant" && list[lastIndex].isStreaming) {
+                    val updated = list.toMutableList()
+                    updated[lastIndex] = updated[lastIndex].copy(
+                        content = updated[lastIndex].content + chunk
+                    )
+                    _messages.value = updated
+                }
             }
         }
         
@@ -220,13 +231,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
     
     private fun finishStreaming(tokens: Int, responseMs: Int) {
-        val streamingContent = _currentStreamingMessage.value
         val currentMessages = _messages.value.toMutableList()
         val lastIndex = currentMessages.lastIndex
         if (lastIndex >= 0 && currentMessages[lastIndex].role == "assistant") {
             // BUG #5 FIX: 空回复也更新状态，避免永久闪烁光标
+            // 内容以消息自身为准（分片已增量写入），不再依赖累加器，避免重复/丢字
             currentMessages[lastIndex] = currentMessages[lastIndex].copy(
-                content = streamingContent.ifEmpty { "（无回复内容）" },
+                content = currentMessages[lastIndex].content.ifEmpty { "（无回复内容）" },
                 tokens = tokens,
                 responseMs = responseMs,
                 isStreaming = false,
@@ -255,6 +266,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     
     /** 重新发送用户消息 */
     fun resendMessage(messageId: String) {
+        // 上一轮还在流式输出时不能开新一轮：否则旧流的 done/分片会写进新一轮的回复里
+        if (_isStreaming.value) {
+            viewModelScope.launch { _errorMessage.emit("爱莉还在回复中，请稍候~") }
+            return
+        }
         val msg = _messages.value.find { it.id == messageId && it.role == "user" }
         if (msg != null) {
             // 移除该消息之后的所有消息（包括失败的 AI 回复）
@@ -267,6 +283,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     
     /** 重新生成 AI 回复 */
     fun regenerateResponse(messageId: String) {
+        // 同上：流式输出期间禁止重新生成
+        if (_isStreaming.value) {
+            viewModelScope.launch { _errorMessage.emit("爱莉还在回复中，请稍候~") }
+            return
+        }
         val msg = _messages.value.find { it.id == messageId && it.role == "assistant" }
         if (msg != null) {
             val idx = _messages.value.indexOf(msg)

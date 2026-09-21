@@ -349,7 +349,9 @@ class SubtitleExtractor:
                             if ('subtitle' in url or 'langsub' in url) and 'log/web' not in url:
                                 subtitle_responses.append(url)
                                 print(f"  捕获到潜在字幕 URL: {url[:100]}...")
-                        except:
+                        except Exception:
+                            # 这是页面事件的回调，个别响应对象取不到 url 属正常情况，
+                            # 不能让异常冒泡打断整个监听
                             pass
                     
                     page.on('response', handle_response)

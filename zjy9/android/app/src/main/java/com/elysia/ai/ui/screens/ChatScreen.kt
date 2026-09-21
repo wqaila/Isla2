@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
@@ -70,11 +71,11 @@ fun ChatScreen(viewModel: ChatViewModel, onOpenSettings: () -> Unit) {
     val connectionState by viewModel.connectionState.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
     val emotion by viewModel.emotion.collectAsState()
-    val context = LocalContext.current
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var inputText by remember { mutableStateOf("") }
+    // 输入内容需要跨屏幕旋转保留
+    var inputText by rememberSaveable { mutableStateOf("") }
     var showStatusBanner by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
     var statusType by remember { mutableStateOf(0) }
@@ -91,24 +92,54 @@ fun ChatScreen(viewModel: ChatViewModel, onOpenSettings: () -> Unit) {
         }
     }
 
-    // 自动滚动到底部
-    LaunchedEffect(messages.size, isStreaming) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+    val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val dateHeaderFormat = remember { SimpleDateFormat("MM月dd日 EEEE", Locale.CHINESE) }
+
+    // 构建扁平消息列表，AI 连续消息仅首条显示头像
+    // （提前到这里计算：滚动定位与"是否到底"判断都需要知道真实 item 数）
+    val flatItems = remember(messages) {
+        val result = mutableListOf<Any>()
+        var lastDate: String? = null
+        var lastRole: String? = null
+        for (message in messages) {
+            val msgDate = dateHeaderFormat.format(Date(message.timestamp))
+            if (msgDate != lastDate) {
+                result.add("date_$msgDate" to msgDate)
+                lastDate = msgDate
+                lastRole = null // 日期重置后重新判断
+            }
+            // 标记是否需要显示头像：用户消息始终显示；AI 消息仅当上一条不是 AI 时显示
+            val showAvatar = if (message.role == "user") {
+                true
+            } else {
+                lastRole != "assistant"
+            }
+            result.add(Pair(message, showAvatar))
+            lastRole = message.role
         }
+        result
+    }
+
+    // 是否显示"爱莉正在输入"占位项（与下面 LazyColumn 内的判断保持一致）
+    val showTypingIndicator = isStreaming && (messages.lastOrNull()?.let {
+        it.role == "assistant" && it.isStreaming && it.content.isEmpty()
+    } ?: true)
+
+    // 自动滚动到底部
+    // 注意：flatItems 里含日期分隔项，不能用 messages.size 定位，否则永远差几项滚不到底
+    LaunchedEffect(flatItems.size, showTypingIndicator, messages.lastOrNull()?.content?.length) {
+        val target = flatItems.size - 1 + if (showTypingIndicator) 1 else 0
+        if (target < 0) return@LaunchedEffect
+        // 用户主动上滑查看历史时不要抢走滚动位置
+        if (isStreaming && showScrollToBottom) return@LaunchedEffect
+        // 流式输出时用瞬时滚动（动画会被下一个分片不断打断），其余情况保留动画
+        if (isStreaming) listState.scrollToItem(target) else listState.animateScrollToItem(target)
     }
 
     // 监听是否显示"滚动到底部"按钮
     LaunchedEffect(listState.firstVisibleItemIndex, listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        showScrollToBottom = messages.size > 1 && lastVisible < messages.size - 2
-    }
-
-    // 错误提示
-    LaunchedEffect(Unit) {
-        viewModel.errorMessage.collect { msg ->
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-        }
+        showScrollToBottom = flatItems.size > 1 && lastVisible < flatItems.size - 2
     }
 
     // 连接状态横幅
@@ -130,9 +161,6 @@ fun ChatScreen(viewModel: ChatViewModel, onOpenSettings: () -> Unit) {
             }
         }
     }
-
-    val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val dateHeaderFormat = remember { SimpleDateFormat("MM月dd日 EEEE", Locale.CHINESE) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // 背景渐变
@@ -325,30 +353,6 @@ fun ChatScreen(viewModel: ChatViewModel, onOpenSettings: () -> Unit) {
 
             // ===== 消息列表 =====
             Box(modifier = Modifier.weight(1f)) {
-                // 构建扁平消息列表，AI 连续消息仅首条显示头像
-                val flatItems = remember(messages) {
-                    val result = mutableListOf<Any>()
-                    var lastDate: String? = null
-                    var lastRole: String? = null
-                    for (message in messages) {
-                        val msgDate = dateHeaderFormat.format(Date(message.timestamp))
-                        if (msgDate != lastDate) {
-                            result.add("date_$msgDate" to msgDate)
-                            lastDate = msgDate
-                            lastRole = null // 日期重置后重新判断
-                        }
-                        // 标记是否需要显示头像：用户消息始终显示；AI 消息仅当上一条不是 AI 时显示
-                        val showAvatar = if (message.role == "user") {
-                            true
-                        } else {
-                            lastRole != "assistant"
-                        }
-                        result.add(Pair(message, showAvatar))
-                        lastRole = message.role
-                    }
-                    result
-                }
-
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -388,11 +392,8 @@ fun ChatScreen(viewModel: ChatViewModel, onOpenSettings: () -> Unit) {
                         }
                     }
 
-                    if (isStreaming) {
-                        val lastMsg = messages.lastOrNull()
-                        if (lastMsg == null || (lastMsg.role == "assistant" && lastMsg.isStreaming && lastMsg.content.isEmpty())) {
-                            item { TypingIndicator() }
-                        }
+                    if (showTypingIndicator) {
+                        item { TypingIndicator() }
                     }
                 }
 
@@ -659,29 +660,37 @@ fun MessageItem(
     LaunchedEffect(Unit) { visible = true }
 
     // 格式化文本 (支持 **粗体**)
+    // 注意：必须保证每轮循环 i 都严格前进。原实现在遇到未闭合的 "**"
+    // （或 "****" 这种空加粗）时 next == i，会原地死循环把 UI 线程卡死（ANR）。
     val formattedContent = remember(message.content) {
         buildAnnotatedString {
             val text = message.content
             var i = 0
             while (i < text.length) {
-                if (text.startsWith("**", i)) {
-                    val end = text.indexOf("**", i + 2)
-                    if (end != -1 && end > i + 2) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = if (isUser) TextOnBrand else ElysiaPinkLight)) {
-                            append(text.substring(i + 2, end))
-                        }
-                        i = end + 2
-                        continue
-                    }
-                }
-                val next = text.indexOf("**", i)
-                if (next != -1) {
-                    append(text.substring(i, next))
-                    i = next
-                } else {
+                val start = text.indexOf("**", i)
+                if (start == -1) {
                     append(text.substring(i))
                     break
                 }
+                if (start > i) {
+                    append(text.substring(i, start))
+                }
+                val end = text.indexOf("**", start + 2)
+                if (end == -1) {
+                    // 未闭合的 ** 按普通文本处理
+                    append(text.substring(start))
+                    break
+                }
+                if (end == start + 2) {
+                    // "****" 空加粗：按普通文本输出并继续前进，避免死循环
+                    append(text.substring(start, end + 2))
+                    i = end + 2
+                    continue
+                }
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = if (isUser) TextOnBrand else ElysiaPinkLight)) {
+                    append(text.substring(start + 2, end))
+                }
+                i = end + 2
             }
         }
     }
