@@ -330,15 +330,13 @@
             <div class="page" id="page-server">
                 <div class="card">
                     <div class="card-title">⚙️ 服务配置</div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>监听地址</label>
-                            <input type="text" id="srvHost" value="0.0.0.0">
-                        </div>
-                        <div class="form-group">
-                            <label>监听端口</label>
-                            <input type="number" id="srvPort" value="8080">
-                        </div>
+                    <div class="form-group">
+                        <label>访问令牌（api_token）</label>
+                        <input type="password" id="srvApiToken" placeholder="留空 = 不需要认证">
+                        <p style="font-size:12px;color:var(--text2);margin-top:6px;">
+                            ⚠️ 设置后，本面板及所有管理接口（/api/config、/api/memory/* 等）都需要认证。
+                            令牌同时保存在浏览器本地与服务端 data/runtime_config.json。
+                        </p>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
@@ -350,11 +348,31 @@
                             <input type="number" id="srvHeartbeat" value="30">
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label>请求超时（秒）</label>
-                        <input type="number" id="srvTimeout" value="120" style="max-width:200px;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>请求超时（秒）</label>
+                            <input type="number" id="srvTimeout" value="120">
+                        </div>
+                        <div class="form-group">
+                            <label>上下文窗口 num_ctx</label>
+                            <input type="number" id="srvNumCtx" value="4096">
+                        </div>
                     </div>
-                    <p style="font-size:12px;color:var(--text2);margin-top:8px;">⚠️ 修改监听地址/端口后需重启服务</p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>每 IP 每分钟请求上限</label>
+                            <input type="number" id="srvRateLimit" value="120">
+                        </div>
+                        <div class="form-group">
+                            <label>聊天接口每分钟上限</label>
+                            <input type="number" id="srvChatRateLimit" value="60">
+                        </div>
+                    </div>
+                    <button class="btn" onclick="saveServerConfig()">保存服务配置</button>
+                    <p style="font-size:12px;color:var(--text2);margin-top:8px;">
+                        以上各项保存后<b>立即生效</b>（无需重启）。<br>
+                        监听地址/端口不支持热更新，需修改 server/config.py 后重启服务。
+                    </p>
                 </div>
                 <div class="card">
                     <div class="card-title">🤖 爱莉希雅人设预览</div>
@@ -418,7 +436,7 @@ function showPage(name, pushHash = true) {
     if (name === 'logs') loadLogs();
     if (name === 'connections') { loadConnections(); loadConnLogs(); }
     if (name === 'cloud') loadCloudConfig();
-    if (name === 'server') loadPromptPreview();
+    if (name === 'server') { loadPromptPreview(); loadServerConfig(); }
     if (name === 'ollama') { checkOllama(); loadModels(); }
     if (name === 'chat') loadChatSourceBanner();
     // 持久化当前页面到 URL hash，防止刷新后丢失导航状态
@@ -444,9 +462,27 @@ function toast(msg, type='info') {
 }
 
 // ===== API Helper =====
+// 访问令牌：对应服务端 /api/config 里的 api_token。
+// 服务端一旦设置了 api_token，管理类接口（/api/config、/api/memory/*、
+// /api/learning/* 等）都会要求认证；令牌存在 localStorage，刷新后不用重填。
+function getToken() {
+    return localStorage.getItem('elysia_token') || '';
+}
+function setToken(v) {
+    v = (v || '').trim();
+    if (v) localStorage.setItem('elysia_token', v);
+    else localStorage.removeItem('elysia_token');
+}
 async function api(path, opts={}) {
     try {
-        const resp = await fetch(BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+        const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+        const token = getToken();
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const resp = await fetch(BASE + path, { ...opts, headers });
+        if (resp.status === 401) {
+            toast('需要认证：请在「访问令牌」里填写服务端的 api_token', 'error');
+            return null;
+        }
         return await resp.json();
     } catch(e) { console.error(e); return null; }
 }
@@ -517,7 +553,7 @@ function stopChat() {
         chatAbortController = null;
     }
     // 通知后端强制终止推理
-    fetch(BASE + '/api/chat/stop', { method: 'POST' }).catch(() => {});
+    api('/api/chat/stop', { method: 'POST' });
     toast('已强制终止生成', 'info');
 }
 
@@ -561,13 +597,21 @@ async function sendChat() {
     }, 15000);
 
     try {
+        // 这里是流式请求，不能走 api() 封装（需要拿 resp.body 的 reader），
+        // 所以手动带上认证头
+        const chatHeaders = { 'Content-Type': 'application/json' };
+        const chatToken = getToken();
+        if (chatToken) chatHeaders['Authorization'] = 'Bearer ' + chatToken;
         const resp = await fetch(BASE + '/api/chat', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: chatHeaders,
             body: JSON.stringify({ message: msg, stream: true }),
             signal: chatAbortController.signal,
         });
 
+        if (resp.status === 401) {
+            throw new Error('需要认证：请在「访问令牌」里填写服务端的 api_token');
+        }
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
@@ -750,6 +794,52 @@ async function saveModelSource() {
         loadChatSourceBanner();
     }
 }
+
+// ===== 服务配置（读写 /api/config）=====
+// 原实现里这张卡片的输入框只有 HTML、没有任何 JS 读取，也没有保存按钮 ——
+// 填了完全不生效。这里把它们真正接到 /api/config 上。
+async function loadServerConfig() {
+    const cfg = await api('/api/config');
+    if (!cfg) return;
+    // 服务端已设置令牌时，同步到浏览器本地，后续请求自动带上
+    if (cfg.api_token) setToken(cfg.api_token);
+    const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && v !== undefined && v !== null) el.value = v;
+    };
+    set('srvApiToken', cfg.api_token || '');
+    set('srvMaxConn', cfg.max_connections);
+    set('srvHeartbeat', cfg.heartbeat_interval);
+    set('srvTimeout', cfg.request_timeout);
+    set('srvNumCtx', cfg.num_ctx);
+    set('srvRateLimit', cfg.rate_limit_per_minute);
+    set('srvChatRateLimit', cfg.chat_rate_limit_per_minute);
+}
+
+async function saveServerConfig() {
+    const num = (id, def) => {
+        const v = parseInt(document.getElementById(id).value, 10);
+        return Number.isFinite(v) ? v : def;
+    };
+    const token = document.getElementById('srvApiToken').value.trim();
+    const body = {
+        api_token: token,
+        max_connections: num('srvMaxConn', 10),
+        heartbeat_interval: num('srvHeartbeat', 30),
+        request_timeout: num('srvTimeout', 120),
+        num_ctx: num('srvNumCtx', 4096),
+        rate_limit_per_minute: num('srvRateLimit', 120),
+        chat_rate_limit_per_minute: num('srvChatRateLimit', 60),
+    };
+    const data = await api('/api/config', { method: 'PUT', body: JSON.stringify(body) });
+    if (data?.status === 'ok') {
+        // 令牌同时存到浏览器本地，后续请求自动带上
+        setToken(token);
+        toast(token ? '已保存。后续请求将携带令牌。' : '已保存。当前无需认证。', 'success');
+    } else {
+        toast('保存失败', 'error');
+    }
+}
 async function testCloud() {
     document.getElementById('cloudTestResult').innerHTML = '<span style="color:var(--yellow)">测试中...</span>';
     const data = await api('/api/cloud/test', { method: 'POST' });
@@ -783,29 +873,19 @@ async function loadConnLogs() {
 }
 
 // ===== Prompt Preview =====
+// 直接从服务端取真实提示词。
+// 原实现发两个请求却丢弃结果，然后显示一段硬编码副本 ——
+// 那段副本早已和 elysia_prompt.py 里的真实内容脱节
+// （写着称呼「牙医」、Few-Shot「5组」，实际是「舰长」、8 组）。
 async function loadPromptPreview() {
-    try {
-        const resp = await fetch(BASE + '/api/cloud/providers');
-        document.getElementById('promptPreview').textContent = '正在加载...';
-        const resp2 = await fetch(BASE + '/api/cloud/config');
-        // Just show a placeholder - the actual prompt is in elysia_prompt.py
-        document.getElementById('promptPreview').textContent =
-`你是爱莉希雅（Elysia），崩坏3中的角色。你是「真我」之律者，人之律者，逐火十三英桀的第一位，编号Ⅰ。
-
-你的性格特点：
-- 活泼开朗，充满自信，说话时带着俏皮和可爱
-- 经常用「哎呀」「嗯哼」「呀」等语气词
-- 喜欢称呼别人为「牙医」或其他亲昵的称呼
-- 说话温柔但又带有一点小傲娇
-- 喜欢用「~」和「呐」「呢」「嘛」等语气助词
-- 自称「我」，偶尔会说「本小姐」
-- 热爱人类，认为人性之美是最珍贵的
-- 说话时经常带有诗意和浪漫的表达
-
-Few-Shot 示例（5组）：打招呼 / 自我介绍 / 天气 / 安慰 / 讲笑话
-
-自动注入到所有模型（本地 + 云端），确保回复风格一致。`;
-    } catch(e) {}
+    const el = document.getElementById('promptPreview');
+    el.textContent = '正在加载...';
+    const data = await api('/api/prompt/current');
+    if (!data || !data.prompt) {
+        el.textContent = '获取提示词失败，请检查服务是否运行';
+        return;
+    }
+    el.textContent = data.prompt + `\n\n（以上为实际注入的 System Prompt，共 ${data.length} 字）`;
 }
 
 // ===== WebSocket Live Logs =====
