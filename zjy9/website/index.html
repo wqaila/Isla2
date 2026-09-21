@@ -1,0 +1,1356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="爱莉希雅 AI - 基于本地大语言模型 + 云端 API 的角色扮演 AI 聊天系统，支持 Android、树莓派远程调用，内置 RAG 记忆、情感引擎、用户学习系统。">
+    <meta name="keywords" content="爱莉希雅,AI聊天,Ollama,LLM,角色扮演,FastAPI,WebSocket,RAG,情感识别,树莓派">
+    <meta property="og:title" content="爱莉希雅 AI - 本地 LLM 聊天系统">
+    <meta property="og:description" content="基于本地大语言模型 + 云端 API 的智能角色扮演 AI 聊天系统。">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <title>爱莉希雅 AI - 本地 LLM 聊天系统</title>
+    <style>
+        :root {
+            --pink-50: #fdf2f8;
+            --pink-100: #fce7f3;
+            --pink-200: #fbcfe8;
+            --pink-300: #f9a8d4;
+            --pink-400: #f472b6;
+            --pink-500: #ec4899;
+            --pink-600: #db2777;
+            --pink-700: #be185d;
+            --pink-800: #9d174d;
+            --pink-900: #831843;
+            --purple-400: #c084fc;
+            --purple-500: #a855f7;
+            --purple-600: #9333ea;
+            --purple-700: #7e22ce;
+            --purple-800: #6b21a8;
+            --purple-900: #581c87;
+            --rose-400: #fb7185;
+            --rose-500: #f43f5e;
+            --bg-dark: #0f0a1a;
+            --bg-card: #1a1029;
+            --bg-card-hover: #221538;
+            --text-primary: #f8f0ff;
+            --text-secondary: #c4b5d4;
+            --text-muted: #8b7a9e;
+            --border-color: #2d1f42;
+            --gradient-hero: linear-gradient(135deg, #ec4899 0%, #a855f7 40%, #6366f1 100%);
+            --gradient-card: linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(168, 85, 247, 0.08));
+            --gradient-btn: linear-gradient(135deg, #ec4899, #a855f7);
+            --shadow-glow: 0 0 30px rgba(236, 72, 153, 0.15);
+            --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+
+        /* 背景装饰 */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background:
+                radial-gradient(ellipse at 20% 20%, rgba(236, 72, 153, 0.06) 0%, transparent 60%),
+                radial-gradient(ellipse at 80% 60%, rgba(168, 85, 247, 0.06) 0%, transparent 60%),
+                radial-gradient(ellipse at 50% 80%, rgba(99, 102, 241, 0.04) 0%, transparent 60%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* 导航栏 */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(15, 10, 26, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        .navbar-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 64px;
+        }
+
+        .navbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: var(--gradient-hero);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .navbar-brand .logo-icon {
+            font-size: 1.5rem;
+        }
+
+        .navbar-links {
+            display: flex;
+            gap: 8px;
+            list-style: none;
+            flex-wrap: wrap;
+        }
+
+        .navbar-links a {
+            text-decoration: none;
+            color: var(--text-secondary);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+        }
+
+        .navbar-links a:hover {
+            color: var(--pink-300);
+            background: rgba(236, 72, 153, 0.1);
+        }
+
+        .nav-cta {
+            background: var(--gradient-btn) !important;
+            color: white !important;
+            font-weight: 600 !important;
+        }
+
+        /* 公网地址显示 */
+        .public-url-bar {
+            background: rgba(236, 72, 153, 0.08);
+            border-bottom: 1px solid rgba(236, 72, 153, 0.2);
+            padding: 8px 24px;
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .public-url-bar .url-label {
+            font-weight: 600;
+            color: var(--pink-400);
+        }
+        .public-url-bar .url-value {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: rgba(255,255,255,0.06);
+            padding: 4px 12px;
+            border-radius: 6px;
+            color: var(--pink-300);
+            word-break: break-all;
+        }
+        .public-url-bar .url-copy-btn {
+            background: rgba(236, 72, 153, 0.2);
+            border: 1px solid rgba(236, 72, 153, 0.3);
+            color: var(--pink-400);
+            padding: 4px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .public-url-bar .url-copy-btn:hover {
+            background: rgba(236, 72, 153, 0.35);
+            color: var(--pink-300);
+        }
+        .url-copy-btn.copied {
+            background: rgba(34, 197, 94, 0.2) !important;
+            border-color: rgba(34, 197, 94, 0.4) !important;
+            color: #4ade80 !important;
+        }
+
+        /* Hero 区域 */
+        .hero {
+            position: relative;
+            z-index: 1;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 120px 24px 80px;
+        }
+
+        .hero-content {
+            max-width: 800px;
+        }
+
+        .hero-badge {
+            display: inline-block;
+            padding: 6px 20px;
+            border-radius: 50px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            background: rgba(236, 72, 153, 0.1);
+            border: 1px solid rgba(236, 72, 153, 0.25);
+            color: var(--pink-400);
+            margin-bottom: 24px;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 800;
+            line-height: 1.15;
+            margin-bottom: 20px;
+            background: var(--gradient-hero);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-subtitle {
+            font-size: 1.15rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 36px;
+            line-height: 1.8;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border: none;
+        }
+
+        .btn-primary {
+            background: var(--gradient-btn);
+            color: white;
+            box-shadow: 0 4px 20px rgba(236, 72, 153, 0.35);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 30px rgba(236, 72, 153, 0.5);
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--text-primary);
+            border: 1.5px solid var(--border-color);
+        }
+
+        .btn-outline:hover {
+            border-color: var(--pink-500);
+            background: rgba(236, 72, 153, 0.05);
+        }
+
+        /* 统计数字 */
+        .hero-stats {
+            display: flex;
+            gap: 40px;
+            justify-content: center;
+            margin-top: 60px;
+            flex-wrap: wrap;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: var(--gradient-hero);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* 区块通用样式 */
+        .section {
+            position: relative;
+            z-index: 1;
+            padding: 80px 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .section-badge {
+            display: inline-block;
+            padding: 4px 16px;
+            border-radius: 50px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: rgba(168, 85, 247, 0.1);
+            border: 1px solid rgba(168, 85, 247, 0.25);
+            color: var(--purple-400);
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .section-title {
+            font-size: clamp(1.8rem, 4vw, 2.5rem);
+            font-weight: 800;
+            margin-bottom: 12px;
+        }
+
+        .section-desc {
+            font-size: 1.05rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        /* 功能卡片网格 */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+        }
+
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--gradient-hero);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .feature-card:hover {
+            border-color: rgba(236, 72, 153, 0.3);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-glow);
+            background: var(--bg-card-hover);
+        }
+
+        .feature-card:hover::before {
+            opacity: 1;
+        }
+
+        .feature-icon {
+            width: 52px;
+            height: 52px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            background: var(--gradient-card);
+        }
+
+        .feature-card h3 {
+            font-size: 1.15rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+
+        /* 架构图 */
+        .architecture-diagram {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 48px 32px;
+            overflow-x: auto;
+        }
+
+        .arch-title {
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: 700;
+            margin-bottom: 32px;
+            color: var(--pink-300);
+        }
+
+        .arch-flow {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            justify-content: center;
+            align-items: center;
+            min-width: 700px;
+        }
+
+        .arch-box {
+            background: var(--bg-card-hover);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px 20px;
+            text-align: center;
+            min-width: 120px;
+            transition: all 0.3s ease;
+        }
+
+        .arch-box:hover {
+            border-color: var(--pink-500);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .arch-box .box-icon {
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+        }
+
+        .arch-box .box-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+        }
+
+        .arch-box .box-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .arch-arrow {
+            font-size: 1.5rem;
+            color: var(--pink-500);
+            font-weight: bold;
+        }
+
+        /* API 表格 */
+        .api-section {
+            margin-bottom: 48px;
+        }
+
+        .api-section h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 16px;
+            color: var(--pink-300);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+
+        table th {
+            background: var(--bg-card);
+            padding: 12px 16px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--pink-300);
+            white-space: nowrap;
+        }
+
+        table td {
+            padding: 10px 16px;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        table tbody tr:hover {
+            background: rgba(236, 72, 153, 0.03);
+        }
+
+        table .method {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        .method-get {
+            background: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+        }
+
+        .method-post {
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+        }
+
+        .method-put {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+        }
+
+        .method-delete {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+        }
+
+        .method-ws {
+            background: rgba(168, 85, 247, 0.15);
+            color: #c084fc;
+        }
+
+        table code {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.8rem;
+            color: var(--pink-300);
+        }
+
+        /* 技术栈标签 */
+        .tech-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .tech-tag {
+            padding: 8px 18px;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }
+
+        .tech-tag:hover {
+            border-color: var(--pink-500);
+            color: var(--pink-300);
+            background: var(--bg-card-hover);
+        }
+
+        /* CTA 区域 */
+        .cta-section {
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            padding: 80px 24px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .cta-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 56px 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at center, rgba(236, 72, 153, 0.06) 0%, transparent 60%);
+            pointer-events: none;
+        }
+
+        .cta-card h2 {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .cta-card p {
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+            position: relative;
+        }
+
+        /* Footer */
+        .footer {
+            position: relative;
+            z-index: 1;
+            border-top: 1px solid var(--border-color);
+            padding: 40px 24px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .footer a {
+            color: var(--pink-400);
+            text-decoration: none;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .navbar-links {
+                display: none;
+            }
+            .hero-stats {
+                gap: 24px;
+            }
+            .stat-number {
+                font-size: 1.8rem;
+            }
+            .section {
+                padding: 56px 16px;
+            }
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+            .arch-flow {
+                min-width: auto;
+                flex-direction: column;
+            }
+            .arch-arrow {
+                transform: rotate(90deg);
+            }
+            .cta-card {
+                padding: 36px 24px;
+            }
+            table {
+                font-size: 0.78rem;
+            }
+            table th,
+            table td {
+                padding: 8px 10px;
+            }
+        }
+
+        /* 动画 */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-in-up {
+            animation: fadeInUp 0.6s ease forwards;
+        }
+
+        .delay-1 {
+            animation-delay: 0.1s;
+        }
+
+        .delay-2 {
+            animation-delay: 0.2s;
+        }
+
+        .delay-3 {
+            animation-delay: 0.3s;
+        }
+
+        .delay-4 {
+            animation-delay: 0.4s;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--pink-700);
+        }
+
+        /* 模型路由卡片 */
+        .route-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-top: 32px;
+        }
+
+        .route-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .route-card:hover {
+            border-color: var(--pink-500);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .route-card .route-icon {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+        }
+
+        .route-card h4 {
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .route-card p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .route-card .route-badge {
+            display: inline-block;
+            padding: 3px 12px;
+            border-radius: 50px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-top: 10px;
+            background: rgba(236, 72, 153, 0.1);
+            color: var(--pink-400);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 导航栏 -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="#" class="navbar-brand">
+                <span class="logo-icon">🌸</span> 爱莉希雅 AI
+            </a>
+            <ul class="navbar-links">
+                <li><a href="#features">核心功能</a></li>
+                <li><a href="#architecture">系统架构</a></li>
+                <li><a href="#api">API 文档</a></li>
+                <li><a href="#tech">技术栈</a></li>
+                <li><a href="#quickstart">快速开始</a></li>
+        <li><a href="projects.html">📁 项目汇总</a></li>
+        <li><a href="https://github.com/wqaila/Isla2.git" class="nav-cta" target="_blank">⭐ GitHub</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- 公网地址栏（动态显示） -->
+    <div class="public-url-bar" id="publicUrlBar" style="display:none;">
+        <span class="url-label">🌐 公网访问地址：</span>
+        <span class="url-value" id="publicUrlValue"></span>
+        <button class="url-copy-btn" id="urlCopyBtn" onclick="copyPublicUrl()">📋 复制</button>
+    </div>
+
+    <!-- Hero 区域 -->
+    <section class="hero">
+        <div class="hero-content">
+            <div class="hero-badge fade-in-up">✨ 开源 · 本地优先 · 隐私安全</div>
+            <h1 class="fade-in-up delay-1">爱莉希雅 AI<br>本地 LLM 聊天系统</h1>
+            <p class="hero-subtitle fade-in-up delay-2">
+                基于本地大语言模型 + 云端 API 的角色扮演 AI 聊天系统。支持 Android、树莓派远程调用电脑进行推理，内置 RAG 记忆系统、情感识别引擎、用户学习引擎，让 AI 更懂你。
+            </p>
+            <div class="hero-buttons fade-in-up delay-3">
+                <a href="#quickstart" class="btn btn-primary">🚀 快速开始</a>
+                <a href="#features" class="btn btn-outline">🔍 了解更多</a>
+            </div>
+            <div class="hero-stats fade-in-up delay-4">
+                <div class="stat-item">
+                    <div class="stat-number">3+</div>
+                    <div class="stat-label">客户端平台</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">6</div>
+                    <div class="stat-label">云端 API 提供商</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">40+</div>
+                    <div class="stat-label">API 端点</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">8</div>
+                    <div class="stat-label">核心引擎模块</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 核心功能 -->
+    <section class="section" id="features">
+        <div class="section-header">
+            <div class="section-badge">Core Features</div>
+            <h2 class="section-title">核心功能</h2>
+            <p class="section-desc">从底层推理引擎到上层智能交互，打造全方位的 AI 聊天体验</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">🧠</div>
+                <h3>智能模型路由</h3>
+                <p>支持 Ollama 本地模型和 6 大云端 API（DeepSeek/OpenAI/通义千问/智谱/Kimi/自定义）。Auto 模式自动切换，优先本地、云端兜底，保证服务永不中断。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">💬</div>
+                <h3>双通道聊天</h3>
+                <p>同时支持 REST API（SSE 流式输出）和 WebSocket 实时通信。流式响应逐字推送，体验流畅自然。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🎭</div>
+                <h3>角色人设注入</h3>
+                <p>内置爱莉希雅完整角色人设 System Prompt + 5 组 Few-Shot 示例对话，自动注入到每一次 AI 推理中，确保回复风格一致、充满角色魅力。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">💾</div>
+                <h3>RAG 记忆系统</h3>
+                <p>双后端记忆架构（TF-IDF / ChromaDB），支持语义搜索对话历史。自动提取用户关键信息（姓名、偏好等），让 AI 记住每一次对话。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">💗</div>
+                <h3>情感识别引擎</h3>
+                <p>7 种情绪多维分析（喜悦/悲伤/愤怒/恐惧/惊讶/厌恶/中性），实时情绪趋势追踪，根据用户情感状态自适应调整回复策略，更具同理心。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🎓</div>
+                <h3>用户学习引擎</h3>
+                <p>记忆神经网络持续学习用户画像——基本信息、性格特质、沟通风格、兴趣偏好。LLM 辅助深度分析，知识图谱自动关联与衰减。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🌐</div>
+                <h3>公网访问支持</h3>
+                <p>集成 Cloudflare Tunnel，免费将服务暴露到公网。自动 HTTPS/WSS 加密，无需配置路由器或防火墙，随时随地访问。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🛡️</div>
+                <h3>安全防护机制</h3>
+                <p>可选 API Token 认证、IP 级速率限制（通用 120次/分钟，聊天 60次/分钟）、CORS 中间件、全局异常处理，全方位保障服务安全。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📊</div>
+                <h3>Web 管理面板</h3>
+                <p>完整的单页管理面板，支持仪表盘实时统计、聊天测试、模型配置、云端 API 管理、日志浏览、设备监控，所有操作可视化。</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- 系统架构 -->
+    <section class="section" id="architecture">
+        <div class="section-header">
+            <div class="section-badge">Architecture</div>
+            <h2 class="section-title">系统架构</h2>
+            <p class="section-desc">多端协同、灵活扩展的分布式 AI 推理架构</p>
+        </div>
+        <div class="architecture-diagram">
+            <div class="arch-title">🏗️ 整体架构概览</div>
+            <div class="arch-flow">
+                <div class="arch-box">
+                    <div class="box-icon">📱</div>
+                    <div class="box-title">Android App</div>
+                    <div class="box-desc">Kotlin + Compose</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-box">
+                    <div class="box-icon">🥧</div>
+                    <div class="box-title">树莓派客户端</div>
+                    <div class="box-desc">Python GUI/CLI</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-box" style="border-color: var(--pink-500); box-shadow: var(--shadow-glow);">
+                    <div class="box-icon">⚡</div>
+                    <div class="box-title">FastAPI 服务端</div>
+                    <div class="box-desc">核心调度引擎</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-box">
+                    <div class="box-icon">🖥️</div>
+                    <div class="box-title">Ollama 推理</div>
+                    <div class="box-desc">本地 GPU 加速</div>
+                </div>
+                <div class="arch-box">
+                    <div class="box-icon">☁️</div>
+                    <div class="box-title">云端 API</div>
+                    <div class="box-desc">DeepSeek 等 6 家</div>
+                </div>
+            </div>
+            <div style="text-align: center; margin-top: 32px;">
+                <div class="arch-flow" style="justify-content: center;">
+                    <div class="arch-box">
+                        <div class="box-icon">🔗</div>
+                        <div class="box-title">Cloudflare Tunnel</div>
+                        <div class="box-desc">免费公网 HTTPS</div>
+                    </div>
+                    <div class="arch-arrow">→</div>
+                    <div class="arch-box">
+                        <div class="box-icon">🌍</div>
+                        <div class="box-title">公网访问</div>
+                        <div class="box-desc">任何地方都能用</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模型路由策略 -->
+        <div style="margin-top: 48px;">
+            <h3 style="text-align: center; font-weight: 700; margin-bottom: 24px; font-size: 1.15rem;">🔀 模型路由策略</h3>
+            <div class="route-cards">
+                <div class="route-card">
+                    <div class="route-icon">🏠</div>
+                    <h4>Ollama 模式</h4>
+                    <p>仅使用本地 Ollama 模型推理，数据完全本地化，隐私安全，无需网络</p>
+                    <span class="route-badge">纯本地</span>
+                </div>
+                <div class="route-card">
+                    <div class="route-icon">☁️</div>
+                    <h4>Cloud 模式</h4>
+                    <p>仅使用云端 API，支持 6 大提供商，无需 GPU，随时随地使用</p>
+                    <span class="route-badge">纯云端</span>
+                </div>
+                <div class="route-card" style="border-color: var(--pink-500);">
+                    <div class="route-icon">🤖</div>
+                    <h4>Auto 模式 ✨</h4>
+                    <p>优先本地 Ollama，不可用时自动切换云端 API，智能容灾，永不断线</p>
+                    <span class="route-badge">推荐</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- API 文档 -->
+    <section class="section" id="api">
+        <div class="section-header">
+            <div class="section-badge">API Reference</div>
+            <h2 class="section-title">API 端点</h2>
+            <p class="section-desc">完整的 REST API + WebSocket 接口，覆盖聊天、记忆、情感、配置等所有功能</p>
+        </div>
+
+        <div class="api-section">
+            <h3>💬 聊天与会话</h3>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>方法</th><th>路径</th><th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><span class="method method-post">POST</span></td><td><code>/api/chat</code></td><td>聊天（REST，支持流式 SSE）</td></tr>
+                        <tr><td><span class="method method-ws">WS</span></td><td><code>/ws/chat</code></td><td>聊天（WebSocket 实时流式）</td></tr>
+                        <tr><td><span class="method method-post">POST</span></td><td><code>/api/chat/stop</code></td><td>停止当前生成</td></tr>
+                        <tr><td><span class="method method-post">POST</span></td><td><code>/api/sessions</code></td><td>创建会话</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/sessions</code></td><td>会话列表</td></tr>
+                        <tr><td><span class="method method-delete">DELETE</span></td><td><code>/api/sessions/{id}</code></td><td>删除会话</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/messages/{id}</code></td><td>消息历史</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/messages/search?q=</code></td><td>搜索消息</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="api-section">
+            <h3>☁️ 云端 API 管理</h3>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/cloud/providers</code></td><td>支持提供商列表</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/cloud/config</code></td><td>当前云端配置</td></tr>
+                        <tr><td><span class="method method-post">POST</span></td><td><code>/api/cloud/config</code></td><td>更新云端配置</td></tr>
+                        <tr><td><span class="method method-post">POST</span></td><td><code>/api/cloud/test</code></td><td>测试云端连接</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="api-section">
+            <h3>💾 记忆系统 & 情感分析 & 学习引擎</h3>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/memory/stats</code></td><td>记忆库统计</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/memory/search?q=</code></td><td>语义搜索记忆</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/emotion/analyze?q=</code></td><td>情感分析</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/emotion/trend/{id}</code></td><td>情绪趋势</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/learning/profile</code></td><td>用户画像</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/learning/progress</code></td><td>学习进度</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="api-section">
+            <h3>📊 系统监控 & 配置</h3>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/health</code></td><td>健康检查</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/status</code></td><td>服务状态</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/logs</code></td><td>系统日志</td></tr>
+                        <tr><td><span class="method method-get">GET</span></td><td><code>/api/config</code></td><td>运行时配置</td></tr>
+                        <tr><td><span class="method method-put">PUT</span></td><td><code>/api/config</code></td><td>更新配置</td></tr>
+                        <tr><td><span class="method method-ws">WS</span></td><td><code>/ws/logs</code></td><td>实时日志流</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- 技术栈 -->
+    <section class="section" id="tech">
+        <div class="section-header">
+            <div class="section-badge">Tech Stack</div>
+            <h2 class="section-title">技术栈</h2>
+            <p class="section-desc">精选现代化技术方案，高性能、易扩展</p>
+        </div>
+
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">🐍</div>
+                <h3>后端框架</h3>
+                <p>Python FastAPI + Uvicorn，异步高性能 Web 框架，自动生成 OpenAPI 文档</p>
+                <div class="tech-tags" style="margin-top: 16px; justify-content: flex-start;">
+                    <span class="tech-tag">FastAPI</span>
+                    <span class="tech-tag">Uvicorn</span>
+                    <span class="tech-tag">Pydantic</span>
+                    <span class="tech-tag">httpx</span>
+                </div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🗄️</div>
+                <h3>数据存储</h3>
+                <p>SQLite 持久化聊天记录、日志；TF-IDF / ChromaDB 双后端向量记忆存储</p>
+                <div class="tech-tags" style="margin-top: 16px; justify-content: flex-start;">
+                    <span class="tech-tag">SQLite</span>
+                    <span class="tech-tag">ChromaDB</span>
+                    <span class="tech-tag">scikit-learn</span>
+                </div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🤖</div>
+                <h3>推理引擎</h3>
+                <p>Ollama 本地 GPU 推理 + 云端 API（DeepSeek/OpenAI/通义千问/智谱/Kimi）</p>
+                <div class="tech-tags" style="margin-top: 16px; justify-content: flex-start;">
+                    <span class="tech-tag">Ollama</span>
+                    <span class="tech-tag">DeepSeek</span>
+                    <span class="tech-tag">OpenAI</span>
+                </div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📱</div>
+                <h3>移动端</h3>
+                <p>Kotlin + Jetpack Compose + Material3，OkHttp WebSocket，支持 WS/WSS 双协议</p>
+                <div class="tech-tags" style="margin-top: 16px; justify-content: flex-start;">
+                    <span class="tech-tag">Kotlin</span>
+                    <span class="tech-tag">Jetpack Compose</span>
+                    <span class="tech-tag">OkHttp</span>
+                </div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🌐</div>
+                <h3>网络通信</h3>
+                <p>WebSocket 实时双向通信 + SSE 流式响应，Cloudflare Tunnel 免费公网穿透</p>
+                <div class="tech-tags" style="margin-top: 16px; justify-content: flex-start;">
+                    <span class="tech-tag">WebSocket</span>
+                    <span class="tech-tag">SSE</span>
+                    <span class="tech-tag">Cloudflare</span>
+                </div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🔐</div>
+                <h3>安全机制</h3>
+                <p>CORS 中间件 + Token 认证 + IP 速率限制 + 全局异常处理，多层安全防护</p>
+                <div class="tech-tags" style="margin-top: 16px; justify-content: flex-start;">
+                    <span class="tech-tag">SlowAPI</span>
+                    <span class="tech-tag">Bearer Token</span>
+                    <span class="tech-tag">CORS</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 快速开始 -->
+    <section class="section" id="quickstart">
+        <div class="section-header">
+            <div class="section-badge">Quick Start</div>
+            <h2 class="section-title">快速开始</h2>
+            <p class="section-desc">三步启动你的 AI 聊天服务</p>
+        </div>
+
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">1️⃣</div>
+                <h3>启动 PC 服务端</h3>
+                <p>双击 <code>server/start.bat</code> 一键启动，或命令行运行 <code>python server/main.py</code>。服务将监听在 <code>http://localhost:8080</code></p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">2️⃣</div>
+                <h3>确保 Ollama 运行</h3>
+                <p>运行 <code>ollama serve</code> 启动本地推理服务。或配置云端 API Key 使用 DeepSeek 等在线模型</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">3️⃣</div>
+                <h3>连接客户端</h3>
+                <p>打开 Web 管理面板 <code>/dashboard</code> 测试聊天，或使用 Android App / 树莓派客户端连接</p>
+            </div>
+        </div>
+
+        <div style="text-align: center; margin-top: 48px;">
+            <a href="https://github.com/wqaila/Isla2.git" class="btn btn-primary" target="_blank">⭐ 在 GitHub 上查看完整文档</a>
+        </div>
+    </section>
+
+    <!-- 云端 API 提供商 -->
+    <section class="section">
+        <div class="section-header">
+            <div class="section-badge">Cloud Providers</div>
+            <h2 class="section-title">支持的云端 API</h2>
+            <p class="section-desc">6 大主流 AI 提供商，灵活切换</p>
+        </div>
+        <div class="route-cards">
+            <div class="route-card">
+                <div class="route-icon">🐳</div>
+                <h4>DeepSeek</h4>
+                <p>性价比极高，国内访问快速</p>
+                <span class="route-badge">推荐</span>
+            </div>
+            <div class="route-card">
+                <div class="route-icon">🤖</div>
+                <h4>OpenAI</h4>
+                <p>效果最好，GPT-4o</p>
+            </div>
+            <div class="route-card">
+                <div class="route-icon">☁️</div>
+                <h4>通义千问</h4>
+                <p>阿里云，国内访问快</p>
+            </div>
+            <div class="route-card">
+                <div class="route-icon">🧠</div>
+                <h4>智谱 GLM</h4>
+                <p>免费额度大，性价比高</p>
+            </div>
+            <div class="route-card">
+                <div class="route-icon">🌙</div>
+                <h4>月之暗面 Kimi</h4>
+                <p>长文本能力突出</p>
+            </div>
+            <div class="route-card">
+                <div class="route-icon">🔧</div>
+                <h4>自定义 API</h4>
+                <p>任意 OpenAI 兼容接口</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- 防重复输出优化 -->
+    <section class="section">
+        <div class="section-header">
+            <div class="section-badge">Optimization</div>
+            <h2 class="section-title">防重复输出优化</h2>
+            <p class="section-desc">针对小模型容易陷入重复循环的问题，实施多层防护策略</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">⚙️</div>
+                <h3>生成参数优化</h3>
+                <p>repeat_penalty 提升至 1.8，repeat_last_n 扩大至 256 tokens，num_predict 限制为 150，Tail Free Sampling 启用</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📝</div>
+                <h3>Prompt 防重复指令</h3>
+                <p>System Prompt 中内置严格禁止重复段落，从源头引导模型避免循环输出</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🔍</div>
+                <h3>5 层实时检测</h3>
+                <p>句子级、短语级、中等块、大段落、字符频率——5 层递进式重复检测，每 30 字符检测一次，触发即自动截断</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🛑</div>
+                <h3>硬字符限制</h3>
+                <p>输出超过 500 字符时强制截断，作为最后一道防线，确保不会出现超长重复输出</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA 区域 -->
+    <section class="cta-section">
+        <div class="cta-card">
+            <h2>🌟 准备好开始了吗？</h2>
+            <p>克隆仓库，启动服务，连接你的设备，与爱莉希雅开始对话吧！</p>
+            <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; position: relative;">
+                <a href="https://github.com/wqaila/Isla2.git" class="btn btn-primary" target="_blank">📦 查看源代码</a>
+                <a href="#quickstart" class="btn btn-outline">📖 快速开始指南</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>🌸 爱莉希雅 AI 聊天系统 · 开源项目 · 基于 FastAPI + Ollama 构建</p>
+        <p style="margin-top: 8px;">
+            <a href="https://github.com/wqaila/Isla2.git" target="_blank">GitHub</a>
+            · 本地优先 · 隐私安全 · 永远免费
+        </p>
+    </footer>
+
+<script>
+    // 动态显示公网访问地址
+    (function() {
+        var url = window.location.href;
+        var bar = document.getElementById('publicUrlBar');
+        var valueEl = document.getElementById('publicUrlValue');
+        
+        // 检测是否为公网 URL（非 localhost、127.0.0.1、file://）
+        var isPublic = url.indexOf('localhost') === -1 && 
+                       url.indexOf('127.0.0.1') === -1 && 
+                       url.indexOf('file://') === -1 &&
+                       url.indexOf('192.168.') === -1 &&
+                       url.indexOf('10.') === -1 &&
+                       url.indexOf('172.') === -1;
+        
+        if (isPublic) {
+            // 取根域名
+            var a = document.createElement('a');
+            a.href = url;
+            var publicUrl = a.protocol + '//' + a.host;
+            valueEl.textContent = publicUrl;
+            bar.style.display = 'flex';
+        }
+    })();
+
+    // 复制公网地址
+    function copyPublicUrl() {
+        var url = document.getElementById('publicUrlValue').textContent;
+        if (!url) return;
+        
+        // 使用 Clipboard API
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(function() {
+                showCopied();
+            }).catch(function() {
+                fallbackCopy(url);
+            });
+        } else {
+            fallbackCopy(url);
+        }
+    }
+
+    function fallbackCopy(text) {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            showCopied();
+        } catch(e) {
+            alert('复制失败，请手动复制：' + text);
+        }
+        document.body.removeChild(textarea);
+    }
+
+    function showCopied() {
+        var btn = document.getElementById('urlCopyBtn');
+        btn.textContent = '✅ 已复制';
+        btn.classList.add('copied');
+        setTimeout(function() {
+            btn.textContent = '📋 复制';
+            btn.classList.remove('copied');
+        }, 2000);
+    }
+
+    // 导航栏滚动效果
+    (function() {
+        var navbar = document.querySelector('.navbar');
+        var lastScroll = 0;
+        window.addEventListener('scroll', function() {
+            var current = window.pageYOffset;
+            if (current > 100) {
+                navbar.style.boxShadow = '0 2px 20px rgba(0,0,0,0.4)';
+            } else {
+                navbar.style.boxShadow = 'none';
+            }
+        });
+    })();
+</script>
+</body>
+</html>

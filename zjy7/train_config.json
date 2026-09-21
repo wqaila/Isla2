@@ -1,0 +1,36 @@
+{
+  "model": {
+    "base_model_path": "models/base_model",
+    "lora_r": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.15
+  },
+  "data": {
+    "raw_data_dir": "downloads",
+    "data_path": "train_data.json",
+    "max_seq_length": 1024
+  },
+  "training": {
+    "learning_rate": 1e-4,
+    "num_train_epochs": 2,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 16,
+    "warmup_ratio": 0.1,
+    "logging_steps": 5,
+    "save_steps": 100,
+    "bf16": true,
+    "gradient_checkpointing": true,
+    "weight_decay": 0.02,
+    "max_grad_norm": 1.0,
+    "early_stopping_patience": 3
+  },
+  "output": {
+    "output_dir": "lora_output",
+    "merged_dir": "merged_model",
+    "gguf_dir": "gguf_output"
+  },
+  "tools": {
+    "llama_quantize": "models/llama-b9222-bin-win-cpu-x64/llama-quantize.exe",
+    "llama_cli": "models/llama-b9222-bin-win-cpu-x64/llama-cli.exe"
+  }
+}

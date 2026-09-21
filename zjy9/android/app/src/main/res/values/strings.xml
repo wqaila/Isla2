@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">爱莉希雅 AI</string>
+    <string name="chat_hint">输入消息...</string>
+    <string name="send">发送</string>
+    <string name="settings">设置</string>
+    <string name="connect">连接</string>
+    <string name="disconnect">断开</string>
+    <string name="connected">已连接</string>
+    <string name="disconnected">未连接</string>
+    <string name="connecting">连接中...</string>
+    <string name="server_ip">服务器 IP</string>
+    <string name="server_port">端口</string>
+    <string name="connection_type">连接方式</string>
+    <string name="connection_wifi">WiFi</string>
+    <string name="connection_usb">USB</string>
+    <string name="auto_connect">自动连接</string>
+    <string name="welcome_message">你好呀~我是爱莉希雅，很高兴见到你呢！有什么想聊的吗？✨</string>
+    <string name="error_empty_message">请输入消息内容</string>
+    <string name="error_not_connected">请先连接到服务器</string>
+</resources>

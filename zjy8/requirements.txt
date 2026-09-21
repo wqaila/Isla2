@@ -1,0 +1,14 @@
+# zjy8 依赖清单
+# 需要 Python >= 3.9（download_model.py 使用了 argparse.BooleanOptionalAction）
+
+# 模型下载（download_model.py / fix_download.py）
+huggingface_hub>=0.23.0
+
+# 备选下载通道：download_model.py --mirror modelscope，以及 fix_download.py 的兜底方案
+modelscope>=1.9.0
+
+# 说明：
+#   start_server.py / gguf_meta.py / check_model.py / dump_tensors.py /
+#   verify_gguf.py / fix_gguf_final.py 只依赖标准库，无需额外安装。
+#   推理所需的 llama-server 是可执行文件（见 models/llama-b9222-bin-win-cpu-x64/），
+#   不是 pip 包，不在本清单内。

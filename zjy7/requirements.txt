@@ -1,0 +1,17 @@
+# 核心依赖
+torch>=2.0.0
+# 需 >=4.41 支持 TrainingArguments.eval_strategy，>=4.46 支持 Trainer.processing_class
+transformers>=4.46.0
+peft>=0.10.0
+datasets>=2.18.0
+accelerate>=0.28.0
+bitsandbytes>=0.43.0
+
+# GGUF 转换
+gguf>=0.6.0
+
+# 数据处理
+numpy>=1.24.0
+
+# 可选：训练监控
+tensorboard>=2.14.0

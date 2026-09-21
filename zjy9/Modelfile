@@ -1,0 +1,15 @@
+FROM ./model-Q8_0.gguf
+
+PARAMETER temperature 0.7
+PARAMETER num_ctx 4096
+PARAMETER num_predict 300
+PARAMETER repeat_penalty 1.35
+PARAMETER repeat_last_n 256
+PARAMETER top_p 0.9
+PARAMETER top_k 30
+PARAMETER mirostat 2
+PARAMETER mirostat_tau 5.0
+PARAMETER mirostat_eta 0.1
+PARAMETER stop "<|eot_id|>"
+PARAMETER stop "<|end_of_text|>"
+PARAMETER stop "</s>"

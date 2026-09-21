@@ -1,43 +1,71 @@
-# Python
+# ===== Python =====
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.egg
 .venv/
 venv/
-*.egg
+env/
+lora_env/
 
-# Server runtime config (may contain API keys / tokens)
-server/data/
-server/config.yaml
+# ===== 模型权重 / 大文件 =====
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+models/
+ollama-models/
 
-# IDE
+# ===== 下载缓存 / 产物 =====
+downloads/
+gguf_output/
+merged_model/
+lora_output/
+
+# ===== 运行时数据（含数据库、日志、密钥）=====
+zjy9/server/data/
+zjy7/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+
+# ===== 凭据（绝对不要提交）=====
+bilibili_cookies.txt
+.encryption_key
+runtime_config.json
+
+# ===== 构建产物 =====
+build/
+dist/
+.gradle/
+.gradle/
+*.jar
+*.apk
+*.aab
+*.class
+*.o
+*.so
+*.dll
+*.exe
+local.properties
+.gradle/
+zjy6/android_app/gradle/gradle-8.2/
+
+# ===== 编辑器 / 系统 =====
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Ollama
-Modelfile.lock
-
-# Cloudflare tunnel binary
-server/cloudflared-windows-amd64.exe
-
-# Website (standalone display page, not core project)
-website/
+# ===== 杂项 =====
 $null
-
-# Android
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties
-android/.idea/
-*.apk
-*.aab
-
-# Large model files
-*.gguf
+*.tmp

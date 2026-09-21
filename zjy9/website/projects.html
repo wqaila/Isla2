@@ -1,0 +1,584 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="次元萌盒 · 项目全景汇总 - 涵盖产品方案、台词识别工具、模型部署、LoRA微调、Gemma探索、完整AI聊天系统六个子项目">
+    <meta name="keywords" content="AI,LLM,LoRA,Ollama,角色扮演,FastAPI,WebSocket,RAG,二次元,安卓">
+    <meta property="og:title" content="次元萌盒 · 项目全景汇总">
+    <meta property="og:description" content="次元萌盒——从产品方案到完整AI聊天系统，6个子项目全景一览">
+    <meta property="og:type" content="website">
+    <title>次元萌盒 · 项目全景汇总</title>
+    <style>
+        :root {
+            --pink-50: #fdf2f8;
+            --pink-100: #fce7f3;
+            --pink-200: #fbcfe8;
+            --pink-300: #f9a8d4;
+            --pink-400: #f472b6;
+            --pink-500: #ec4899;
+            --pink-600: #db2777;
+            --pink-700: #be185d;
+            --pink-800: #9d174d;
+            --pink-900: #831843;
+            --purple-400: #c084fc;
+            --purple-500: #a855f7;
+            --purple-600: #9333ea;
+            --purple-700: #7e22ce;
+            --purple-800: #6b21a8;
+            --purple-900: #581c87;
+            --rose-400: #fb7185;
+            --rose-500: #f43f5e;
+            --bg-dark: #0f0a1a;
+            --bg-card: #1a1029;
+            --bg-card-hover: #221538;
+            --text-primary: #f8f0ff;
+            --text-secondary: #c4b5d4;
+            --text-muted: #8b7a9e;
+            --border-color: #2d1f42;
+            --gradient-hero: linear-gradient(135deg, #ec4899 0%, #a855f7 40%, #6366f1 100%);
+            --gradient-card: linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(168, 85, 247, 0.08));
+            --gradient-btn: linear-gradient(135deg, #ec4899, #a855f7);
+            --shadow-glow: 0 0 30px rgba(236, 72, 153, 0.15);
+            --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+            --green-400: #4ade80;
+            --yellow-400: #fbbf24;
+            --blue-400: #60a5fa;
+            --red-400: #f87171;
+            --cyan-400: #22d3ee;
+            --orange-400: #fb923c;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background:
+                radial-gradient(ellipse at 20% 10%, rgba(236, 72, 153, 0.05) 0%, transparent 55%),
+                radial-gradient(ellipse at 80% 40%, rgba(168, 85, 247, 0.06) 0%, transparent 55%),
+                radial-gradient(ellipse at 40% 85%, rgba(99, 102, 241, 0.04) 0%, transparent 55%);
+            pointer-events: none; z-index: 0;
+        }
+
+        .navbar { position: fixed; top: 0; left: 0; right: 0; z-index: 1000; background: rgba(15, 10, 26, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-bottom: 1px solid var(--border-color); }
+        .navbar-container { max-width: 1200px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 64px; }
+        .navbar-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-size: 1.2rem; font-weight: 700; background: var(--gradient-hero); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .navbar-links { display: flex; gap: 6px; list-style: none; flex-wrap: wrap; }
+        .navbar-links a { text-decoration: none; color: var(--text-secondary); padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; transition: all 0.2s; }
+        .navbar-links a:hover { color: var(--pink-300); background: rgba(236, 72, 153, 0.1); }
+
+        .hero { position: relative; z-index: 1; min-height: 85vh; display: flex; align-items: center; justify-content: center; text-align: center; padding: 120px 24px 60px; }
+        .hero-content { max-width: 850px; }
+        .hero-badge { display: inline-block; padding: 6px 20px; border-radius: 50px; font-size: 0.875rem; font-weight: 500; background: rgba(236, 72, 153, 0.1); border: 1px solid rgba(236, 72, 153, 0.25); color: var(--pink-400); margin-bottom: 24px; }
+        .hero h1 { font-size: clamp(2.2rem, 5vw, 3.5rem); font-weight: 800; line-height: 1.2; margin-bottom: 20px; background: var(--gradient-hero); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .hero-subtitle { font-size: 1.1rem; color: var(--text-secondary); max-width: 620px; margin: 0 auto 36px; line-height: 1.8; }
+        .hero-stats { display: flex; gap: 40px; justify-content: center; margin-top: 50px; flex-wrap: wrap; }
+        .stat-item { text-align: center; }
+        .stat-number { font-size: 2.5rem; font-weight: 800; background: var(--gradient-hero); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .stat-label { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; }
+
+        .section { position: relative; z-index: 1; padding: 80px 24px; max-width: 1200px; margin: 0 auto; }
+        .section-header { text-align: center; margin-bottom: 56px; }
+        .section-badge { display: inline-block; padding: 4px 16px; border-radius: 50px; font-size: 0.8rem; font-weight: 600; background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.25); color: var(--purple-400); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .section-title { font-size: clamp(1.7rem, 4vw, 2.3rem); font-weight: 800; margin-bottom: 10px; }
+        .section-desc { font-size: 1rem; color: var(--text-secondary); max-width: 600px; margin: 0 auto; }
+
+        .roadmap { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 20px; padding: 48px 32px; overflow-x: auto; }
+        .roadmap-title { text-align: center; font-size: 1.15rem; font-weight: 700; margin-bottom: 36px; color: var(--pink-300); }
+        .roadmap-flow { display: flex; flex-direction: column; gap: 20px; align-items: center; min-width: 600px; }
+        .roadmap-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; justify-content: center; }
+        .roadmap-node { background: var(--bg-card-hover); border: 1px solid var(--border-color); border-radius: 14px; padding: 18px 22px; text-align: center; min-width: 140px; transition: all 0.3s; cursor: default; }
+        .roadmap-node:hover { border-color: var(--pink-500); box-shadow: var(--shadow-glow); transform: translateY(-2px); }
+        .roadmap-node.highlight { border-color: var(--pink-500); box-shadow: 0 0 20px rgba(236,72,153,0.2); }
+        .roadmap-node.highlight-xl { border: 2px solid var(--pink-500); box-shadow: 0 0 30px rgba(236,72,153,0.35); background: linear-gradient(135deg, rgba(236,72,153,0.1), rgba(168,85,247,0.1)); }
+        .node-icon { font-size: 2rem; margin-bottom: 8px; }
+        .node-name { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+        .node-desc { font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; }
+        .node-status { display: inline-block; padding: 2px 10px; border-radius: 50px; font-size: 0.7rem; font-weight: 600; margin-top: 8px; }
+        .status-done { background: rgba(34,197,94,0.12); color: var(--green-400); }
+        .status-wip { background: rgba(251,191,36,0.12); color: var(--yellow-400); }
+        .status-idea { background: rgba(59,130,246,0.12); color: var(--blue-400); }
+        .roadmap-arrow-down { font-size: 2rem; color: var(--pink-500); text-align: center; }
+        .roadmap-arrow-right { font-size: 1.5rem; color: var(--purple-400); margin: 0 4px; }
+
+        .project-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 20px; overflow: hidden; margin-bottom: 32px; transition: all 0.3s; }
+        .project-card:hover { border-color: rgba(236,72,153,0.25); box-shadow: var(--shadow-glow); }
+        .project-header { padding: 28px 32px 20px; display: flex; align-items: flex-start; gap: 20px; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; }
+        .project-icon { width: 60px; height: 60px; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 2rem; flex-shrink: 0; background: var(--gradient-card); }
+        .project-icon.c1 { background: linear-gradient(135deg, rgba(236,72,153,0.2), rgba(168,85,247,0.2)); }
+        .project-icon.c2 { background: linear-gradient(135deg, rgba(34,211,238,0.2), rgba(59,130,246,0.2)); }
+        .project-icon.c3 { background: linear-gradient(135deg, rgba(251,191,36,0.2), rgba(245,158,11,0.2)); }
+        .project-icon.c4 { background: linear-gradient(135deg, rgba(168,85,247,0.25), rgba(236,72,153,0.25)); }
+        .project-icon.c5 { background: linear-gradient(135deg, rgba(74,222,128,0.2), rgba(34,197,94,0.2)); }
+        .project-icon.c6 { background: linear-gradient(135deg, rgba(236,72,153,0.3), rgba(168,85,247,0.3)); }
+        .project-title-area { flex: 1; min-width: 200px; }
+        .project-tag { display: inline-block; padding: 3px 12px; border-radius: 50px; font-size: 0.72rem; font-weight: 600; margin-bottom: 10px; }
+        .tag-product { background: rgba(236,72,153,0.12); color: var(--pink-400); }
+        .tag-tool { background: rgba(34,211,238,0.12); color: var(--cyan-400); }
+        .tag-deploy { background: rgba(251,191,36,0.12); color: var(--yellow-400); }
+        .tag-training { background: rgba(168,85,247,0.12); color: var(--purple-400); }
+        .tag-inference { background: rgba(74,222,128,0.12); color: var(--green-400); }
+        .tag-system { background: linear-gradient(135deg, rgba(236,72,153,0.15), rgba(168,85,247,0.15)); color: var(--pink-300); }
+        .project-header h3 { font-size: 1.4rem; font-weight: 800; margin-bottom: 6px; }
+        .project-header .desc { font-size: 0.92rem; color: var(--text-secondary); }
+        .project-body { padding: 24px 32px 28px; }
+        .project-body h4 { font-size: 0.95rem; font-weight: 700; color: var(--pink-300); margin: 20px 0 12px; padding-bottom: 6px; border-bottom: 1px dashed var(--border-color); }
+        .project-body h4:first-child { margin-top: 0; }
+        .file-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+        .file-item { background: var(--bg-card-hover); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 16px; font-size: 0.85rem; transition: all 0.2s; }
+        .file-item:hover { border-color: rgba(236,72,153,0.25); background: rgba(236,72,153,0.04); }
+        .file-name { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+        .file-desc { color: var(--text-muted); font-size: 0.8rem; line-height: 1.5; }
+        .file-highlight { border-left: 3px solid var(--pink-500); background: linear-gradient(90deg, rgba(236,72,153,0.06) 0%, var(--bg-card-hover) 30%); }
+
+        .info-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 16px; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color); }
+        .info-table th { background: var(--bg-card-hover); padding: 10px 16px; text-align: left; font-weight: 600; color: var(--pink-300); white-space: nowrap; }
+        .info-table td { padding: 9px 16px; border-top: 1px solid var(--border-color); color: var(--text-secondary); }
+        .info-table tr:hover td { background: rgba(236,72,153,0.03); }
+
+        .tech-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+        .tech-tag { padding: 5px 14px; border-radius: 50px; font-size: 0.8rem; font-weight: 500; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-secondary); transition: all 0.3s; }
+        .tech-tag:hover { border-color: var(--pink-500); color: var(--pink-300); }
+
+        .summary-box { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 20px; padding: 36px 40px; text-align: center; position: relative; overflow: hidden; }
+        .summary-box::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle at center, rgba(236,72,153,0.06) 0%, transparent 60%); pointer-events: none; }
+        .summary-box h2 { font-size: 1.8rem; font-weight: 800; margin-bottom: 16px; position: relative; }
+        .summary-box p { color: var(--text-secondary); font-size: 1rem; max-width: 700px; margin: 0 auto 24px; position: relative; line-height: 1.8; }
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; position: relative; }
+        .summary-item { background: var(--bg-card-hover); border-radius: 14px; padding: 20px; border: 1px solid var(--border-color); transition: all 0.3s; }
+        .summary-item:hover { border-color: var(--pink-500); }
+        .summary-item .s-icon { font-size: 2rem; margin-bottom: 8px; }
+        .summary-item .s-title { font-weight: 700; margin-bottom: 4px; }
+        .summary-item .s-val { font-size: 0.85rem; color: var(--text-muted); }
+
+        .footer { position: relative; z-index: 1; border-top: 1px solid var(--border-color); padding: 40px 24px; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
+        .footer a { color: var(--pink-400); text-decoration: none; }
+
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in-up { animation: fadeInUp 0.6s ease forwards; opacity: 0; }
+        .delay-1 { animation-delay: 0.1s; } .delay-2 { animation-delay: 0.2s; } .delay-3 { animation-delay: 0.3s; } .delay-4 { animation-delay: 0.4s; } .delay-5 { animation-delay: 0.5s; } .delay-6 { animation-delay: 0.6s; }
+
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--pink-700); }
+
+        @media (max-width: 768px) {
+            .navbar-links { display: none; }
+            .hero-stats { gap: 20px; }
+            .stat-number { font-size: 1.8rem; }
+            .section { padding: 56px 16px; }
+            .project-header { padding: 20px; }
+            .project-body { padding: 16px 20px 20px; }
+            .file-list { grid-template-columns: 1fr; }
+            .summary-grid { grid-template-columns: 1fr 1fr; }
+            .roadmap-flow { min-width: auto; }
+            .roadmap-row { flex-direction: column; }
+            .roadmap-arrow-right { transform: rotate(90deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="#" class="navbar-brand"><span>📋</span> 次元萌盒 · 全景汇总</a>
+            <ul class="navbar-links">
+                <li><a href="#roadmap">项目关系</a></li>
+                <li><a href="#c1">c1</a></li>
+                <li><a href="#c2">c2</a></li>
+                <li><a href="#c3">c3</a></li>
+                <li><a href="#c4">c4</a></li>
+                <li><a href="#c5">c5</a></li>
+                <li><a href="#c6">c6</a></li>
+                <li><a href="#summary">总结</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="hero-content">
+            <div class="hero-badge fade-in-up">📊 全景视角 · 完整复盘</div>
+            <h1 class="fade-in-up delay-1">次元萌盒<br>项目全景汇总</h1>
+            <p class="hero-subtitle fade-in-up delay-2">
+                「次元萌盒」——从产品概念到完整AI聊天系统，6个子项目、50+源代码文件、横跨方案设计·数据采集·模型训练·推理部署·系统集成五大阶段，打造能"听懂你、记住你、懂你心情"的智能二次元AI伙伴。
+            </p>
+            <div class="hero-stats fade-in-up delay-3">
+                <div class="stat-item"><div class="stat-number">6</div><div class="stat-label">子项目</div></div>
+                <div class="stat-item"><div class="stat-number">50+</div><div class="stat-label">源文件</div></div>
+                <div class="stat-item"><div class="stat-number">5</div><div class="stat-label">开发阶段</div></div>
+                <div class="stat-item"><div class="stat-number">7B</div><div class="stat-label">模型参数规模</div></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="roadmap">
+        <div class="section-header">
+            <div class="section-badge">Project Roadmap</div>
+            <h2 class="section-title">项目演进路线图</h2>
+            <p class="section-desc">六个子项目从产品方案到完整系统的递进关系与依赖链路</p>
+        </div>
+        <div class="roadmap">
+            <div class="roadmap-title">🗺️ 从概念到落地的完整演进路径</div>
+            <div class="roadmap-flow">
+                <div class="roadmap-row">
+                    <div class="roadmap-node">
+                        <div class="node-icon">💡</div>
+                        <div class="node-name">c1 产品方案</div>
+                        <div class="node-desc">次元萌盒·概念定义<br>MVP说明书·技术选型</div>
+                        <div class="node-status status-idea">📋 方案阶段</div>
+                    </div>
+                    <div class="roadmap-arrow-right">→</div>
+                    <div class="roadmap-node">
+                        <div class="node-icon">🎬</div>
+                        <div class="node-name">c2 辅助工具</div>
+                        <div class="node-desc">台词识别采集<br>语音+OCR双通道</div>
+                        <div class="node-status status-wip">🔡 辅助工具</div>
+                    </div>
+                </div>
+                <div class="roadmap-arrow-down">↓</div>
+                <div class="roadmap-row">
+                    <div class="roadmap-node">
+                        <div class="node-icon">📦</div>
+                        <div class="node-name">c3 模型部署</div>
+                        <div class="node-desc">Qwen-7B量化部署<br>Android+PC方案</div>
+                        <div class="node-status status-done">✅ 基建完成</div>
+                    </div>
+                    <div class="roadmap-arrow-right">→</div>
+                    <div class="roadmap-node highlight">
+                        <div class="node-icon">🎆</div>
+                        <div class="node-name">c4 LoRA微调 ⭐</div>
+                        <div class="node-desc">爱莉希雅角色训练<br>数据→训练→评估</div>
+                        <div class="node-status status-done">✅ 训练完成</div>
+                    </div>
+                </div>
+                <div class="roadmap-arrow-down">↓</div>
+                <div class="roadmap-row">
+                    <div class="roadmap-node">
+                        <div class="node-icon">🖥️</div>
+                        <div class="node-name">c5 Gemma探索</div>
+                        <div class="node-desc">Ollama方案验证<br>GGUF模型修复调试</div>
+                        <div class="node-status status-done">✅ 验证通过</div>
+                    </div>
+                    <div class="roadmap-arrow-right">→</div>
+                    <div class="roadmap-node highlight-xl">
+                        <div class="node-icon">🌟</div>
+                        <div class="node-name">c6 完整系统 ⭐⭐⭐</div>
+                        <div class="node-desc">集大成者·生产级聊天系统<br>RAG记忆+情感引擎+用户学习<br>Android+树莓派+公网</div>
+                        <div class="node-status status-done">✅ 已运行</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="c1">
+        <div class="section-header">
+            <div class="section-badge">Phase 1 · 产品概念</div>
+            <h2 class="section-title">c1 — 次元萌盒 · 产品方案与MVP原型</h2>
+            <p class="section-desc">整个项目的蓝图，定义了产品愿景、核心功能和技术路线</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon c1">📋</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-product">产品方案</div>
+                    <h3>次元萌盒 · 最小原型（MVP）技术实现方案</h3>
+                    <div class="desc">面向二次元与科技爱好者的桌面级 AI 互动玩具。以"沉浸式二次元陪伴"为核心定位，打造能看、能听、能说、能陪你"闹腾"的二次元伙伴。基于RK3568主板 + 10.1寸触控屏 + 摄像头 + 扬声器的硬件方案。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>📄 核心文件</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight"><div class="file-name">最小原型说明书.md (247行)</div><div class="file-desc">完整MVP技术实现说明书：详细硬件清单(RK3568/10.1寸屏/摄像头/锂电池，约860元)、AI模型训练部署方案(Qwen-7B LoRA/MediaPipe手势/VITS语音/SQLite记忆)、软件集成方案、联调测试标准</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">1.md</div><div class="file-desc">产品方案文档：用户痛点、四大核心功能(沉浸式对话/手势彩蛋/次元趣味玩法/人设定制)、AI技术架构(LLM+CV+TTS+记忆系统)、软硬件规划</div></div>
+                </div>
+                <h4>🎆 产品核心规格</h4>
+                <table class="info-table">
+                    <tr><th style="width:25%">维度</th><th>内容</th></tr>
+                    <tr><td>MVP角色</td><td>《崩坏3》爱莉希雅</td></tr>
+                    <tr><td>核心功能</td><td>沉浸式对话 / 3个手势彩蛋 / 软萌中二人设切换 / 上下文记忆≥5轮</td></tr>
+                    <tr><td>硬件方案</td><td>RK3568主板 + 10.1寸触控屏 + USB摄像头 + 双扬声器 + 5000mAh电池 + 3D打印外壳</td></tr>
+                    <tr><td>AI技术栈</td><td>LLM大语言模型 + 计算机视觉CV + 语音合成TTS + AI记忆系统</td></tr>
+                    <tr><td>验证指标</td><td>对话无OOC / 手势准确率≥85% / 声纹相似度≥80% / 整机续航≥4小时</td></tr>
+                </table>
+                <h4>🔗 涉及技术</h4>
+                <div class="tech-tags">
+                    <span class="tech-tag">LLM 大语言模型</span><span class="tech-tag">Computer Vision</span><span class="tech-tag">TTS 语音合成</span><span class="tech-tag">MediaPipe 手势识别</span><span class="tech-tag">LoRA 微调</span><span class="tech-tag">RK3568 嵌入式</span><span class="tech-tag">3D打印</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="c2">
+        <div class="section-header">
+            <div class="section-badge">Phase 1b · 辅助工具</div>
+            <h2 class="section-title">c2 — OCR台词识别工具 + B站下载器</h2>
+            <p class="section-desc">为语料采集提供技术支持，从视频中自动提取台词文本</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon c2">🎬</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-tool">辅助工具</div>
+                    <h3>视频台词识别工具 + B站视频下载器</h3>
+                    <div class="desc">基于 OpenCV + PaddleOCR + Whisper 的综合台词提取工具，同时支持画面OCR和语音识别双通道，为后续模型训练准备高质量语料。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>📄 核心文件</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight"><div class="file-name">chibtaici/main.py</div><div class="file-desc">台词识别主程序：支持faster-whisper/openai-whisper语音识别 + PaddleOCR画面识别，含交互式OCR区域设置、简繁体自动转换、智能文本过滤去重、合并去重等完整管线</div></div>
+                    <div class="file-item"><div class="file-name">chibtaici/ocr_region_selector.html</div><div class="file-desc">可视化OCR区域选择网页：上传视频截图→鼠标框选字幕区域→自动计算相对坐标→一键复制命令行参数</div></div>
+                    <div class="file-item"><div class="file-name">chibtaici/requirements.txt</div><div class="file-desc">依赖清单：PyTorch CUDA 11.8、PaddleOCR GPU 2.7.0、faster-whisper、OpenCV 4.6等</div></div>
+                    <div class="file-item"><div class="file-name">bilibili_downloader/ (空目录)</div><div class="file-desc">B站视频下载工具预留目录</div></div>
+                </div>
+                <h4>🔗 涉及技术</h4>
+                <div class="tech-tags">
+                    <span class="tech-tag">OpenCV</span><span class="tech-tag">PaddleOCR</span><span class="tech-tag">Whisper</span><span class="tech-tag">faster-whisper</span><span class="tech-tag">PyTorch CUDA</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="c3">
+        <div class="section-header">
+            <div class="section-badge">Phase 2 · 部署基建</div>
+            <h2 class="section-title">c3 — Qwen-7B 本地部署 + Android App 骨架</h2>
+            <p class="section-desc">大模型的本地化部署基础设施，支持 RK3568 开发板和 Android 手机离线推理</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon c3">📦</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-deploy">模型部署</div>
+                    <h3>Qwen-7B 本地部署 + Android App 骨架</h3>
+                    <div class="desc">建立从模型下载→量化→GGUF转换→Android部署的完整管线。提供llama.cpp集成方案，实现Qwen-7B在手机上的离线推理。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>📄 核心文件</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight"><div class="file-name">merge_and_convert_model.py</div><div class="file-desc">一站式工具：LoRA合并→GGUF转换→量化→复制到Android assets，支持灵活选择执行步骤组合</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">merge_lora_only.py</div><div class="file-desc">独立LoRA权重合并工具，支持float16/bfloat16/float32精度</div></div>
+                    <div class="file-item"><div class="file-name">convert_to_gguf.py</div><div class="file-desc">GGUF格式转换工具</div></div>
+                    <div class="file-item"><div class="file-name">download_qwen_model.py</div><div class="file-desc">从ModelScope国内镜像下载Qwen-7B-Chat-Int4模型</div></div>
+                    <div class="file-item"><div class="file-name">token_truncation_tool.py</div><div class="file-desc">Token截断工具</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">android_app/ (Kotlin+JNI)</div><div class="file-desc">Android项目骨架：MainActivity.kt + LlamaEngine.kt + JNI llama-helper.cpp，基于llama.cpp编译</div></div>
+                    <div class="file-item"><div class="file-name">models/gguf/</div><div class="file-desc">GGUF量化模型目录（merged_model_q8_0.gguf约7.7GB等）</div></div>
+                    <div class="file-item"><div class="file-name">docs: README.md / deploy_android.md / android_android_studio_guide.md</div><div class="file-desc">完整项目文档：方案对比、硬件要求、Android部署指南</div></div>
+                </div>
+                <h4>📊 模型量化级别</h4>
+                <table class="info-table">
+                    <tr><th>量化</th><th>大小</th><th>速度</th><th>质量</th><th>推荐场景</th></tr>
+                    <tr><td>F16</td><td>15.2GB</td><td>慢</td><td>最高</td><td>PC端</td></tr>
+                    <tr><td>Q8_0</td><td>7.7GB</td><td>中</td><td>高</td><td>⭐推荐（平衡）</td></tr>
+                    <tr><td>Q4_1</td><td>4.5GB</td><td>快</td><td>中</td><td>手机8GB RAM</td></tr>
+                    <tr><td>Q4_0</td><td>4.2GB</td><td>最快</td><td>中低</td><td>低配手机</td></tr>
+                </table>
+                <h4>🔗 涉及技术</h4>
+                <div class="tech-tags">
+                    <span class="tech-tag">Qwen-7B</span><span class="tech-tag">llama.cpp</span><span class="tech-tag">GGUF格式</span><span class="tech-tag">4-bit量化</span><span class="tech-tag">PEFT LoRA合并</span><span class="tech-tag">Android NDK</span><span class="tech-tag">Kotlin/JNI</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="c4">
+        <div class="section-header">
+            <div class="section-badge">Phase 3 · 核心训练 ⭐</div>
+            <h2 class="section-title">c4 — 爱莉希雅 LoRA 微调项目 ⭐</h2>
+            <p class="section-desc">将产品概念落地为实际的AI角色模型——基于 Qwen2.5-7B 训练崩坏3角色"爱莉希雅"</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon c4">🎆</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-training">LoRA微调</div>
+                    <h3>爱莉希雅 AI角色扮演模型训练管线</h3>
+                    <div class="desc">完整的模型训练生产线：从原始台词数据处理→LoRA微调训练→模型合并转换为GGUF→Ollama部署。已修复20+问题，训练管线成熟稳定。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>📄 核心文件</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight"><div class="file-name">prepare_data.py</div><div class="file-desc">数据预处理引擎：知识库55条+同义提问变体+高频QA重复+拒答/角色保护样本20条+台词加权打分匹配+5轮多轮对话上下文+数据质量校验</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">train_lora.py</div><div class="file-desc">LoRA训练主程序：4-bit NF4量化加载、7模块训练(q/k/v/o/gate/up/down)、EarlyStopping、验证集评估、断点续训支持、完整日志系统</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">post_train.py</div><div class="file-desc">后处理管线：LoRA合并→GGUF F16转换(含chat_template)→量化(llama-quantize)→推理测试，支持灵活跳过各步骤</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">evaluate.py</div><div class="file-desc">多维度模型评估：Perplexity计算+角色一致性(16题)+多轮对话测试+脱角色检测(4个诱导题)</div></div>
+                    <div class="file-item"><div class="file-name">deploy_ollama.py</div><div class="file-desc">Ollama Modelfile自动生成器，支持自定义温度/top_p/上下文长度</div></div>
+                    <div class="file-item"><div class="file-name">data_stats.py</div><div class="file-desc">训练数据统计分析：长度分布、类别分布、回复长度直方图、重复检测</div></div>
+                    <div class="file-item"><div class="file-name">train_config.json</div><div class="file-desc">集中配置：LoRA(r=32/alpha=64/dropout=0.15)、训练(2epoch/lr=1e-4/bf16)、所有路径统一管理</div></div>
+                    <div class="file-item"><div class="file-name">Modelfile</div><div class="file-desc">Ollama部署配置：system prompt定义爱莉希雅人设</div></div>
+                    <div class="file-item"><div class="file-name">lora_output/ (训练产出)</div><div class="file-desc">LoRA adapter + 训练日志 + 3个checkpoint + training_history.json</div></div>
+                    <div class="file-item"><div class="file-name">merged_model/ + gguf_output/</div><div class="file-desc">合并后完整模型 + GGUF量化模型(model-Q8_0.gguf)</div></div>
+                </div>
+                <h4>📊 训练配置</h4>
+                <table class="info-table">
+                    <tr><th style="width:35%">参数</th><th>值</th></tr>
+                    <tr><td>基座模型</td><td>Qwen2.5-7B-Instruct</td></tr>
+                    <tr><td>LoRA秩(r)</td><td>32</td></tr>
+                    <tr><td>LoRA alpha</td><td>64</td></tr>
+                    <tr><td>Dropout</td><td>0.15</td></tr>
+                    <tr><td>训练轮数</td><td>2</td></tr>
+                    <tr><td>学习率</td><td>1e-4</td></tr>
+                    <tr><td>最大序列长度</td><td>1024</td></tr>
+                    <tr><td>训练精度</td><td>4-bit NF4量化 + bf16混合精度</td></tr>
+                    <tr><td>训练模块</td><td>q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj</td></tr>
+                    <tr><td>量化级别</td><td>Q8_0（约8GB）</td></tr>
+                </table>
+                <h4>🔗 涉及技术</h4>
+                <div class="tech-tags">
+                    <span class="tech-tag">Qwen2.5-7B</span><span class="tech-tag">PEFT LoRA</span><span class="tech-tag">4-bit NF4量化</span><span class="tech-tag">BitsAndBytes</span><span class="tech-tag">EarlyStopping</span><span class="tech-tag">GGUF格式</span><span class="tech-tag">Ollama</span><span class="tech-tag">llama.cpp</span><span class="tech-tag">Chat Template</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="c5">
+        <div class="section-header">
+            <div class="section-badge">Phase 4 · 推理验证</div>
+            <h2 class="section-title">c5 — Gemma 模型部署探索</h2>
+            <p class="section-desc">通过 Ollama 实现 LLM 推理服务，探索 Gemma 模型在 CPU 上的推理性能</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon c5">🖥️</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-inference">推理验证</div>
+                    <h3>Ollama推理方案验证 + Gemma模型探索</h3>
+                    <div class="desc">从下载基座模型到Ollama部署的完整流程探索。验证了Gemma-4-E2B-it Q5_K_S模型在CPU上的推理性能，为后续c6的架构设计提供了基础。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>📄 核心文件</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight"><div class="file-name">start_server.py</div><div class="file-desc">llama.cpp推理服务启动脚本：自动查找GGUF文件、获取本机IP、GPU层数配置、显示手机连接URL</div></div>
+                    <div class="file-item"><div class="file-name">download_model.py / fix_download.py</div><div class="file-desc">基模型下载工具 / 下载修复工具</div></div>
+                    <div class="file-item"><div class="file-name">fix_gguf.py / fix_gguf_final.py / verify_gguf.py</div><div class="file-desc">GGUF文件修复/验证工具集</div></div>
+                    <div class="file-item"><div class="file-name">dump_tensors.py</div><div class="file-desc">张量调试工具</div></div>
+                    <div class="file-item"><div class="file-name">check_model.py</div><div class="file-desc">模型检查工具</div></div>
+                    <div class="file-item"><div class="file-name">gemma-4-E2B-it-Q5_K_S.gguf</div><div class="file-desc">当前可用的测试GGUF模型</div></div>
+                    <div class="file-item"><div class="file-name">Modelfile / 10.txt / train_data.json</div><div class="file-desc">配置文件与训练/测试数据</div></div>
+                </div>
+                <h4>📊 实测性能</h4>
+                <table class="info-table">
+                    <tr><th style="width:30%">指标</th><th>数值</th></tr>
+                    <tr><td>测试模型</td><td>Gemma-4-E2B-it Q5_K_S</td></tr>
+                    <tr><td>推理方式</td><td>CPU（Ollama）</td></tr>
+                    <tr><td>生成速度</td><td>4.13 tokens/s</td></tr>
+                    <tr><td>首token延迟</td><td>约12s（模型加载）</td></tr>
+                    <tr><td>预期速度（GPU）</td><td>20-35 tokens/s（Qwen2.5-7B+RTX 3060）</td></tr>
+                </table>
+                <h4>🔗 涉及技术</h4>
+                <div class="tech-tags">
+                    <span class="tech-tag">Ollama</span><span class="tech-tag">Gemma-4-E2B</span><span class="tech-tag">CPU推理</span><span class="tech-tag">llama.cpp</span><span class="tech-tag">GGUF格式</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="c6">
+        <div class="section-header">
+            <div class="section-badge">Phase 5 · 最终系统 ⭐⭐⭐</div>
+            <h2 class="section-title">c6 — 爱莉希雅 AI 完整聊天系统 ⭐⭐⭐</h2>
+            <p class="section-desc">集大成之作——整合所有前置项目成果，打造生产级多端AI聊天系统</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon c6">🌟</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-system">完整系统</div>
+                    <h3>爱莉希雅 AI — 本地LLM聊天系统（集大成）</h3>
+                    <div class="desc">整合人设注入+RAG记忆+情感引擎+用户学习+多端客户端+公网隧道的完整AI聊天系统。支持Ollama本地推理和6家云端API智能切换，Android/树莓派/浏览器均可连接。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>🖥️ PC 服务端核心模块</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight"><div class="file-name">server/main.py</div><div class="file-desc">FastAPI主入口：REST API(30+端点)+WebSocket+管理面板+速率限制+Token认证+全局异常处理+优雅关闭</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">server/ollama_client.py</div><div class="file-desc">Ollama客户端：动态num_predict、5层防重复检测(句/短语/中块/大段/字频)、实时截断、MAX_OUTPUT_CHARS硬限制</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">server/elysia_prompt.py</div><div class="file-desc">爱莉希雅人设：三层性格体系+8组Few-Shot示例+时间感知注入+严格反重复指令+摘要输出约束</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">server/memory.py</div><div class="file-desc">RAG记忆系统：双后端Chromadb/TF-IDF、自动事实提取(30+模式)、记忆衰减(30天/90天)、自动清理、多集合管理</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">server/emotion_engine.py</div><div class="file-desc">情感引擎：7维分析(关键词+句式+标点+否定词四层)、趋势追踪、情绪自适应Prompt、AI回复一致性检查</div></div>
+                    <div class="file-item file-highlight"><div class="file-name">server/user_learning.py</div><div class="file-desc">用户学习：记忆神经网络(节点+边+权重衰减)、LLM辅助深度分析、五大人格特质评估、多设备独立画像、个性化上下文注入</div></div>
+                    <div class="file-item"><div class="file-name">server/cloud_client.py</div><div class="file-desc">云端API客户端：6家提供商(DeepSeek/OpenAI/通义千问/智谱/Kimi/自定义)</div></div>
+                    <div class="file-item"><div class="file-name">server/database.py / config.py</div><div class="file-desc">SQLite数据库(4张表：会话/消息/连接日志/系统日志) + 服务配置管理</div></div>
+                    <div class="file-item"><div class="file-name">server/time_context.py / config_persistence.py / connection_manager.py / logger_service.py</div><div class="file-desc">时间上下文感知 / 运行时配置持久化 / WebSocket连接管理 / 统一日志服务</div></div>
+                </div>
+                <h4>📱 客户端</h4>
+                <div class="file-list">
+                    <div class="file-item"><div class="file-name">android/ (Kotlin+Compose)</div><div class="file-desc">Android客户端：WS/WSS双协议、指数退避自动重连、消息操作(复制/重发/重新生成)、发送状态指示、深色/浅色主题、配置持久化</div></div>
+                    <div class="file-item"><div class="file-name">rpi_client/ (Python)</div><div class="file-desc">树莓派客户端：WebSocket连接+命令行交互工具(elysia_cli.py)+一键安装脚本</div></div>
+                    <div class="file-item"><div class="file-name">website/ (静态网站)</div><div class="file-desc">项目展示网站：index.html主页 + projects.html项目全景汇总 + start_public.bat启动脚本</div></div>
+                    <div class="file-item"><div class="file-name">server/static/index.html</div><div class="file-desc">Web管理面板：仪表盘/聊天测试/Ollama设置/云端API/服务设置/日志/连接设备，7个功能页面</div></div>
+                </div>
+                <h4>🔗 涉及技术</h4>
+                <div class="tech-tags">
+                    <span class="tech-tag">FastAPI</span><span class="tech-tag">WebSocket</span><span class="tech-tag">Ollama</span><span class="tech-tag">RAG/TF-IDF</span><span class="tech-tag">ChromaDB</span><span class="tech-tag">SQLite</span><span class="tech-tag">Kotlin Compose</span><span class="tech-tag">Cloudflare Tunnel</span><span class="tech-tag">Jinja2 Prompt</span>
+                </div>
+                <h4>📊 系统能力总览</h4>
+                <table class="info-table">
+                    <tr><th style="width:30%">维度</th><th>能力</th></tr>
+                    <tr><td>推理后端</td><td>Ollama本地(优先) + 6家云端API(兜底)，Auto模式智能切换</td></tr>
+                    <tr><td>API端点</td><td>30+ REST端点 + 2个WebSocket端点 + 管理面板</td></tr>
+                    <tr><td>模型路由</td><td>ollama / cloud / auto 三种模式</td></tr>
+                    <tr><td>角色注入</td><td>System Prompt + 8 Few-Shot + 时间感知 + 情感自适应</td></tr>
+                    <tr><td>记忆系统</td><td>TF-IDF(默认轻量)/ChromaDB(精准语义)双后端</td></tr>
+                    <tr><td>情感识别</td><td>7维分析 + 趋势追踪 + 回复一致性检查</td></tr>
+                    <tr><td>用户学习</td><td>记忆神经网络+LLM分析+知识图谱+个性化注入</td></tr>
+                    <tr><td>防重复</td><td>5层实时检测+动态num_predict+硬字符限制(800)</td></tr>
+                    <tr><td>安全防护</td><td>Token认证+IP速率限制+CORS+全局异常处理</td></tr>
+                    <tr><td>公网访问</td><td>Cloudflare Tunnel免费HTTPS/WSS隧道</td></tr>
+                    <tr><td>分布式推理</td><td>支持多电脑协同(独显推理+核显服务分离部署)</td></tr>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="summary">
+        <div class="section-header">
+            <div class="section-badge">Summary</div>
+            <h2 class="section-title">项目全景总结</h2>
+            <p class="section-desc">从一张白纸到完整AI系统，六个子项目递进演化</p>
+        </div>
+        <div class="summary-box">
+            <h2>🔍 从概念到量产的全链路闭环</h2>
+            <p>
+                这六个子项目展示了一条完整的AI产品研发路径：<br>
+                <strong>产品定义</strong>（c1）→ <strong>数据采集工具</strong>（c2）→ <strong>模型部署基建</strong>（c3）→ <strong>角色微调训练</strong>（c4 ⭐）→ <strong>推理方案验证</strong>（c5）→ <strong>完整系统交付</strong>（c6 ⭐⭐⭐）
+            </p>
+            <div class="summary-grid">
+                <div class="summary-item"><div class="s-icon">📋</div><div class="s-title">c1</div><div class="s-val">产品方案<br>MVP说明书</div></div>
+                <div class="summary-item"><div class="s-icon">🎬</div><div class="s-title">c2</div><div class="s-val">OCR台词识别<br>B站下载器</div></div>
+                <div class="summary-item"><div class="s-icon">📦</div><div class="s-title">c3</div><div class="s-val">Qwen部署<br>Android骨架</div></div>
+                <div class="summary-item"><div class="s-icon">🎆</div><div class="s-title">c4 ⭐</div><div class="s-val">LoRA微调<br>爱莉希雅角色训练</div></div>
+                <div class="summary-item"><div class="s-icon">🖥️</div><div class="s-title">c5</div><div class="s-val">Gemma探索<br>Ollama验证</div></div>
+                <div class="summary-item" style="border-color: var(--pink-500); box-shadow: 0 0 20px rgba(236,72,153,0.2);"><div class="s-icon">🌟</div><div class="s-title">c6 ⭐⭐⭐</div><div class="s-val">完整系统<br>生产级交付</div></div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <p>次元萌盒 项目全景汇总 · 覆盖 c1～c6 六个子项目 · <a href="index.html">返回爱莉希雅 AI 首页</a></p>
+        <p style="margin-top: 8px; font-size: 0.78rem;">技术栈：Python · Kotlin · FastAPI · Ollama · LoRA · RAG · WebSocket · SQLite · llama.cpp</p>
+    </footer>
+
+    <script>
+        const observer = new IntersectionObserver((entries) => { entries.forEach(entry => { if (entry.isIntersecting) { entry.target.style.opacity = '1'; entry.target.style.transform = 'translateY(0)'; } }); }, { threshold: 0.1 });
+        document.querySelectorAll('.fade-in-up').forEach(el => { observer.observe(el); });
+    </script>
+</body>
+</html>

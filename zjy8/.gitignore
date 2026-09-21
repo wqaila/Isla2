@@ -1,0 +1,17 @@
+# 模型权重与模型仓库数据（体积巨大，不入库）
+models/
+ollama-models/
+*.gguf
+*.safetensors
+*.bin
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 下载临时目录
+downloads/
+
+# 误产生的垃圾文件与日志
+$null
+*.log

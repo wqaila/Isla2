@@ -1,0 +1,24 @@
+# 忽略所有 downloads 目录
+downloads/
+bilibili_downloader/downloads/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Cookie 文件（敏感信息）
+bilibili_cookies.txt
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 虚拟环境
+.venv/
+venv/
+env/

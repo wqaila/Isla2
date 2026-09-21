@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+websockets==14.1
+cryptography>=41.0.0
+
+# 记忆检索（MEMORY_BACKEND 默认就是 tfidf，缺了它只能退化成字符级关键词匹配）
+scikit-learn>=1.3.0
+
+# 可选：/api/health/detailed 用它看内存/CPU；未安装时该接口会自动降级而不是报错
+psutil>=5.9.0
+
+# 可选记忆后端（语义检索更准，但常驻内存约 400MB）
+# chromadb>=0.4.0
+
+# 说明：原依赖里的 slowapi 从未被任何代码 import（限流是 main.py 里手写的），已移除。

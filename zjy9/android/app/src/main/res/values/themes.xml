@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ElysiaAI" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#FF1A1A3E</item>
+        <item name="android:navigationBarColor">#FF0A0A1A</item>
+        <item name="android:windowBackground">#FF0A0A1A</item>
+    </style>
+</resources>

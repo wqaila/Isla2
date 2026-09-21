@@ -1,0 +1,21 @@
+# 通用
+# 降级到 4.6.0.66 以兼容 PaddleOCR 2.7.0
+opencv-python==4.6.0.66
+numpy==1.24.3
+moviepy==1.0.3
+faster-whisper
+imageio[ffmpeg]==2.31.1
+
+# PyTorch (CUDA 11.8)
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.1.0+cu118
+torchvision==0.16.0+cu118
+
+# OCR (PaddleOCR GPU)
+# 降级到 2.6.2 以解决 PIR 模式兼容性问题
+paddlepaddle-gpu==2.6.2
+# 降级到 2.7.0 以兼容 PaddlePaddle 2.6.2
+paddleocr==2.7.0
+
+# 简繁体转换（确保输出简体字）
+opencc-python-reimplemented

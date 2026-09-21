@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+AI 字幕提取模块
+支持通过 API 和 Playwright 两种方式提取 Bilibili AI 字幕
+"""
+
+import os
+import re
+import json
+import time
+import urllib.request
+import urllib.parse
+import ssl
+from typing import Optional, List, Dict, Any, Tuple
+from datetime import datetime
+
+try:
+    from .wbi import build_signed_query
+except ImportError:  # 直接以脚本方式运行本文件时回退
+    from wbi import build_signed_query
+
+
+class SubtitleExtractor:
+    """Bilibili AI 字幕提取器"""
+    
+    def __init__(self, cookie_path: str = None, output_dir: str = "downloads",
+                 verify_ssl: bool = True):
+        """
+        :param cookie_path: Cookie 文件路径
+        :param output_dir: 输出目录
+        :param verify_ssl: 是否校验 HTTPS 证书（默认校验，仅在明确要求时关闭）
+        """
+        self.cookie_path = cookie_path
+        self.output_dir = output_dir
+        self.cookies = self._load_cookies()
+        
+        # SSL 上下文（默认校验证书）
+        self.ssl_context = ssl.create_default_context()
+        if not verify_ssl:
+            # 仅在显式关闭时才跳过证书验证
+            self.ssl_context.check_hostname = False
+            self.ssl_context.verify_mode = ssl.CERT_NONE
+    
+    def _load_cookies(self) -> Dict[str, str]:
+        """从 Cookie 文件加载 Cookie"""
+        cookies = {}
+        if self.cookie_path and os.path.exists(self.cookie_path):
+            try:
+                with open(self.cookie_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            parts = line.split('\t')
+                            if len(parts) >= 7:
+                                cookies[parts[5]] = parts[6]
+            except Exception as e:
+                print(f"加载 Cookie 失败：{e}")
+        return cookies
+    
+    def _get_video_id(self, url: str) -> Optional[str]:
+        """从 URL 中提取视频 ID"""
+        patterns = [
+            r'video/(BV\w+)',
+            r'BV(\w+)',
+            r'av(\d+)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        
+        return None
+    
+    def _get_video_info(self, video_id: str) -> Tuple[Optional[int], Optional[int]]:
+        """
+        通过 view 接口获取视频的 aid 与 cid
+        :return: (aid, cid)，失败时返回 (None, None)
+        """
+        api_url = f"https://api.bilibili.com/x/web-interface/view?bvid={video_id}"
+        
+        try:
+            req = urllib.request.Request(
+                api_url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://www.bilibili.com',
+                }
+            )
+            if self.cookies:
+                cookie_str = '; '.join(f"{k}={v}" for k, v in self.cookies.items())
+                req.add_header('Cookie', cookie_str)
+            
+            with urllib.request.urlopen(req, timeout=30, context=self.ssl_context) as response:
+                data = json.loads(response.read().decode('utf-8'))
+            
+            if data.get('code') != 0:
+                print(f"  获取视频信息失败：{data.get('message', '未知错误')}")
+                return None, None
+            
+            info = data.get('data', {})
+            return info.get('aid'), info.get('cid')
+        except Exception as e:
+            print(f"  获取视频信息失败：{e}")
+            return None, None
+    
+    def _get_subtitle_url_via_api(self, video_url: str) -> Optional[str]:
+        """通过 API 获取字幕 URL"""
+        try:
+            video_id = self._get_video_id(video_url)
+            if not video_id:
+                print("  无法从 URL 提取视频 ID")
+                return None
+            
+            # 先取真实的 aid/cid，不能硬编码
+            aid, cid = self._get_video_info(video_id)
+            if not cid:
+                print("  无法获取视频 cid，跳过 API 方式")
+                return None
+            
+            # Bilibili 字幕 API（需要 WBI 签名）
+            api_url = "https://api.bilibili.com/x/player/wbi/v2"
+            try:
+                query = build_signed_query(
+                    {"cid": cid, "aid": aid or 0, "bvid": video_id},
+                    ssl_context=self.ssl_context,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Referer': 'https://www.bilibili.com',
+                    }
+                )
+            except Exception as e:
+                print(f"  WBI 签名失败：{e}")
+                return None
+            
+            full_url = f"{api_url}?{query}"
+            
+            print(f"  请求 API: {full_url}")
+            
+            req = urllib.request.Request(
+                full_url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://www.bilibili.com',
+                }
+            )
+            
+            # 添加 Cookie
+            if self.cookies:
+                cookie_str = '; '.join(f"{k}={v}" for k, v in self.cookies.items())
+                req.add_header('Cookie', cookie_str)
+            
+            with urllib.request.urlopen(req, timeout=30, context=self.ssl_context) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                
+                if data.get('code') == 0:
+                    result = data.get('data', {})
+                    subtitle = result.get('subtitle', {})
+                    subtitles = subtitle.get('list', [])
+                    
+                    if subtitles:
+                        # 获取第一个字幕 URL
+                        first_subtitle = subtitles[0]
+                        subtitle_url = first_subtitle.get('subtitle_url', '')
+                        if subtitle_url:
+                            print(f"  找到字幕：{subtitle_url}")
+                            return subtitle_url
+                
+                print(f"  API 返回：{data.get('message', '未知错误')}")
+                return None
+                
+        except Exception as e:
+            print(f"  API 请求失败：{e}")
+            return None
+    
+    @staticmethod
+    def _format_srt_time(seconds: float) -> str:
+        """将秒数格式化为 SRT 时间戳 HH:MM:SS,mmm"""
+        if seconds < 0:
+            seconds = 0
+        total_ms = int(round(seconds * 1000))
+        hours, remainder = divmod(total_ms, 3600 * 1000)
+        minutes, remainder = divmod(remainder, 60 * 1000)
+        secs, millis = divmod(remainder, 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+    
+    def _write_subtitle_lines(self, lines: List[Dict], output_path: str,
+                              output_format: str = "text") -> int:
+        """
+        将字幕条目写入文件
+        :param lines: 字幕条目列表，每条含 content，srt 需要 from/to
+        :param output_path: 输出路径
+        :param output_format: text 或 srt
+        :return: 写入的条目数
+        """
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+        
+        if output_format == "srt":
+            blocks = []
+            for line in lines:
+                text = (line.get('content') or '').strip()
+                if not text:
+                    continue
+                index = len(blocks) + 1
+                start = self._format_srt_time(float(line.get('from', 0) or 0))
+                end = self._format_srt_time(float(line.get('to', 0) or 0))
+                blocks.append(f"{index}\n{start} --> {end}\n{text}")
+            content = '\n\n'.join(blocks)
+            written = len(blocks)
+        else:
+            text_lines = [line.get('content', '') for line in lines if line.get('content')]
+            content = '\n'.join(text_lines)
+            written = len(text_lines)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        return written
+    
+    def _download_subtitle_file(self, subtitle_url: str, output_path: str,
+                                output_format: str = "text") -> bool:
+        """下载字幕文件"""
+        try:
+            print(f"  下载字幕：{subtitle_url}")
+            
+            req = urllib.request.Request(
+                subtitle_url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                }
+            )
+            
+            with urllib.request.urlopen(req, timeout=30, context=self.ssl_context) as response:
+                content = response.read().decode('utf-8')
+                
+                # 解析字幕内容
+                subtitle_data = json.loads(content)
+                lines = subtitle_data.get('body', [])
+                
+                # 按指定格式写入文件
+                written = self._write_subtitle_lines(lines, output_path, output_format)
+                
+                print(f"  字幕已保存：{output_path}（共 {written} 行）")
+                return True
+                
+        except Exception as e:
+            print(f"  下载字幕失败：{e}")
+            return False
+    
+    def _extract_subtitle_playwright(self, video_url: str, safe_title: str, 
+                                      output_dir: str,
+                                      output_format: str = "text") -> Optional[str]:
+        """使用 Playwright 提取 AI 字幕"""
+        try:
+            from playwright.sync_api import sync_playwright
+            
+            print("  启动浏览器...")
+            print("  请在浏览器中手动点击字幕按钮，然后按回车键继续...")
+            
+            with sync_playwright() as p:
+                # 启动浏览器（非无头模式，让用户可以看到并操作）
+                browser = p.chromium.launch(headless=False)
+                context = browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                )
+                page = context.new_page()
+                
+                # 添加 Cookie
+                if self.cookies:
+                    cookie_list = []
+                    for name, value in self.cookies.items():
+                        cookie_list.append({
+                            'name': name,
+                            'value': value,
+                            'domain': '.bilibili.com',
+                            'path': '/'
+                        })
+                    context.add_cookies(cookie_list)
+                
+                print(f"  访问页面：{video_url}")
+                page.goto(video_url, wait_until='networkidle', timeout=60000)
+                
+                # 等待用户操作
+                input("  请在浏览器中点击字幕按钮，然后按回车键继续...")
+                
+                print("  正在提取字幕...")
+                
+                # 尝试通过 API 获取字幕
+                subtitle_url = None
+                
+                # 方法 1: 从页面数据中获取字幕
+                try:
+                    result = page.evaluate('''() => {
+                        // 尝试多种方式获取字幕数据
+                        // 方式 1: 从 __INITIAL_STATE__ 获取
+                        const jsonText = document.querySelector('#__INITIAL_STATE__')?.textContent;
+                        if (jsonText) {
+                            const data = JSON.parse(jsonText);
+                            // 尝试不同的路径
+                            const subtitle = data?.videoData?.subtitle || data?.subtitle;
+                            if (subtitle?.list && subtitle.list.length > 0) {
+                                return { type: 'init_state', url: subtitle.list[0].subtitle_url };
+                            }
+                        }
+                        
+                        // 方式 2: 从 playerInitState 获取
+                        const playerState = document.querySelector('#__playback__INITIAL_STATE__')?.textContent;
+                        if (playerState) {
+                            const data = JSON.parse(playerState);
+                            const subtitle = data?.subtitle;
+                            if (subtitle?.list && subtitle.list.length > 0) {
+                                return { type: 'player_state', url: subtitle.list[0].subtitle_url };
+                            }
+                        }
+                        
+                        // 方式 3: 从 videoInfo 获取
+                        const videoInfo = document.querySelector('script[data-url^="https://api.bilibili.com/x/player/wbi/v2"]')?.textContent;
+                        if (videoInfo) {
+                            try {
+                                const data = JSON.parse(videoInfo);
+                                if (data?.data?.subtitle?.list?.length > 0) {
+                                    return { type: 'video_info', url: data.data.subtitle.list[0].subtitle_url };
+                                }
+                            } catch(e) {}
+                        }
+                        
+                        return null;
+                    }''')
+                    if isinstance(result, dict):
+                        subtitle_url = result.get('url')
+                        print(f"  从页面数据获取字幕 (类型：{result.get('type', 'unknown')}): {subtitle_url}")
+                    else:
+                        subtitle_url = result
+                        print(f"  从页面数据获取字幕：{subtitle_url}")
+                except Exception as e:
+                    print(f"  从页面数据获取失败：{e}")
+                
+                # 方法 2: 监听网络请求（重新加载页面以捕获字幕请求）
+                if not subtitle_url:
+                    print("  监听字幕 API 请求...")
+                    subtitle_responses = []
+                    
+                    def handle_response(response):
+                        try:
+                            url = response.url
+                            # 过滤掉日志 URL，只捕获真正的字幕 URL
+                            if ('subtitle' in url or 'langsub' in url) and 'log/web' not in url:
+                                subtitle_responses.append(url)
+                                print(f"  捕获到潜在字幕 URL: {url[:100]}...")
+                        except:
+                            pass
+                    
+                    page.on('response', handle_response)
+                    
+                    # 重新加载页面以捕获请求
+                    page.reload(wait_until='networkidle', timeout=60000)
+                    time.sleep(3)
+                    
+                    if subtitle_responses:
+                        subtitle_url = subtitle_responses[0]
+                        print(f"  使用字幕 URL: {subtitle_url[:100]}...")
+                    
+                    # 使用 remove_listener 替代 off
+                    page.remove_listener('response', handle_response)
+                
+                # 方法 3: 直接调用 API
+                if not subtitle_url:
+                    try:
+                        video_id = self._get_video_id(video_url)
+                        if video_id:
+                            # 获取视频详情
+                            detail_url = f"https://api.bilibili.com/x/web-interface/view?bvid={video_id}"
+                            resp = page.evaluate(f'''() => fetch("{detail_url}", {{
+                                headers: {{
+                                    'User-Agent': 'Mozilla/5.0',
+                                    'Referer': '{video_url}'
+                                }}
+                            }}).then(r => r.json())''')
+                            
+                            if resp and resp.get('code') == 0:
+                                cid = resp.get('data', {}).get('cid')
+                                if cid:
+                                    # 获取字幕 - 使用 x/player/wbi/v2 API
+                                    sub_url = f"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&bvid={video_id}"
+                                    sub_resp = page.evaluate(f'''() => fetch("{sub_url}", {{
+                                        headers: {{
+                                            'User-Agent': 'Mozilla/5.0',
+                                            'Referer': '{video_url}'
+                                        }}
+                                    }}).then(r => r.json())''')
+                                    
+                                    if sub_resp and sub_resp.get('code') == 0:
+                                        subtitle_data = sub_resp.get('data', {}).get('subtitle', {})
+                                        subtitles = subtitle_data.get('list', [])
+                                        if subtitles:
+                                            subtitle_url = subtitles[0].get('subtitle_url')
+                                            print(f"  通过 API 获取字幕：{subtitle_url}")
+                    except Exception as e:
+                        print(f"  API 调用失败：{e}")
+                
+                if subtitle_url:
+                    # 下载字幕
+                    os.makedirs(output_dir, exist_ok=True)
+                    ext = "srt" if output_format == "srt" else "txt"
+                    output_path = os.path.join(output_dir, f"{safe_title}.{ext}")
+                    
+                    try:
+                        # 首先检查 URL 是否有效
+                        if 'log/web' in subtitle_url:
+                            print("  错误：捕获到日志 URL 而非字幕 URL")
+                        else:
+                            resp = page.evaluate(f'''() => fetch("{subtitle_url}", {{
+                                headers: {{
+                                    'User-Agent': 'Mozilla/5.0',
+                                    'Referer': '{video_url}'
+                                }}
+                            }}).then(r => r.text())''')
+                            
+                            if resp:
+                                # 尝试解析 JSON
+                                try:
+                                    subtitle_data = json.loads(resp)
+                                    if 'body' in subtitle_data:
+                                        lines = subtitle_data.get('body', [])
+                                        written = self._write_subtitle_lines(lines, output_path, output_format)
+                                        
+                                        print(f"  字幕已保存：{output_path}")
+                                        print(f"  共提取 {written} 行字幕")
+                                        browser.close()
+                                        return output_path
+                                    else:
+                                        print(f"  字幕数据格式错误：缺少 'body' 字段")
+                                        print(f"  响应内容：{resp[:200]}...")
+                                except json.JSONDecodeError as e:
+                                    print(f"  JSON 解析失败：{e}")
+                                    print(f"  响应内容：{resp[:200]}...")
+                                except Exception as e:
+                                    print(f"  处理字幕数据失败：{e}")
+                    except Exception as e:
+                        print(f"  下载字幕失败：{e}")
+                
+                browser.close()
+                print("  未找到字幕")
+                return None
+                
+        except Exception as e:
+            print(f"  Playwright 提取失败：{e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def extract_subtitle(self, video_url: str, output_dir: str = None,
+                         output_format: str = "text", use_api_first: bool = True) -> Optional[str]:
+        """
+        提取字幕
+        :param video_url: 视频 URL
+        :param output_dir: 输出目录
+        :param output_format: 输出格式 (text/srt)
+        :param use_api_first: 是否优先使用 API
+        :return: 字幕文件路径
+        """
+        output_dir = output_dir or self.output_dir
+        video_id = self._get_video_id(video_url)
+        safe_title = video_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 优先使用 API
+        if use_api_first:
+            subtitle_url = self._get_subtitle_url_via_api(video_url)
+            if subtitle_url:
+                ext = "srt" if output_format == "srt" else "txt"
+                output_path = os.path.join(output_dir, f"{safe_title}.{ext}")
+                if self._download_subtitle_file(subtitle_url, output_path, output_format):
+                    return output_path
+        
+        # 使用 Playwright
+        print("  使用 Playwright 提取字幕...")
+        return self._extract_subtitle_playwright(video_url, safe_title, output_dir, output_format)
+
+
+def extract_bilibili_subtitle(video_url: str, output_path: str = None,
+                               cookie_path: str = None) -> Optional[str]:
+    """
+    便捷函数：提取 Bilibili AI 字幕
+    :param video_url: 视频 URL
+    :param output_path: 输出路径
+    :param cookie_path: Cookie 路径
+    :return: 字幕文件路径
+    """
+    extractor = SubtitleExtractor(cookie_path=cookie_path)
+    
+    if output_path:
+        output_dir = os.path.dirname(output_path)
+        safe_title = os.path.basename(output_path).replace('.txt', '').replace('.srt', '')
+    else:
+        output_dir = "downloads"
+        safe_title = None
+    
+    if safe_title:
+        return extractor._extract_subtitle_playwright(video_url, safe_title, output_dir)
+    else:
+        video_id = extractor._get_video_id(video_url)
+        safe_title = video_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        return extractor._extract_subtitle_playwright(video_url, safe_title, output_dir)

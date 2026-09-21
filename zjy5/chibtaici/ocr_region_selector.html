@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR 区域选择工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 24px 32px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        .content {
+            padding: 32px;
+        }
+        .upload-section {
+            border: 3px dashed #667eea;
+            border-radius: 12px;
+            padding: 48px;
+            text-align: center;
+            background: #f8f9ff;
+            margin-bottom: 24px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        .upload-section:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+        .upload-section.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+        }
+        .upload-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        .upload-text {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .upload-hint {
+            font-size: 14px;
+            color: #666;
+        }
+        #fileInput {
+            display: none;
+        }
+        .canvas-container {
+            display: none;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        .canvas-container.active {
+            display: block;
+        }
+        #canvas {
+            max-width: 100%;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            cursor: crosshair;
+            box-shadow: 0 4px 12px rgba(102,126,234,0.3);
+        }
+        .result-section {
+            display: none;
+            background: #f8f9ff;
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 24px;
+        }
+        .result-section.active {
+            display: block;
+        }
+        .result-section h3 {
+            color: #333;
+            margin-bottom: 16px;
+            font-size: 18px;
+        }
+        .result-item {
+            margin-bottom: 16px;
+        }
+        .result-item label {
+            display: block;
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 6px;
+        }
+        .result-value {
+            background: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-family: 'Consolas', monospace;
+            font-size: 14px;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            word-break: break-all;
+        }
+        .result-value.highlight {
+            border-color: #667eea;
+            background: #f0f2ff;
+            color: #667eea;
+            font-weight: bold;
+        }
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102,126,234,0.4);
+        }
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        .btn-success {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(17,153,142,0.4);
+        }
+        .instructions {
+            background: #fff9e6;
+            border-left: 4px solid #ffc107;
+            padding: 16px 20px;
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 24px;
+        }
+        .instructions h4 {
+            color: #856404;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        .instructions ul {
+            color: #856404;
+            font-size: 14px;
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin-bottom: 4px;
+        }
+        .copy-feedback {
+            display: inline-block;
+            margin-left: 10px;
+            color: #38ef7d;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .copy-feedback.show {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 OCR 区域选择工具</h1>
+            <p>上传视频截图，框选台词区域，自动计算相对坐标</p>
+        </div>
+        
+        <div class="content">
+            <div class="instructions">
+                <h4>📋 使用说明</h4>
+                <ul>
+                    <li>上传视频的一帧截图（支持 JPG、PNG 格式）</li>
+                    <li>按住鼠标左键拖动，框选台词区域</li>
+                    <li>松开鼠标后，区域会以绿色高亮显示</li>
+                    <li>点击"重新选择"可以清除并重新框选</li>
+                    <li>复制生成的相对坐标参数，用于台词识别工具</li>
+                </ul>
+            </div>
+
+            <div class="upload-section" id="uploadSection">
+                <div class="upload-icon">📷</div>
+                <div class="upload-text">点击或拖拽上传图片</div>
+                <div class="upload-hint">支持 JPG、PNG 格式的图片</div>
+                <input type="file" id="fileInput" accept="image/*">
+            </div>
+
+            <div class="canvas-container" id="canvasContainer">
+                <canvas id="canvas"></canvas>
+                <div class="btn-group">
+                    <button class="btn btn-secondary" onclick="resetSelection()">🔄 重新选择</button>
+                    <button class="btn btn-secondary" onclick="uploadAnother()">📁 更换图片</button>
+                </div>
+            </div>
+
+            <div class="result-section" id="resultSection">
+                <h3>📊 计算结果</h3>
+                
+                <div class="result-item">
+                    <label>图片分辨率：</label>
+                    <div class="result-value" id="resolutionValue">-</div>
+                </div>
+                
+                <div class="result-item">
+                    <label>绝对坐标（像素）：</label>
+                    <div class="result-value" id="absCoords">-</div>
+                </div>
+                
+                <div class="result-item">
+                    <label>相对坐标：</label>
+                    <div class="result-value highlight" id="relCoords">-</div>
+                </div>
+                
+                <div class="result-item">
+                    <label>命令行参数：</label>
+                    <div class="result-value highlight" id="cmdParam">
+                        <span id="cmdParamText">-</span>
+                        <span class="copy-feedback" id="copyFeedback">✓ 已复制！</span>
+                    </div>
+                    <button class="btn btn-success" onclick="copyToClipboard()" style="margin-top: 10px;">
+                        📋 复制参数
+                    </button>
+                </div>
+                
+                <div class="result-item" style="margin-top: 20px;">
+                    <label>使用示例：</label>
+                    <div class="result-value" style="font-size: 12px;" id="usageExample">
+                        python main.py --video "视频路径.mp4" --ocr_region "坐标" --output "output.txt"
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const uploadSection = document.getElementById('uploadSection');
+        const fileInput = document.getElementById('fileInput');
+        const canvasContainer = document.getElementById('canvasContainer');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const resultSection = document.getElementById('resultSection');
+        
+        let img = new Image();
+        let isDrawing = false;
+        let startX, startY, endX, endY;
+        let rect = null;
+
+        // 上传区域点击
+        uploadSection.addEventListener('click', () => fileInput.click());
+
+        // 文件选择
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        // 拖拽上传
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('dragover');
+        });
+
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('dragover');
+        });
+
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            if (!file.type.startsWith('image/')) {
+                alert('请上传图片文件');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                img.onload = () => {
+                    drawCanvas();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function drawCanvas() {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            
+            if (rect) {
+                drawRect();
+            }
+
+            uploadSection.style.display = 'none';
+            canvasContainer.classList.add('active');
+            resultSection.classList.remove('active');
+        }
+
+        function drawRect() {
+            if (!rect) return;
+
+            // 重绘图片
+            ctx.drawImage(img, 0, 0);
+
+            // 绘制半透明覆盖层
+            ctx.fillStyle = 'rgba(102, 126, 234, 0.3)';
+            ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+
+            // 绘制边框
+            ctx.strokeStyle = '#667eea';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+
+            // 显示坐标
+            ctx.fillStyle = '#667eea';
+            ctx.font = 'bold 14px Arial';
+            ctx.fillText(
+                `(${Math.round(rect.x)}, ${Math.round(rect.y)}) - (${Math.round(rect.x + rect.width)}, ${Math.round(rect.y + rect.height)})`,
+                rect.x, rect.y - 10
+            );
+
+            calculateAndShowResult();
+        }
+
+        // 鼠标事件
+        canvas.addEventListener('mousedown', (e) => {
+            const bounds = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / bounds.width;
+            const scaleY = canvas.height / bounds.height;
+            
+            isDrawing = true;
+            startX = (e.clientX - bounds.left) * scaleX;
+            startY = (e.clientY - bounds.top) * scaleY;
+            endX = startX;
+            endY = startY;
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+
+            const bounds = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / bounds.width;
+            const scaleY = canvas.height / bounds.height;
+            
+            endX = (e.clientX - bounds.left) * scaleX;
+            endY = (e.clientY - bounds.top) * scaleY;
+
+            rect = {
+                x: Math.min(startX, endX),
+                y: Math.min(startY, endY),
+                width: Math.abs(endX - startX),
+                height: Math.abs(endY - startY)
+            };
+
+            drawCanvas();
+            drawRect();
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            isDrawing = false;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            isDrawing = false;
+        });
+
+        function calculateAndShowResult() {
+            if (!rect || rect.width < 1 || rect.height < 1) return;
+
+            const width = canvas.width;
+            const height = canvas.height;
+            
+            const relX1 = rect.x / width;
+            const relY1 = rect.y / height;
+            const relX2 = (rect.x + rect.width) / width;
+            const relY2 = (rect.y + rect.height) / height;
+
+            document.getElementById('resolutionValue').textContent = `${width} x ${height}`;
+            document.getElementById('absCoords').textContent = 
+                `(${Math.round(rect.x)}, ${Math.round(rect.y)}, ${Math.round(rect.x + rect.width)}, ${Math.round(rect.y + rect.height)})`;
+            document.getElementById('relCoords').textContent = 
+                `(${relX1.toFixed(4)}, ${relY1.toFixed(4)}, ${relX2.toFixed(4)}, ${relY2.toFixed(4)})`;
+            document.getElementById('cmdParamText').textContent = 
+                `--ocr_region "${relX1.toFixed(4)},${relY1.toFixed(4)},${relX2.toFixed(4)},${relY2.toFixed(4)}"`;
+            document.getElementById('usageExample').textContent = 
+                `python main.py --video "视频路径.mp4" --ocr_region "${relX1.toFixed(4)},${relY1.toFixed(4)},${relX2.toFixed(4)},${relY2.toFixed(4)}" --output "output.txt"`;
+
+            resultSection.classList.add('active');
+        }
+
+        function resetSelection() {
+            rect = null;
+            drawCanvas();
+            resultSection.classList.remove('active');
+        }
+
+        function uploadAnother() {
+            fileInput.value = '';
+            uploadSection.style.display = 'block';
+            canvasContainer.classList.remove('active');
+            resultSection.classList.remove('active');
+        }
+
+        function copyToClipboard() {
+            const text = document.getElementById('cmdParamText').textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                const feedback = document.getElementById('copyFeedback');
+                feedback.classList.add('show');
+                setTimeout(() => feedback.classList.remove('show'), 2000);
+            });
+        }
+    </script>
+</body>
+</html>
