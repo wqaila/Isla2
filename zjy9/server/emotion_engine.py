@@ -10,7 +10,6 @@
 """
 
 import re
-import math
 from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -629,7 +628,6 @@ def get_emotion_engine() -> EmotionEngine:
 
 def get_mood_tracker(session_id: str) -> MoodTracker:
     """获取指定会话的情绪追踪器（带 LRU 驱逐，防止内存泄漏）"""
-    global _mood_trackers
     if session_id not in _mood_trackers:
         _mood_trackers[session_id] = MoodTracker()
     # 超过上限时驱逐最旧的 20%
@@ -646,5 +644,4 @@ def get_mood_tracker(session_id: str) -> MoodTracker:
 
 def cleanup_mood_trackers():
     """清理所有情绪追踪器（优雅关闭时调用）"""
-    global _mood_trackers
     _mood_trackers.clear()

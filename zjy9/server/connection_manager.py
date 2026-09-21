@@ -2,8 +2,6 @@
 WebSocket 连接管理器
 管理所有客户端的 WebSocket 连接
 """
-import json
-import asyncio
 from datetime import datetime
 from fastapi import WebSocket
 from config import HEARTBEAT_INTERVAL, MAX_CONNECTIONS

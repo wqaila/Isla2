@@ -468,8 +468,8 @@ async def update_runtime_config(updates: dict):
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:
         raise HTTPException(status_code=400, detail="没有有效的配置项")
-    
-    config = save_config(filtered)
+
+    save_config(filtered)
     logger.info("config", f"运行时配置已更新: {list(filtered.keys())}")
     return {"status": "ok", "updated": list(filtered.keys())}
 
@@ -706,7 +706,6 @@ async def _run_llm_learning_analysis(llm_prompt: str, device_id: str = ""):
         if use_cloud:
             if cloud_client.is_configured():
                 # FIX #3: 直接调用底层 HTTP API，避免 cloud_client.chat() 注入角色人设
-                import httpx as _httpx
                 _headers = {
                     "Authorization": f"Bearer {cloud_client.api_key}",
                     "Content-Type": "application/json",

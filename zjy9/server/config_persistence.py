@@ -4,9 +4,7 @@
 敏感字段（如 API Key）使用 Fernet 加密存储
 """
 import json
-import base64
 import os
-from pathlib import Path
 from cryptography.fernet import Fernet
 from config import BASE_DIR
 

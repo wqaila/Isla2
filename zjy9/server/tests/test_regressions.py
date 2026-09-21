@@ -3,7 +3,6 @@
 运行：cd server && ./venv/Scripts/python.exe tests/test_regressions.py
 """
 import sys
-import json
 from pathlib import Path
 
 # 测试脚本位于 server/tests/，需要把 server/ 加进 import 路径

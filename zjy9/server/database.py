@@ -6,8 +6,6 @@
 import sqlite3
 import uuid
 import threading
-from datetime import datetime
-from contextlib import contextmanager
 from config import DB_PATH
 
 # 线程本地存储：每个线程使用独立连接，避免 SQLite 多线程并发冲突

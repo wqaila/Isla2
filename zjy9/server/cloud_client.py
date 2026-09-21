@@ -220,9 +220,9 @@ class CloudClient:
                             except json.JSONDecodeError:
                                 continue
 
-        except httpx.ConnectError as e:
+        except httpx.ConnectError:
             yield {
-                "content": f"无法连接到云端 API，请检查网络连接~",
+                "content": "无法连接到云端 API，请检查网络连接~",
                 "done": True,
                 "tokens_per_sec": 0,
                 "total_tokens": 0,
