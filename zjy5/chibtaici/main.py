@@ -17,11 +17,10 @@ os.environ['FLAGS_cinn_new_group_scheduler'] = '0'
 os.environ['FLAGS_enable_filelock'] = '0'
 
 import argparse
-import sys
 import tempfile
 import cv2
 import numpy as np
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 import re
 
 # 可选依赖检查
@@ -32,7 +31,10 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 try:
-    import whisper
+    # 这里 import 只是为了探测 whisper 能否加载，模块本身在
+    # _transcribe_with_openai_whisper() 里按需再导入一次。
+    # （静态检查会报 "imported but unused"，属于预期，不要删）
+    import whisper  # noqa: F401
     WHISPER_AVAILABLE = True
 except ImportError:
     WHISPER_AVAILABLE = False

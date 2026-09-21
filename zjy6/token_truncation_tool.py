@@ -17,11 +17,9 @@ Token Truncation Tool for LLM API Calls
     truncated_text = manager.truncate_text(long_text)
 """
 
-import json
 import os
-import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional
 
 # 项目根目录（本脚本所在目录），用于定位本地已下载的 Qwen tokenizer
 PROJECT_ROOT = Path(__file__).resolve().parent

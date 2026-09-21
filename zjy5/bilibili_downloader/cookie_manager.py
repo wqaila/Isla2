@@ -7,9 +7,8 @@ Cookie 管理模块
 """
 
 import os
-import re
 import time
-from typing import Optional, Dict, List
+from typing import Dict, List
 
 
 class CookieManager:

@@ -9,7 +9,6 @@
     python convert_to_gguf.py --model models/qwen/Qwen-7B-Chat-Int4 --output models/gguf --quantize q4_0
 """
 
-import os
 import sys
 import argparse
 import subprocess
@@ -108,7 +107,7 @@ def convert_to_gguf(model_path: str, output_path: str, quantize: str = None):
     print(f"执行命令：{' '.join(cmd)}")
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=False)
+        subprocess.run(cmd, check=True, capture_output=False)
         print("✅ 模型转换完成")
     except subprocess.CalledProcessError as e:
         print(f"❌ 转换失败：{e}")
@@ -165,7 +164,7 @@ def quantize_gguf(input_gguf: Path, output_dir: Path, quantize: str):
     print(f"执行命令：{' '.join(cmd)}")
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=False)
+        subprocess.run(cmd, check=True, capture_output=False)
         print(f"✅ 量化完成：{output_gguf}")
         
         # 显示文件大小

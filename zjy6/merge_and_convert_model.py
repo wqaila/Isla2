@@ -26,7 +26,6 @@
     python merge_and_convert_model.py --merge --convert --quantize q4_0 --copy-assets
 """
 
-import os
 import sys
 import argparse
 import subprocess
@@ -197,7 +196,7 @@ def convert_to_gguf(model_path: Path, output_path: Path, quantize: str = None):
     print(f"执行命令：{' '.join(cmd)}")
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=False)
+        subprocess.run(cmd, check=True, capture_output=False)
         print("✅ 模型转换完成")
         
         if output_gguf.exists():
@@ -265,7 +264,7 @@ def quantize_gguf(input_gguf: Path, output_dir: Path, quantize: str):
     print(f"执行命令：{' '.join(cmd)}")
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=False)
+        subprocess.run(cmd, check=True, capture_output=False)
         print(f"✅ 量化完成：{output_gguf}")
         
         if output_gguf.exists():

@@ -5,7 +5,6 @@
 依赖: pip3 install websocket-client
 """
 import tkinter as tk
-from tkinter import ttk
 import threading
 import json
 import time
@@ -562,7 +561,12 @@ class ElysiaClient:
                     on_error=on_error, on_close=on_close)
                 self.ws.run_forever()
             except Exception as e:
-                self.root.after(0, lambda: self._add_system_msg(f"连接失败: {e}"))
+                # ⚠️ 不要把 e 直接写进 lambda：Python 在 except 块结束时会隐式
+                #    `del e`，而 root.after 的回调是稍后才在主线程执行的，
+                #    那时 e 已经不存在，会抛 NameError: name 'e' is not defined。
+                #    必须先用默认参数把值绑定住。
+                err_text = f"连接失败: {e}"
+                self.root.after(0, lambda m=err_text: self._add_system_msg(m))
                 self.root.after(0, lambda: self._set_connected(False, ip, port))
 
         threading.Thread(target=run_ws, daemon=True).start()

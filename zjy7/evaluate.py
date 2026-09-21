@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 """模型评估工具：perplexity + 角色一致性 + 多轮对话 + 脱角色检测"""
 
-import json, os, sys, logging, torch, math, argparse
+import json
+import os
+import logging
+import torch
+import math
+import argparse
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 

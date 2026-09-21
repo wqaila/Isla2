@@ -45,7 +45,7 @@ def main():
                 # 尝试 ModelScope
                 print(f"  🔄 尝试从 ModelScope 下载 {fname}...")
                 try:
-                    from modelscope import snapshot_download
+                    pass
                     # ModelScope 不支持单文件下载，用 snapshot 但只取需要的文件
                     subprocess.check_call([
                         sys.executable, "-c",

@@ -13,7 +13,7 @@ import time
 import urllib.request
 import urllib.parse
 import ssl
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Tuple
 from datetime import datetime
 
 try:
