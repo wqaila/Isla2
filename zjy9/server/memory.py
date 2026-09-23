@@ -29,6 +29,10 @@ def strip_leading_tag(text: str) -> str:
     return _LEADING_TAG_RE.sub("", text).strip()
 
 
+# 合法的记忆集合名（白名单）。接口层用它校验，避免任意集合名越界读写。
+VALID_COLLECTIONS = ("conversations", "facts", "summaries")
+
+
 # ===== 抽象基类 =====
 
 class MemoryBackend(ABC):
@@ -55,6 +59,16 @@ class MemoryBackend(ABC):
 
     @abstractmethod
     def count(self, collection: str) -> int:
+        pass
+
+    @abstractmethod
+    def delete_document(self, collection: str, doc_id: str) -> bool:
+        """删除单条记忆，返回是否真的删掉了。
+
+        为什么需要它：此前后端只有"整库 clear"，想删掉一条错记的记忆
+        只能 clear + 把其余条目重新 add 回去 —— 既慢又容易在中途出错时
+        把整个记忆库搞坏。管理 UI 必须要有单条删除。
+        """
         pass
 
     @abstractmethod
@@ -147,6 +161,17 @@ class ChromaBackend(MemoryBackend):
 
     def count(self, collection: str) -> int:
         return self._get_collection(collection).count()
+
+    def delete_document(self, collection: str, doc_id: str) -> bool:
+        col = self._get_collection(collection)
+        try:
+            existing = col.get(ids=[doc_id], include=[])
+            if not (existing.get("ids") or []):
+                return False
+            col.delete(ids=[doc_id])
+            return True
+        except Exception:
+            return False
 
     def clear(self, collection: str):
         try:
@@ -357,6 +382,16 @@ class TfidfBackend(MemoryBackend):
     def count(self, collection: str) -> int:
         with self._lock:
             return len(self._data.get(collection, {}))
+
+    def delete_document(self, collection: str, doc_id: str) -> bool:
+        with self._lock:
+            docs = self._data.get(collection, {})
+            if doc_id not in docs:
+                return False
+            del docs[doc_id]
+            self._touch(collection)     # 版本 +1 并让 TF-IDF 缓存失效
+            self._save(collection)      # 删除是不可逆操作，立即落盘而不是节流
+            return True
 
     def clear(self, collection: str):
         with self._lock:
@@ -586,6 +621,17 @@ class MemoryManager:
     def list_all(self, collection: str) -> list:
         """列出某集合的全部条目（供导出/清理使用）"""
         return self.backend.list_all(collection)
+
+    def delete_entry(self, collection: str, doc_id: str) -> bool:
+        """删除单条记忆。集合名做白名单校验，避免越界操作。
+
+        返回 True 表示确实删掉了一条；False 表示集合非法或条目不存在。
+        """
+        if collection not in VALID_COLLECTIONS:
+            return False
+        if not doc_id:
+            return False
+        return self.backend.delete_document(collection, doc_id)
 
     def flush(self):
         """把待落盘的记忆写入磁盘（优雅关闭时调用）"""

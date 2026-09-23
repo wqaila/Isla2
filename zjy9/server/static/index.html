@@ -187,6 +187,7 @@
             <div class="nav-item" onclick="showPage('server')"><span class="icon">⚙️</span><span>服务设置</span></div>
             <div class="nav-item" onclick="showPage('logs')"><span class="icon">📋</span><span>日志</span></div>
             <div class="nav-item" onclick="showPage('connections')"><span class="icon">📱</span><span>连接设备</span></div>
+            <div class="nav-item" onclick="showPage('memory')"><span class="icon">🧠</span><span>记忆管理</span></div>
         </div>
         <div class="sidebar-footer">爱莉希雅 AI v1.0</div>
     </div>
@@ -414,6 +415,32 @@
                     <div class="log-panel" id="connLogPanel" style="max-height:400px;"></div>
                 </div>
             </div>
+
+            <!-- Memory -->
+            <div class="page" id="page-memory">
+                <div class="card">
+                    <div class="card-title">🧠 记忆库 <span class="badge" id="memTotal">—</span>
+                        <div style="margin-left:auto;display:flex;gap:8px;">
+                            <select id="memCollection" onchange="loadMemoryEntries()" style="width:auto;padding:4px 8px;font-size:12px;">
+                                <option value="facts">用户事实 (facts)</option>
+                                <option value="conversations">对话记录 (conversations)</option>
+                                <option value="summaries">对话摘要 (summaries)</option>
+                            </select>
+                            <input id="memFilter" placeholder="筛选内容…" oninput="renderMemoryEntries()" style="width:170px;padding:4px 8px;font-size:12px;">
+                            <button class="btn btn-sm btn-outline" onclick="loadMemoryEntries()">刷新</button>
+                        </div>
+                    </div>
+                    <p style="color:var(--text2);font-size:12px;margin:0 0 12px;">
+                        这里是她「记住」的内容。记错的可以直接删 —— 删除后立即落盘，不可恢复。
+                    </p>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th style="width:58%;">内容</th><th>来源</th><th>时间</th><th style="width:70px;">操作</th></tr></thead>
+                            <tbody id="memTable"><tr><td colspan="4" style="text-align:center;color:var(--text2);">切换到本页时自动加载</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -431,7 +458,7 @@ function showPage(name, pushHash = true) {
     document.getElementById('page-' + name).classList.add('active');
     const navEl = document.querySelector(`.nav-item[onclick="showPage('${name}')"]`);
     if (navEl) navEl.classList.add('active');
-    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备' };
+    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理' };
     document.getElementById('pageTitle').textContent = titles[name] || name;
     if (name === 'logs') loadLogs();
     if (name === 'connections') { loadConnections(); loadConnLogs(); }
@@ -439,6 +466,7 @@ function showPage(name, pushHash = true) {
     if (name === 'server') { loadPromptPreview(); loadServerConfig(); }
     if (name === 'ollama') { checkOllama(); loadModels(); }
     if (name === 'chat') loadChatSourceBanner();
+    if (name === 'memory') loadMemoryEntries();
     // 持久化当前页面到 URL hash，防止刷新后丢失导航状态
     if (pushHash) {
         history.replaceState(null, '', '#' + name);
@@ -886,6 +914,63 @@ async function loadPromptPreview() {
         return;
     }
     el.textContent = data.prompt + `\n\n（以上为实际注入的 System Prompt，共 ${data.length} 字）`;
+}
+
+// ===== 记忆管理 =====
+// 后端以前只有"清空整个集合"，想删一条记错的记忆只能全清再写回 ——
+// 既慢又容易在中途出错时把整个记忆库搞坏。现在有了单条删除接口。
+let memItems = [];
+async function loadMemoryEntries() {
+    const coll = document.getElementById('memCollection').value;
+    const tb = document.getElementById('memTable');
+    tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text2);">加载中…</td></tr>';
+    const data = await api(`/api/memory/entries?collection=${encodeURIComponent(coll)}&limit=500`);
+    if (!data) {
+        tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text2);">加载失败（可能未认证）</td></tr>';
+        document.getElementById('memTotal').textContent = '—';
+        return;
+    }
+    if (data.detail) {
+        tb.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text2);">${escHtml(data.detail)}</td></tr>`;
+        return;
+    }
+    memItems = data.items || [];
+    document.getElementById('memTotal').textContent = `${data.total} 条`;
+    renderMemoryEntries();
+}
+function renderMemoryEntries() {
+    const tb = document.getElementById('memTable');
+    const kw = (document.getElementById('memFilter').value || '').trim();
+    const list = kw ? memItems.filter(x => (x.content || '').includes(kw)) : memItems;
+    if (!list.length) {
+        tb.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text2);">${memItems.length ? '没有匹配的条目' : '这个集合还是空的'}</td></tr>`;
+        return;
+    }
+    tb.innerHTML = list.map(x => {
+        const meta = x.metadata || {};
+        const src = meta.source || meta.type || '—';
+        const ts = (meta.timestamp || '').replace('T', ' ').slice(0, 19) || '—';
+        return `<tr>
+            <td style="word-break:break-word;">${escHtml(x.content || '')}</td>
+            <td style="color:var(--text2);font-size:12px;">${escHtml(src)}</td>
+            <td style="color:var(--text2);font-size:12px;white-space:nowrap;">${escHtml(ts)}</td>
+            <td><button class="btn btn-sm btn-outline" onclick="deleteMemoryEntry('${x.id}')">删除</button></td>
+        </tr>`;
+    }).join('');
+}
+async function deleteMemoryEntry(id) {
+    const item = memItems.find(x => x.id === id);
+    const preview = item ? (item.content || '').slice(0, 50) : id;
+    if (!confirm(`确定删除这条记忆吗？\n\n${preview}\n\n删除后立即落盘，无法恢复。`)) return;
+    const coll = document.getElementById('memCollection').value;
+    const r = await api(`/api/memory/entries/${encodeURIComponent(coll)}/${encodeURIComponent(id)}`,
+                        { method: 'DELETE' });
+    if (r && r.status === 'ok') {
+        toast('已删除', 'success');
+        loadMemoryEntries();
+    } else {
+        toast('删除失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
+    }
 }
 
 // ===== WebSocket Live Logs =====

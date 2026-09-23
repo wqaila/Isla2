@@ -367,6 +367,7 @@ MEMORY_BACKEND = "chromadb"   # 精准语义搜索模式
 | ⚙️ 服务设置 | 监听地址/端口/连接数/心跳/超时、人设预览 |
 | 📋 日志 | 系统日志浏览（支持级别过滤、实时推送） |
 | 📱 连接设备 | 当前连接设备列表、连接历史日志 |
+| 🧠 记忆管理 | 浏览记忆库条目（事实/对话/摘要）、按内容筛选、**删除单条记忆** |
 
 公网用户也可以通过 `https://xxx.trycloudflare.com/dashboard` 访问管理面板。
 
@@ -512,6 +513,8 @@ curl http://localhost:8080/api/status
 | POST | `/api/memory/clear` | 清空记忆 |
 | POST | `/api/memory/cleanup` | 手动触发记忆清理 |
 | POST | `/api/memory/auto-cleanup` | 自动清理过期记忆 |
+| GET | `/api/memory/entries?collection=facts` | 列出某集合的记忆条目（管理界面用，不走相似度检索） |
+| DELETE | `/api/memory/entries/{collection}/{id}` | **删除单条记忆**（集合名做白名单校验） |
 | GET | `/api/memory/export` | 导出记忆数据 |
 | POST | `/api/memory/import` | 导入记忆数据 |
 
@@ -925,7 +928,7 @@ cd server
 
 | 脚本 | 覆盖内容 | 需要 Ollama |
 |------|----------|-------------|
-| `tests/test_regressions.py` | 46 项 接口 / 数据层 / 提示词 / 重试回归 | 否 |
+| `tests/test_regressions.py` | 53 项 接口 / 数据层 / 提示词 / 重试 / 记忆删除回归 | 否 |
 | `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
 | `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
 | `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |

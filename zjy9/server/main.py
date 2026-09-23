@@ -32,7 +32,7 @@ from config import (
 )
 from ollama_client import ollama_client, GENERATION_OPTIONS, MAX_OUTPUT_CHARS
 from cloud_client import cloud_client, CLOUD_PROVIDERS
-from memory import memory_manager
+from memory import memory_manager, VALID_COLLECTIONS
 from connection_manager import connection_manager
 from logger_service import logger
 from config_persistence import load_config, save_config
@@ -1393,9 +1393,49 @@ async def clear_memory(collection: str = "all"):
     """清空记忆"""
     if collection == "all":
         memory_manager.clear_all()
-    else:
+    elif collection in VALID_COLLECTIONS:
         memory_manager.clear_collection(collection)
+    else:
+        raise HTTPException(status_code=400, detail=f"未知集合：{collection}")
     return {"status": "ok"}
+
+
+@app.get("/api/memory/entries")
+async def list_memory_entries(collection: str = "facts", limit: int = 200):
+    """列出某个集合里的记忆条目（管理界面用）。
+
+    刻意不走相似度检索 —— 空查询在 TF-IDF 下会被阈值过滤成空列表，
+    这里要的是"把全部条目列出来"。
+    """
+    if collection not in VALID_COLLECTIONS:
+        raise HTTPException(status_code=400, detail=f"未知集合：{collection}")
+
+    items = memory_manager.list_all(collection)
+
+    def _ts(item):
+        return (item.get("metadata") or {}).get("timestamp", "") or ""
+
+    items.sort(key=_ts, reverse=True)      # 新记的排在前面
+    total = len(items)
+    if limit and limit > 0:
+        items = items[:limit]
+    return {"collection": collection, "total": total,
+            "returned": len(items), "items": items}
+
+
+@app.delete("/api/memory/entries/{collection}/{doc_id}")
+async def delete_memory_entry(collection: str, doc_id: str):
+    """删除单条记忆（管理界面用）。
+
+    在这之前想删掉一条记错的记忆，只能"清空整个集合 + 把其余条目重新写回"，
+    既慢又容易在中途出错时把整个记忆库搞坏。
+    """
+    if collection not in VALID_COLLECTIONS:
+        raise HTTPException(status_code=400, detail=f"未知集合：{collection}")
+    if not memory_manager.delete_entry(collection, doc_id):
+        raise HTTPException(status_code=404, detail="条目不存在")
+    logger.info("memory", f"已删除记忆条目 {collection}/{doc_id}")
+    return {"status": "ok", "collection": collection, "id": doc_id}
 
 
 # ===== 用户学习引擎 API =====

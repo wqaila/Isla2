@@ -218,6 +218,38 @@ try:
     check("is_retryable 判定正确",
           is_retryable(_httpx.ConnectError("x")) and not is_retryable(ValueError("x")))
 
+    print("\n=== 7. 记忆单条删除 ===")
+    # 注意：第 4 节把 api_token 设成了非空，所以这里的 HTTP 请求必须带认证头。
+    _auth = {"Authorization": f"Bearer {main._current_api_token()}"}
+
+    main.memory_manager.add_fact("__测试删除目标__", source="test")
+    main.memory_manager.flush()
+
+    r = client.get("/api/memory/entries", params={"collection": "facts", "limit": 500},
+                   headers=_auth)
+    check("列出记忆条目 -> 200", r.status_code == 200, r.status_code)
+    items = r.json().get("items", []) if r.status_code == 200 else []
+    target = next((x for x in items if "__测试删除目标__" in x.get("content", "")), None)
+    check("能列出刚写入的条目", target is not None)
+
+    if target:
+        r = client.delete(f"/api/memory/entries/facts/{target['id']}", headers=_auth)
+        check("删除单条 -> 200", r.status_code == 200, r.status_code)
+
+        r2 = client.get("/api/memory/entries", params={"collection": "facts", "limit": 500},
+                        headers=_auth)
+        left = [x for x in r2.json().get("items", [])
+                if "__测试删除目标__" in x.get("content", "")]
+        check("删除后不再出现在列表里", len(left) == 0, len(left))
+
+        r3 = client.delete(f"/api/memory/entries/facts/{target['id']}", headers=_auth)
+        check("重复删除 -> 404", r3.status_code == 404, r3.status_code)
+
+    r = client.delete("/api/memory/entries/evil/abc", headers=_auth)
+    check("非法集合删除 -> 400", r.status_code == 400, r.status_code)
+    r = client.get("/api/memory/entries", params={"collection": "evil"}, headers=_auth)
+    check("非法集合列表 -> 400", r.status_code == 400, r.status_code)
+
 finally:
     # 清理测试数据
     db.delete_session(sid)
