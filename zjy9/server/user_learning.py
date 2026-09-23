@@ -552,7 +552,7 @@ class UserLearningEngine:
             basic_info.append(f"职业: {profile.occupation}")
         
         if basic_info:
-            parts.append("[用户基本信息]\n" + "\n".join(basic_info))
+            parts.append("用户基本信息：\n" + "\n".join(basic_info))
         
         # 2. 性格特征
         personality = profile.personality
@@ -568,7 +568,7 @@ class UserLearningEngine:
             personality_desc.append("友善温和，容易相处")
         
         if personality_desc:
-            parts.append("[性格特点]\n" + "、".join(personality_desc))
+            parts.append("性格特点：\n" + "、".join(personality_desc))
         
         # 3. 沟通风格偏好
         style = profile.communication_style
@@ -586,14 +586,14 @@ class UserLearningEngine:
             style_desc.append("表达简洁")
         
         if style_desc:
-            parts.append("[沟通风格]\n" + "、".join(style_desc))
+            parts.append("沟通风格：\n" + "、".join(style_desc))
         
         # 4. 兴趣偏好
         topics = profile.preferences.get("topics", {})
         if topics:
             sorted_topics = sorted(topics.items(), key=lambda x: x[1], reverse=True)[:5]
             topic_str = "、".join([f"{t[0]}({t[1]}次)" for t in sorted_topics])
-            parts.append(f"[兴趣话题]\n{topic_str}")
+            parts.append(f"兴趣话题：\n{topic_str}")
         
         # 5. 偏好
         prefs = []
@@ -604,18 +604,18 @@ class UserLearningEngine:
             prefs.append("偏好详细回复")
         
         if prefs:
-            parts.append("[回复偏好]\n" + "、".join(prefs))
+            parts.append("回复偏好：\n" + "、".join(prefs))
         
         # 6. 情感状态
         emotion = profile.emotional_state
         if emotion.get("dominant_emotion") != "neutral":
-            parts.append(f"[近期情感]\n主导情绪: {emotion.get('dominant_emotion', 'neutral')}")
+            parts.append(f"近期情感：\n主导情绪: {emotion.get('dominant_emotion', 'neutral')}")
         
         # 7. 知识图谱摘要（与当前消息相关的高权重节点）
         relevant_nodes = self._get_relevant_nodes(current_message, max_nodes=8)
         if relevant_nodes:
             node_str = "\n".join([f"- {n['content']} (重要度:{n['weight']:.1f})" for n in relevant_nodes])
-            parts.append(f"[记忆网络中的关键信息]\n{node_str}")
+            parts.append(f"记忆中与当前话题相关的关键信息：\n{node_str}")
         
         # 合并并截断
         context = "\n\n".join(parts)

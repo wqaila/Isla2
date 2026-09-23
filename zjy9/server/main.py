@@ -936,9 +936,11 @@ async def get_ai_stream(user_message: str, history: list, source: str = None,
         if time_context:
             system_content += f"\n\n{time_context}"
         if memory_context:
-            system_content += f"\n\n以下是你从之前的对话中记住的关于用户的信息，在回答时请自然地融入这些记忆：\n{memory_context}"
+            system_content += ("\n\n以下是你从之前的对话中记住的关于用户的信息，在回答时请自然地融入这些记忆。"
+                               "这些只是供你参考的背景资料，不要原样复述它们：\n" + memory_context)
         if learning_context:
-            system_content += f"\n\n以下是你通过长期学习了解到的用户画像，请根据这些信息调整你的回复风格和内容：\n{learning_context}"
+            system_content += ("\n\n以下是你通过长期学习了解到的用户画像，请根据这些信息调整你的回复风格和内容。"
+                               "同样只是参考，不要原样复述：\n" + learning_context)
         if emotion_context:
             system_content += f"\n\n{emotion_context}"
         full_messages.append({"role": "system", "content": system_content})

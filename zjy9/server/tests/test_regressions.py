@@ -147,6 +147,31 @@ try:
     check("过短回复返回 (None, None)",
           main._emotion_consistency(fake_emo, "短") == (None, None))
 
+    # 回归 3：注入提示词的记忆/画像上下文不得带 [标签]。
+    # 模型会把方括号标签当成自己的输出格式照抄（实测回复里冒出过 "[历史对话]"）。
+    from memory import strip_leading_tag
+    check("strip_leading_tag 剥掉遗留标签",
+          strip_leading_tag("[姓名] 舰长叫小明") == "舰长叫小明")
+    check("strip_leading_tag 支持多重标签",
+          strip_leading_tag("[AI推断-偏好] [兴趣] 喜欢咖啡") == "喜欢咖啡")
+    check("strip_leading_tag 不改正常文本",
+          strip_leading_tag("舰长喜欢咖啡") == "舰长喜欢咖啡")
+
+    main.memory_manager.add_fact("[测试标签] __测试注入标签__", source="test")
+    mem_ctx = main.memory_manager.get_memory_context("__测试注入标签__", max_chars=800)
+    check("记忆上下文不含 [标签]", "[" not in mem_ctx, mem_ctx[:60])
+
+    learn_ctx = main.learning_engine.get_personalized_context(
+        current_message="你好", max_chars=600)
+    check("学习画像上下文不含 [标签]", "[" not in learn_ctx, learn_ctx[:60])
+
+    from elysia_prompt import build_messages
+    sys_prompt = build_messages(
+        "你好", history=[], few_shot=False,
+        memory_context=mem_ctx, learning_context=learn_ctx,
+    )[0]["content"]
+    check("最终 system 提示词不含 [标签]", "[" not in sys_prompt)
+
 finally:
     # 清理测试数据
     db.delete_session(sid)

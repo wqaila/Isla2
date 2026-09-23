@@ -134,10 +134,12 @@ def build_messages(user_message: str, history: list = None,
         system_content += f"\n\n{time_context}"
     
     if memory_context:
-        system_content += f"\n\n以下是你从之前的对话中记住的关于舰长的信息，在回答时请自然地融入这些记忆，让舰长感受到你记得他：\n{memory_context}"
+        system_content += ("\n\n以下是你从之前的对话中记住的关于舰长的信息，在回答时请自然地融入这些记忆，"
+                           "让舰长感受到你记得他。这些只是供你参考的背景资料，不要原样复述它们：\n" + memory_context)
     
     if learning_context:
-        system_content += f"\n\n以下是你通过长期学习了解到的舰长画像，请根据这些信息调整你的回复风格和内容，让回复更贴近舰长：\n{learning_context}"
+        system_content += ("\n\n以下是你通过长期学习了解到的舰长画像，请根据这些信息调整你的回复风格和内容，"
+                           "让回复更贴近舰长。同样只是参考，不要原样复述：\n" + learning_context)
     
     if emotion_context:
         system_content += f"\n\n{emotion_context}"

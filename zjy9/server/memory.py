@@ -16,6 +16,19 @@ from abc import ABC, abstractmethod
 from config import BASE_DIR
 
 
+# ===== 提示词友好化工具 =====
+
+# 历史遗留的存储格式会在内容开头带 [标签]（如 "[姓名] 舰长叫..."）。
+# 这种方括号标签被注入系统提示后，模型很容易把它当成自己的输出格式照抄，
+# 于是回复里就冒出 "[历史对话]" 之类的字样。这里统一剥掉。
+_LEADING_TAG_RE = re.compile(r"^(?:\s*\[[^\[\]]{1,20}\]\s*)+")
+
+
+def strip_leading_tag(text: str) -> str:
+    """去掉文本开头的一个或多个 [标签]，用于注入提示词前做归一化。"""
+    return _LEADING_TAG_RE.sub("", text).strip()
+
+
 # ===== 抽象基类 =====
 
 class MemoryBackend(ABC):
@@ -434,18 +447,20 @@ class MemoryManager:
         for r in results:
             if r["distance"] > 1.5:
                 continue
-            content = r["content"]
+            content = strip_leading_tag(r["content"])
             if total_len + len(content) > max_chars:
                 break
 
             coll = r.get("collection", "")
+            # 注意：这里刻意不使用 [xxx] 方括号标签。模型会把标签当成输出格式
+            # 照抄（实测回复里冒出过 "[历史对话]"），改用自然语言引导句。
             if coll == "facts":
-                context_parts.append(f"[记忆] {content}")
+                context_parts.append(f"- 你记得关于舰长的事：{content}")
             elif coll == "conversations":
                 short = content[:150] + "..." if len(content) > 150 else content
-                context_parts.append(f"[历史对话] {short}")
+                context_parts.append(f"- 你们之前聊过的内容：{short}")
             elif coll == "summaries":
-                context_parts.append(f"[对话摘要] {content}")
+                context_parts.append(f"- 之前对话的摘要：{content}")
             total_len += len(content)
 
         return "\n".join(context_parts) if context_parts else ""
