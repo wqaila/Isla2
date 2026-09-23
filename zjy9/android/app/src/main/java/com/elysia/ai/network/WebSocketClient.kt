@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.*
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 class WebSocketClient {
@@ -61,6 +62,8 @@ class WebSocketClient {
     private var deviceName: String = ""
     private var usePublicUrl: Boolean = false
     private var publicUrl: String = ""
+    /** 服务端 api_token；服务端设置后 WebSocket 也必须带令牌，否则被 403 拒绝 */
+    private var accessToken: String = ""
     
     // 心跳任务
     private var heartbeatJob: Job? = null
@@ -127,18 +130,21 @@ class WebSocketClient {
     
     /** 外部主动发起连接：重置重连计数后建立连接 */
     fun connect(serverUrl: String, deviceId: String = "android", deviceName: String = "",
-                usePublicUrl: Boolean = false, publicUrl: String = "") {
+                usePublicUrl: Boolean = false, publicUrl: String = "",
+                accessToken: String = "") {
         reconnectAttempts = 0
-        connectInternal(serverUrl, deviceId, deviceName, usePublicUrl, publicUrl)
+        connectInternal(serverUrl, deviceId, deviceName, usePublicUrl, publicUrl, accessToken)
     }
     
     private fun connectInternal(serverUrl: String, deviceId: String, deviceName: String,
-                               usePublicUrl: Boolean, publicUrl: String) {
+                               usePublicUrl: Boolean, publicUrl: String,
+                               accessToken: String = "") {
         this.serverUrl = serverUrl
         this.deviceId = deviceId
         this.deviceName = deviceName
         this.usePublicUrl = usePublicUrl
         this.publicUrl = publicUrl
+        this.accessToken = accessToken
         this.shouldReconnect = true
         
         // 本次连接代次：先自增，再关旧连接，这样旧连接触发的回调会被判定为过期
@@ -151,14 +157,20 @@ class WebSocketClient {
         
         _connectionState.value = ConnectionState.CONNECTING
         
+        // 查询参数必须转义：设备名可能含中文/空格，令牌也可能含特殊字符
+        val query = "device_id=${URLEncoder.encode(deviceId, "UTF-8")}" +
+                "&device_name=${URLEncoder.encode(deviceName, "UTF-8")}" +
+                if (accessToken.isNotBlank())
+                    "&token=${URLEncoder.encode(accessToken, "UTF-8")}" else ""
+
         // 根据连接类型选择协议（公网使用 WSS，局域网使用 WS）
         val wsUrl = if (usePublicUrl && publicUrl.isNotBlank()) {
             // 公网地址：使用 wss:// 协议
             val host = publicUrl.removePrefix("https://").removePrefix("http://").removeSuffix("/")
-            "wss://$host/ws/chat?device_id=$deviceId&device_name=$deviceName"
+            "wss://$host/ws/chat?$query"
         } else {
             // 局域网地址：使用 ws:// 协议
-            "ws://$serverUrl/ws/chat?device_id=$deviceId&device_name=$deviceName"
+            "ws://$serverUrl/ws/chat?$query"
         }
         Log.d(TAG, "Connecting to: $wsUrl")
         
@@ -250,7 +262,7 @@ class WebSocketClient {
             if (!shouldReconnect) return@launch
             reconnectAttempts = attempt
             if (serverUrl.isNotEmpty()) {
-                connectInternal(serverUrl, deviceId, deviceName, usePublicUrl, publicUrl)
+                connectInternal(serverUrl, deviceId, deviceName, usePublicUrl, publicUrl, accessToken)
             } else {
                 // 没有可用地址，重连无意义，避免状态永远停在 CONNECTING
                 _connectionState.value = ConnectionState.DISCONNECTED

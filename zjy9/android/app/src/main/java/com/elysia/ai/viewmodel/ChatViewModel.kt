@@ -169,7 +169,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             deviceId = "android_${Build.DEVICE}",
             deviceName = deviceName,
             usePublicUrl = config.usePublicUrl,
-            publicUrl = config.publicUrl
+            publicUrl = config.publicUrl,
+            accessToken = config.accessToken
         )
     }
     

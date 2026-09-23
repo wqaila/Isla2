@@ -133,4 +133,7 @@ data class ServerConfig(
     val autoConnect: Boolean = true,
     val usePublicUrl: Boolean = false,    // 是否使用公网地址
     val publicUrl: String = "",           // 公网地址，如 xxx.trycloudflare.com
+    // 服务端 api_token。服务端设置后，WebSocket 也必须带令牌，否则会被拒绝。
+    // 有默认值，所以旧版本存下来的配置反序列化后仍然可用（默认空 = 未启用认证）。
+    val accessToken: String = "",
 )

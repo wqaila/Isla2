@@ -53,6 +53,7 @@ fun SettingsScreen(
     var autoConnect by remember(config) { mutableStateOf(config.autoConnect) }
     var usePublicUrl by remember(config) { mutableStateOf(config.usePublicUrl) }
     var publicUrl by remember(config) { mutableStateOf(config.publicUrl) }
+    var accessToken by remember(config) { mutableStateOf(config.accessToken) }
 
     // 验证状态
     var ipError by remember { mutableStateOf<String?>(null) }
@@ -115,7 +116,8 @@ fun SettingsScreen(
         connectionType = connectionType,
         autoConnect = autoConnect,
         usePublicUrl = usePublicUrl,
-        publicUrl = publicUrl.trim()
+        publicUrl = publicUrl.trim(),
+        accessToken = accessToken.trim()
     )
 
     /** 保存配置；校验失败返回 false（调用方据此决定要不要继续连接） */
@@ -328,6 +330,27 @@ fun SettingsScreen(
                         }
                     }
                 }
+
+                // 访问令牌：服务端设置了 api_token 后，WebSocket 也必须带令牌，
+                // 否则连接会被服务端拒绝（403 / close 1008）。留空 = 服务端未启用认证。
+                OutlinedTextField(
+                    value = accessToken,
+                    onValueChange = { accessToken = it },
+                    label = { Text("访问令牌（可选）", color = TextSecondary) },
+                    placeholder = {
+                        Text(
+                            "与服务端 /api/config 里的 api_token 保持一致",
+                            color = TextSecondary.copy(alpha = 0.35f)
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.Lock, null, tint = ElysiaPink)
+                    },
+                    colors = fieldColors(focusColor = ElysiaPink),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
             }
 
             // ===== 连接方式 =====

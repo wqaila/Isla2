@@ -22,9 +22,69 @@ _all_conns_lock = threading.Lock()
 _BUSY_TIMEOUT_MS = 5000
 
 
+# ===== Schema 版本与迁移 =====
+#
+# 之前完全没有迁移机制：表结构是"一次建好、永不改变"的假设。一旦要加字段，
+# 老数据库不会自动升级（要么启动报错，要么静默用错结构），而这个库已经跑了
+# 几个月、里面是真实对话记录。
+#
+# 现在用 SQLite 内置的 PRAGMA user_version 记录版本号，按版本逐级升级。
+#
+# 以后要改表结构时：
+#   1. 把 SCHEMA_VERSION 加 1
+#   2. 在 _MIGRATIONS 里补一个该版本的迁移函数
+#   3. 同时把新列写进上面的 CREATE TABLE（让全新库直接就是最新结构）
+# 迁移函数必须是**幂等**的——全新库走 CREATE TABLE 时已经带上新列了，
+# 迁移函数再执行一次不能出错。
+
+SCHEMA_VERSION = 1
+
+
+def _table_columns(cursor, table: str) -> set:
+    """返回某张表已有的列名集合（用于幂等判断）"""
+    return {row[1] for row in cursor.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_v1(cursor, conn):
+    """v1：给 chat_sessions 增加 title 字段（会话标题）。"""
+    if "title" not in _table_columns(cursor, "chat_sessions"):
+        cursor.execute("ALTER TABLE chat_sessions ADD COLUMN title TEXT DEFAULT ''")
+
+
+_MIGRATIONS = {
+    1: _migrate_v1,
+}
+
+
+def _apply_migrations(cursor, conn) -> int:
+    """把数据库从当前版本逐级升级到 SCHEMA_VERSION，返回升级后的版本号"""
+    current = cursor.execute("PRAGMA user_version").fetchone()[0]
+    if current >= SCHEMA_VERSION:
+        return current
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        fn = _MIGRATIONS.get(version)
+        if fn is not None:
+            fn(cursor, conn)
+        # PRAGMA 不支持参数绑定；version 来自 range()，不存在注入风险
+        cursor.execute(f"PRAGMA user_version={version}")
+    conn.commit()
+    return SCHEMA_VERSION
+
+
+# 连接"代次"：close_all_connections() 会 +1。
+# 为什么需要：threading.local 只能改**本线程**的属性。close_all_connections()
+# 在 A 线程关掉了 B 线程的连接后，没法清掉 B 线程的缓存引用，B 线程之后会
+# 一直拿到一个已关闭的连接，永久报 "Cannot operate on a closed database"。
+# 用代次号让各线程自己发现"我缓存的连接已经作废了"，无需昂贵的探活查询。
+_conn_generation = 0
+
+
 def _get_conn() -> sqlite3.Connection:
     """获取当前线程的数据库连接（懒初始化 + 复用）"""
-    if not hasattr(_local, 'conn') or _local.conn is None:
+    conn = getattr(_local, "conn", None)
+    if conn is not None and getattr(_local, "gen", -1) != _conn_generation:
+        conn = None                     # 全局已换代，本线程缓存的连接作废
+    if conn is None:
         conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -32,9 +92,10 @@ def _get_conn() -> sqlite3.Connection:
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
+        _local.gen = _conn_generation
         with _all_conns_lock:
             _all_conns.append(conn)
-    return _local.conn
+    return conn
 
 
 def get_connection():
@@ -65,6 +126,7 @@ def close_connection():
 
 def close_all_connections():
     """关闭所有线程创建的连接（优雅关闭时调用，防止连接泄漏）"""
+    global _conn_generation
     with _all_conns_lock:
         for conn in list(_all_conns):
             try:
@@ -72,6 +134,8 @@ def close_all_connections():
             except Exception:
                 pass
         _all_conns.clear()
+    # 换代：其它线程下次取连接时会发现自己的缓存已作废，自动重建
+    _conn_generation += 1
     _local.conn = None
 
 
@@ -90,7 +154,8 @@ def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
                 message_count INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'active'
+                status TEXT DEFAULT 'active',
+                title TEXT DEFAULT ''
             )
         """)
 
@@ -141,6 +206,10 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_level ON system_logs(level, created_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_conn_logs_event ON connection_logs(event, created_at)")
 
+        # 结构升级：老库在这里补齐后来新增的字段（全新库因 CREATE TABLE 已是最新，迁移为空操作）
+        applied = _apply_migrations(cursor, conn)
+        print(f"[DB] schema 版本: {applied}")
+
         conn.commit()
 
 
@@ -169,6 +238,37 @@ def update_session_active(session_id: str):
         "UPDATE chat_sessions SET last_active = CURRENT_TIMESTAMP WHERE id = ?",
         (session_id,)
     )
+
+
+def set_session_title(session_id: str, title: str) -> bool:
+    """设置会话标题"""
+    _execute_with_lock(
+        "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        ((title or "").strip()[:100], session_id)
+    )
+    return True
+
+
+def auto_title_session(session_id: str, text: str) -> None:
+    """会话还没有标题时，用首条用户消息自动起一个。
+
+    只在 title 为空时写入，所以后续消息不会覆盖。失败不影响主流程。
+    """
+    snippet = " ".join((text or "").split())
+    if not snippet:
+        return
+    snippet = snippet[:20] + ("…" if len(snippet) > 20 else "")
+    try:
+        with _write_lock:
+            conn = _get_conn()
+            conn.execute(
+                "UPDATE chat_sessions SET title = ? "
+                "WHERE id = ? AND (title IS NULL OR title = '')",
+                (snippet, session_id)
+            )
+            conn.commit()
+    except Exception:
+        pass
 
 
 def get_recent_sessions(limit: int = 20) -> list:
@@ -483,6 +583,49 @@ def trim_system_logs(max_rows: int = 20000) -> int:
         )
         conn.commit()
         return cursor.rowcount
+
+
+def trim_chat_messages(max_per_session: int = 500) -> int:
+    """每个会话只保留最近 max_per_session 条消息，返回删除的行数。
+
+    system_logs 早有 trim_system_logs，但 chat_messages 一直没有裁剪策略 ——
+    对话会无限增长。对一个"陪伴型"应用来说，这是最容易忽略又迟早要还的债。
+
+    注意：message_count 是**增量维护**的（保存 +1 / 删除单条 -1），所以裁剪完
+    必须整体重算一次，否则会话列表上的消息数会和实际对不上。
+    """
+    if max_per_session <= 0:
+        return 0
+    conn = _get_conn()
+    with _write_lock:
+        # 便宜的早退：总量都没超过单会话上限，就不可能超限
+        total = conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0]
+        if total <= max_per_session:
+            return 0
+
+        cursor = conn.execute(
+            """DELETE FROM chat_messages WHERE rowid IN (
+                   SELECT rowid FROM (
+                       SELECT rowid,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY session_id
+                                  ORDER BY created_at DESC, rowid DESC
+                              ) AS rn
+                       FROM chat_messages
+                   ) WHERE rn > ?
+               )""",
+            (max_per_session,)
+        )
+        deleted = cursor.rowcount
+        if deleted:
+            conn.execute(
+                """UPDATE chat_sessions SET message_count = (
+                       SELECT COUNT(*) FROM chat_messages
+                       WHERE session_id = chat_sessions.id
+                   )"""
+            )
+            conn.commit()
+        return deleted
 
 
 # ===== 统计 =====

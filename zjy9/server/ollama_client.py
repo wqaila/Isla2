@@ -8,6 +8,19 @@ import re
 from collections import Counter
 import httpx
 from config import OLLAMA_BASE_URL, OLLAMA_MODEL, REQUEST_TIMEOUT, runtime
+from retry import retry_async
+
+
+def _retry_attempts() -> int:
+    """模型调用的重试次数（含首次），可运行时配置"""
+    try:
+        return max(1, int(runtime("model_retry_attempts", 3)))
+    except Exception:
+        return 3
+
+
+def _on_retry_log(attempt: int, total: int, delay: float, exc: Exception) -> None:
+    print(f"[Ollama] 第 {attempt}/{total - 1} 次重试，{delay:.1f}s 后重来（{type(exc).__name__}）")
 
 
 # ===== 生成参数配置（平衡创意与防重复） =====
@@ -202,10 +215,18 @@ class OllamaClient:
         """关闭客户端连接池"""
         await self._client.aclose()
 
-    async def check_status(self) -> dict:
-        """检查 Ollama 服务状态"""
+    async def check_status(self, attempts: int = 1) -> dict:
+        """检查 Ollama 服务状态。
+
+        attempts 默认 1 —— 因为它同时被健康探针（/health）调用，探针必须快速
+        返回，不能在 Ollama 挂掉时还退避重试好几秒。需要"等 Ollama 起来"的
+        场景（服务启动、自动路由）显式传更大的值。
+        """
         try:
-            resp = await self._client.get(f"{self.base_url}/api/tags")
+            resp = await retry_async(
+                self._client.get, f"{self.base_url}/api/tags",
+                attempts=attempts, on_retry=_on_retry_log,
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 models = [m["name"] for m in data.get("models", [])]
@@ -224,11 +245,12 @@ class OllamaClient:
             return {"status": "offline", "error": str(e)}
 
     async def get_model_info(self) -> dict:
-        """获取模型详细信息"""
+        """获取模型详细信息（带重试）"""
         try:
-            resp = await self._client.post(
-                f"{self.base_url}/api/show",
+            resp = await retry_async(
+                self._client.post, f"{self.base_url}/api/show",
                 json={"name": self.model},
+                attempts=_retry_attempts(), on_retry=_on_retry_log,
             )
             if resp.status_code == 200:
                 return resp.json()
@@ -281,11 +303,27 @@ class OllamaClient:
         if stream:
             # 流式请求
             try:
-                async with self._client.stream(
-                    "POST",
-                    f"{self.base_url}/api/chat",
-                    json=payload,
-                ) as resp:
+                # 建连阶段可重试：Ollama 未启动/正在启动时会 ConnectError，
+                # 多试几次往往就能连上；5xx（服务未就绪）也一并重试。
+                # 注意：开始吐字之后（sent_len > 0）绝不能重试——流式协议只能追加，
+                # 重试会把已经发给客户端的内容再发一遍。
+                _req = self._client.build_request(
+                    "POST", f"{self.base_url}/api/chat", json=payload)
+
+                async def _open_stream():
+                    r = await self._client.send(_req, stream=True)
+                    if r.status_code >= 500:
+                        # 先把失败的响应关掉再抛，避免连接泄漏
+                        await r.aclose()
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {r.status_code}", request=_req, response=r)
+                    return r
+
+                resp = await retry_async(
+                    _open_stream,
+                    attempts=_retry_attempts(), on_retry=_on_retry_log,
+                )
+                try:
                     if resp.status_code != 200:
                         error_body = ""
                         async for chunk in resp.aiter_text():
@@ -414,6 +452,8 @@ class OllamaClient:
                             "response_time_ms": 0,
                         }
                         sent_len += len(content)
+                finally:
+                    await resp.aclose()
 
             except httpx.ReadTimeout:
                 yield _make_error_response("[错误] Ollama 响应超时，模型可能正在加载中", start_time)
@@ -424,9 +464,10 @@ class OllamaClient:
         else:
             # 非流式请求
             try:
-                resp = await self._client.post(
-                    f"{self.base_url}/api/chat",
+                resp = await retry_async(
+                    self._client.post, f"{self.base_url}/api/chat",
                     json=payload,
+                    attempts=_retry_attempts(), on_retry=_on_retry_log,
                 )
                 response_time = int((time.time() - start_time) * 1000)
 

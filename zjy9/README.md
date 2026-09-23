@@ -273,7 +273,8 @@ ollama create elysia-lora -f Modelfile
 
 ### 4. 硬字符限制（最后防线）
 
-无论是否检测到重复，输出超过 **500 字符**时自动截断，防止极端情况下的超长重复输出。
+无论是否检测到重复，输出超过 **400 字符**时自动截断，防止极端情况下的超长重复输出。
+（实际值以 `server/ollama_client.py` 的 `MAX_OUTPUT_CHARS` 为准。）
 
 ### 5. 启动脚本自动清理端口
 
@@ -298,7 +299,7 @@ ollama create elysia-lora -f Modelfile
 `elysia_prompt.py` 中定义了完整的角色人设：
 
 - **System Prompt**：包含性格特点、说话风格、经典台词、反重复指令
-- **Few-Shot 示例**：5 组示例对话（打招呼/自我介绍/天气/安慰/讲笑话）
+- **Few-Shot 示例**：8 组示例对话（打招呼/自我介绍/天气/安慰/讲笑话等）
 - **自动构建**：`build_messages()` 函数自动组装 System + 记忆 + Few-Shot + 历史 + 用户消息
 
 ## 情感识别引擎
@@ -915,13 +916,28 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
 
 ## 测试
 
+所有测试脚本都可以单独跑，也可以用汇总入口一次跑完（推荐，CI 用的就是它）：
+
 ```bash
 cd server
-./venv/Scripts/python.exe tests/test_regressions.py       # 30 项接口/数据层回归
-./venv/Scripts/python.exe tests/test_stream_truncation.py # 14 项流式截断逻辑
+./venv/Scripts/python.exe run_tests.py      # 汇总入口：全部脚本依次执行并汇总结果
 ```
 
-两个脚本都会自行清理测试数据，可重复运行。
+| 脚本 | 覆盖内容 | 需要 Ollama |
+|------|----------|-------------|
+| `tests/test_regressions.py` | 46 项 接口 / 数据层 / 提示词 / 重试回归 | 否 |
+| `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
+| `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
+| `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |
+| `tests/test_reliability.py` | 28 项 就绪探针 / 并发闸门 / WS 鉴权 | 部分 |
+| `tests/test_chat_e2e.py` | 12 项 端到端对话（真实模型） | 是 |
+
+说明：
+
+- 需要 Ollama 的用例在 Ollama 未运行时**自动跳过，不判失败**。
+- 所有脚本都会自行清理测试数据（会话、记忆库条目），可重复运行。
+- `test_data_retention.py` 必须在**临时数据库**上跑 —— 它会裁剪消息表，
+  在真实库上跑会把所有会话一起裁掉。
 
 ## 关于 `website/`
 

@@ -25,6 +25,9 @@ class FakeResponse:
         self._lines = lines
         self.status_code = status
 
+    async def aclose(self):
+        pass
+
     async def aiter_lines(self):
         for ln in self._lines:
             yield ln
@@ -46,11 +49,27 @@ class FakeStreamCtx:
 
 
 class FakeClient:
-    def __init__(self, lines):
-        self._lines = lines
+    """httpx.AsyncClient 的替身。
 
-    def stream(self, *a, **kw):
-        return FakeStreamCtx(FakeResponse(self._lines))
+    注意：ollama_client 的流式路径现在走 `build_request` + `send(stream=True)`，
+    而不是 `client.stream()` 上下文管理器 —— 目的是让「建连阶段」可以被重试
+    （上下文管理器进不去就没法重试）。所以替身必须实现这两个方法。
+    """
+
+    def __init__(self, lines, status=200):
+        self._lines = lines
+        self._status = status
+        self.sent_requests = 0
+
+    def build_request(self, *a, **kw):
+        return {"method": a[0] if a else "POST", "kwargs": kw}
+
+    async def send(self, request, stream=False, **kw):
+        self.sent_requests += 1
+        return FakeResponse(self._lines, self._status)
+
+    async def stream(self, *a, **kw):
+        return FakeStreamCtx(FakeResponse(self._lines, self._status))
 
     async def aclose(self):
         pass

@@ -75,7 +75,7 @@ def _check_api_token(path: str, auth_header: str | None) -> bool:
         "/static",
         "/ws",
     )
-    public_paths = {"/", "/health", "/dashboard", "/docs", "/openapi.json", "/redoc"}
+    public_paths = {"/", "/health", "/ready", "/dashboard", "/docs", "/openapi.json", "/redoc"}
     if path in public_paths or path.startswith(public_prefixes):
         return True
 
@@ -86,6 +86,53 @@ def _check_api_token(path: str, auth_header: str | None) -> bool:
         if hmac.compare_digest(token, token_expected):
             return True
     return False
+
+
+# ===== WebSocket 鉴权 =====
+#
+# ⚠️ 这里以前是**完全空缺**的：HTTP 中间件管不到 WebSocket，而两个 WS 端点
+# 谁都没校验令牌。叠加 logger_service.chat_log() 会把聊天正文广播给所有日志
+# 订阅者，导致任何能访问到端口的人（开了公网隧道就是整个互联网）连上
+# /ws/logs 就能实时读到用户与 AI 的对话内容，连 /ws/chat 还能白嫖推理并
+# 绕过 /api/chat 的限流。
+#
+# 向后兼容：只有设置了 api_token 才校验；留空时行为与以前完全一致。
+_WS_PROTOCOL_PREFIXES = ("bearer.", "token.")
+
+
+def _ws_token_ok(websocket: WebSocket) -> bool:
+    """WebSocket 握手鉴权。令牌可来自（按优先级）：
+        1. Sec-WebSocket-Protocol 子协议（推荐：不会落进 URL 与访问日志）
+        2. query 参数 token
+        3. Authorization 头
+    """
+    expected = _current_api_token()
+    if not expected:
+        return True
+
+    candidates: list[str] = []
+    proto = websocket.headers.get("sec-websocket-protocol") or ""
+    for part in proto.split(","):
+        part = part.strip()
+        for prefix in _WS_PROTOCOL_PREFIXES:
+            if part.startswith(prefix):
+                candidates.append(part[len(prefix):])
+    q = websocket.query_params.get("token")
+    if q:
+        candidates.append(q)
+    auth = websocket.headers.get("authorization") or ""
+    if auth.startswith("Bearer "):
+        candidates.append(auth[7:])
+
+    return any(hmac.compare_digest(c, expected) for c in candidates)
+
+
+async def _reject_ws(websocket: WebSocket, reason: str = "需要认证") -> None:
+    """拒绝未通过鉴权的 WebSocket 连接（close 在 accept 之前 → 客户端收到 403）"""
+    try:
+        await websocket.close(code=1008, reason=reason)
+    except Exception:
+        pass
 
 
 # ===== 速率限制 =====
@@ -106,8 +153,76 @@ def _check_rate_limit(client_ip: str, limit: int, window: int = 60) -> bool:
     return True
 
 
+# ===== 生成并发闸门 =====
+#
+# Ollama 本身是**串行推理**：多个并发请求会全部堆在服务端排队，内存、超时、
+# 体验一起失控，而外部完全看不到"卡住了"。这里限制"同时在生成"的数量，
+# 超出时**快速失败**（而不是无限排队），并把占用情况暴露给 /ready。
+#
+# Semaphore 必须在事件循环内创建。lifespan 里会预建；若未初始化（例如测试
+# 直接用 TestClient 而没进上下文管理器），按配置惰性创建。
+_generation_semaphore: asyncio.Semaphore | None = None
+_generation_inflight = 0
+
+
+def _gen_limit() -> int:
+    """同时在生成的上限（运行时配置）"""
+    try:
+        return max(1, int(runtime("max_concurrent_generations", 2)))
+    except Exception:
+        return 2
+
+
+def _gen_semaphore() -> asyncio.Semaphore:
+    global _generation_semaphore
+    if _generation_semaphore is None:
+        _generation_semaphore = asyncio.Semaphore(_gen_limit())
+    return _generation_semaphore
+
+
+def generation_stats() -> dict:
+    """生成闸门占用情况（供 /ready 与状态接口展示）"""
+    sem = _generation_semaphore
+    if sem is None:
+        limit = _gen_limit()
+    else:
+        # 用「当前可用配额 + 正在占用」推算真实容量，而不是直接报配置值 ——
+        # 配置可能在闸门建好之后被改过，报配置值会和真实容量对不上。
+        limit = _generation_inflight + int(getattr(sem, "_value", _gen_limit()))
+    return {
+        "limit": limit,
+        "inflight": _generation_inflight,
+        "available": max(0, limit - _generation_inflight),
+    }
+
+
+async def _acquire_generation_slot() -> bool:
+    """尝试占用一个生成槽位；已满则立即返回 False（不排队）"""
+    global _generation_inflight
+    try:
+        await asyncio.wait_for(_gen_semaphore().acquire(), timeout=0.05)
+    except asyncio.TimeoutError:
+        return False
+    _generation_inflight += 1
+    return True
+
+
+def _release_generation_slot() -> None:
+    global _generation_inflight
+    _generation_inflight = max(0, _generation_inflight - 1)
+    _gen_semaphore().release()
+
+
+def _generation_busy_error() -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="当前生成任务已满，请稍后再试",
+        headers={"Retry-After": "5"},
+    )
+
+
 async def _cleanup_rate_limits():
-    """定期清理过期的速率限制记录"""
+    """定期清理：过期的速率限制记录 + 数据保留（日志表 / 消息表裁剪）"""
     while True:
         await asyncio.sleep(300)
         now = time.time()
@@ -117,6 +232,20 @@ async def _cleanup_rate_limits():
         ]
         for ip in expired_ips:
             del _rate_limit_store[ip]
+
+        # 数据保留：system_logs 与 chat_messages 都不能无限增长。
+        # 放在后台循环里而不是请求路径上，避免给聊天加延迟；失败也不影响主循环。
+        try:
+            trimmed_logs = db.trim_system_logs(
+                int(runtime("system_logs_max_rows", 20000)))
+            trimmed_msgs = db.trim_chat_messages(
+                int(runtime("chat_messages_max_per_session", 500)))
+            if trimmed_logs or trimmed_msgs:
+                logger.info(
+                    "system",
+                    f"数据保留清理：日志 {trimmed_logs} 行 / 消息 {trimmed_msgs} 行")
+        except Exception as e:
+            logger.warning("system", f"数据保留清理失败: {str(e)[:100]}")
 
 
 # ===== 生命周期（FIX #13+#14: 合并 on_event，添加优雅关闭） =====
@@ -134,8 +263,8 @@ async def lifespan(app: FastAPI):
     logger.info("system", f"本机 IP: {local_ip}")
     logger.info("system", f"监控面板: http://localhost:{SERVER_PORT}/dashboard")
 
-    # 检查 Ollama 状态
-    status = await ollama_client.check_status()
+    # 检查 Ollama 状态（启动时多试几次：Ollama 可能正在起来）
+    status = await ollama_client.check_status(attempts=3)
     if status["status"] == "running":
         logger.info("model", f"Ollama 运行中，模型: {status.get('models', [])}")
     else:
@@ -310,6 +439,51 @@ async def health_check():
     }
 
 
+@app.get("/ready")
+async def readiness_check():
+    """就绪探针：区分「进程活着」与「真的能提供服务」。
+
+    /health 只回答"进程还在吗"；/ready 额外检查数据库、模型来源与生成闸门，
+    任意一项不满足就返回 503，方便反向代理 / 客户端决定要不要把流量打过来。
+    注意这里的 Ollama 探测**不重试** —— 探针必须快速返回。
+    """
+    checks: dict = {}
+
+    try:
+        db.get_stats()
+        checks["database"] = True
+    except Exception as e:
+        checks["database"] = f"error: {str(e)[:80]}"
+
+    ollama_ok = False
+    try:
+        st = await ollama_client.check_status()
+        ollama_ok = st.get("status") == "running" and st.get("model_available", False)
+    except Exception:
+        pass
+    cloud_ok = cloud_client.is_configured()
+    checks["ollama"] = ollama_ok
+    checks["cloud"] = cloud_ok
+
+    model_source = runtime("model_source", MODEL_SOURCE)
+    if model_source == "ollama":
+        model_ready = ollama_ok
+    elif model_source == "cloud":
+        model_ready = cloud_ok
+    else:                       # auto：任一可用即可
+        model_ready = ollama_ok or cloud_ok
+    checks["model_ready"] = model_ready
+    checks["generation"] = generation_stats()
+
+    ready = bool(checks["database"]) and model_ready
+    return JSONResponse({
+        "status": "ready" if ready else "not_ready",
+        "timestamp": datetime.now().isoformat(),
+        "model_source": model_source,
+        "checks": checks,
+    }, status_code=200 if ready else 503)
+
+
 @app.get("/api/status")
 async def get_status():
     """获取服务状态"""
@@ -464,6 +638,9 @@ async def update_runtime_config(updates: dict):
         # 上下文相关（直接影响人设是否被截断）
         "num_ctx", "use_fewshot_local", "memory_context_max_chars",
         "learning_context_max_chars", "max_history_messages",
+        # 可靠性与数据保留
+        "model_retry_attempts", "max_concurrent_generations",
+        "system_logs_max_rows", "chat_messages_max_per_session",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:
@@ -595,6 +772,7 @@ async def chat(req: ChatRequest):
 
     # 保存用户消息
     db.save_message(session_id, "user", req.message)
+    db.auto_title_session(session_id, req.message)   # 首条消息自动作为会话标题
     logger.chat_log(session_id, "user", req.message)
 
     # 构建上下文（历史/记忆/时间/情感）——REST 与 WebSocket 共用同一实现
@@ -617,6 +795,16 @@ async def chat(req: ChatRequest):
             tokens = 0
             response_ms = 0
             finished = False
+            # 生成并发闸门：满了就快速失败，不排队。
+            # 放在生成器内部而不是外面，是为了**绝不泄漏槽位** —— 只要生成器
+            # 跑起来，下面的 finally 就一定会释放；而在外面占用的话，若客户端
+            # 在响应开始前就断开，可能永远没人释放，最终把所有人挡死。
+            if not await _acquire_generation_slot():
+                yield "data: " + json.dumps({
+                    "content": "\n\n[错误] 当前生成任务已满，请稍后再试",
+                    "done": True, "tokens": 0, "response_ms": 0,
+                }) + "\n\n"
+                return
             try:
                 # FIX: 为流式生成添加整体超时保护
                 stream_gen = get_ai_stream(req.message, history, memory_context=memory_context, session_id=session_id, emotion_context=emotion_context, time_context=time_context)
@@ -672,18 +860,24 @@ async def chat(req: ChatRequest):
                                      full_content, tokens, response_ms)
                     except Exception as e:
                         logger.warning("chat", f"中断回复落库失败: {str(e)[:100]}")
+                _release_generation_slot()
 
         return StreamingResponse(generate(), media_type="text/event-stream")
     else:
-        # 非流式返回
-        full_content = ""
-        tokens = 0
-        response_ms = 0
-        async for chunk in get_ai_stream(req.message, history, memory_context=memory_context, session_id=session_id, emotion_context=emotion_context, time_context=time_context):
-            # 用 .get 兜底：个别 chunk（例如只带 done 标记的收尾块）可能没有 content 键
-            full_content += chunk.get("content", "") or ""
-            tokens = chunk.get("total_tokens", tokens) or tokens
-            response_ms = chunk.get("response_time_ms", response_ms) or response_ms
+        # 非流式返回：这条路能直接返回 429，所以闸门占用放在外面
+        if not await _acquire_generation_slot():
+            raise _generation_busy_error()
+        try:
+            full_content = ""
+            tokens = 0
+            response_ms = 0
+            async for chunk in get_ai_stream(req.message, history, memory_context=memory_context, session_id=session_id, emotion_context=emotion_context, time_context=time_context):
+                # 用 .get 兜底：个别 chunk（例如只带 done 标记的收尾块）可能没有 content 键
+                full_content += chunk.get("content", "") or ""
+                tokens = chunk.get("total_tokens", tokens) or tokens
+                response_ms = chunk.get("response_time_ms", response_ms) or response_ms
+        finally:
+            _release_generation_slot()
 
         # 落库 + 记忆 + 学习引擎（与流式路径共用同一实现）
         _finish_turn(session_id, req.device_id, req.message,
@@ -898,7 +1092,7 @@ async def get_ai_stream(user_message: str, history: list, source: str = None,
     
     # auto 模式：优先 Ollama，不可用则用云端
     if use_source == "auto":
-        ollama_status = await ollama_client.check_status()
+        ollama_status = await ollama_client.check_status(attempts=3)
         if ollama_status["status"] == "running" and ollama_status.get("model_available", False):
             use_source = "ollama"
         elif cloud_client.is_configured():
@@ -968,6 +1162,10 @@ async def websocket_chat(websocket: WebSocket):
     WebSocket 聊天端点
     客户端连接后通过 JSON 消息进行实时聊天
     """
+    if not _ws_token_ok(websocket):
+        await _reject_ws(websocket)
+        return
+
     connection_id = str(uuid.uuid4())
     device_id = websocket.query_params.get("device_id", "anonymous")
     device_name = websocket.query_params.get("device_name", "")
@@ -1027,6 +1225,7 @@ async def websocket_chat(websocket: WebSocket):
                     continue
 
                 db.save_message(session_id, "user", user_message)
+                db.auto_title_session(session_id, user_message)
                 logger.chat_log(session_id, "user", user_message)
 
                 # 把学习引擎切到该设备的画像（多用户/多设备隔离）
@@ -1059,48 +1258,61 @@ async def websocket_chat(websocket: WebSocket):
                 _clear_stop(session_id)
                 timeout_s = int(runtime("request_timeout", REQUEST_TIMEOUT))
 
+                # 生成并发闸门：满了就告知客户端稍后再试（不排队）。
+                # 放在这里而不是生成器里 —— WS 路径是"请求-响应"式循环，
+                # 用一个 try/finally 包住整段生成即可保证槽位一定释放。
+                if not await _acquire_generation_slot():
+                    await connection_manager.send_to(connection_id, {
+                        "type": "error",
+                        "message": "当前生成任务已满，请稍后再试",
+                    })
+                    continue
+
                 try:
-                    # FIX #5: 添加超时机制
-                    async def _stream_reply():
-                        nonlocal full_content, tokens, response_ms, stopped
-                        async for chunk in get_ai_stream(user_message, history, memory_context=memory_context, session_id=session_id, emotion_context=emotion_context, time_context=time_context):
-                            # 终止检查：WebSocket 路径此前完全没有实现"停止"，
-                            # 手机上点了终止也没用
-                            if _is_stopped(session_id):
-                                stopped = True
-                                suffix = "\n\n⏹ [已手动终止]"
-                                full_content += suffix
-                                await connection_manager.send_stream_chunk(
-                                    connection_id, suffix, True,
-                                    tokens=tokens, response_ms=response_ms,
-                                )
-                                return
+                    try:
+                        # FIX #5: 添加超时机制
+                        async def _stream_reply():
+                            nonlocal full_content, tokens, response_ms, stopped
+                            async for chunk in get_ai_stream(user_message, history, memory_context=memory_context, session_id=session_id, emotion_context=emotion_context, time_context=time_context):
+                                # 终止检查：WebSocket 路径此前完全没有实现"停止"，
+                                # 手机上点了终止也没用
+                                if _is_stopped(session_id):
+                                    stopped = True
+                                    suffix = "\n\n⏹ [已手动终止]"
+                                    full_content += suffix
+                                    await connection_manager.send_stream_chunk(
+                                        connection_id, suffix, True,
+                                        tokens=tokens, response_ms=response_ms,
+                                    )
+                                    return
 
-                            # FIX: done chunk 也可能包含内容（如错误消息），不能丢弃
-                            if chunk.get("content"):
-                                full_content += chunk["content"]
-                                await connection_manager.send_stream_chunk(
-                                    connection_id, chunk["content"], False,
-                                )
-                            if chunk.get("done"):
-                                tokens = chunk.get("total_tokens", 0)
-                                response_ms = chunk.get("response_time_ms", 0)
-                                await connection_manager.send_stream_chunk(
-                                    connection_id, "", True,
-                                    tokens=tokens, response_ms=response_ms,
-                                )
+                                # FIX: done chunk 也可能包含内容（如错误消息），不能丢弃
+                                if chunk.get("content"):
+                                    full_content += chunk["content"]
+                                    await connection_manager.send_stream_chunk(
+                                        connection_id, chunk["content"], False,
+                                    )
+                                if chunk.get("done"):
+                                    tokens = chunk.get("total_tokens", 0)
+                                    response_ms = chunk.get("response_time_ms", 0)
+                                    await connection_manager.send_stream_chunk(
+                                        connection_id, "", True,
+                                        tokens=tokens, response_ms=response_ms,
+                                    )
 
-                    await asyncio.wait_for(_stream_reply(), timeout=timeout_s)
-                except asyncio.TimeoutError:
-                    logger.error("chat", f"WebSocket 聊天超时 ({timeout_s}s)")
-                    await connection_manager.send_stream_chunk(
-                        connection_id, "\n\n[错误] 回复超时，请重试", True,
-                    )
-                except Exception as e:
-                    logger.error("chat", f"WebSocket 聊天异常: {str(e)}")
-                    await connection_manager.send_stream_chunk(
-                        connection_id, f"\n\n[错误] {str(e)[:100]}", True,
-                    )
+                        await asyncio.wait_for(_stream_reply(), timeout=timeout_s)
+                    except asyncio.TimeoutError:
+                        logger.error("chat", f"WebSocket 聊天超时 ({timeout_s}s)")
+                        await connection_manager.send_stream_chunk(
+                            connection_id, "\n\n[错误] 回复超时，请重试", True,
+                        )
+                    except Exception as e:
+                        logger.error("chat", f"WebSocket 聊天异常: {str(e)}")
+                        await connection_manager.send_stream_chunk(
+                            connection_id, f"\n\n[错误] {str(e)[:100]}", True,
+                        )
+                finally:
+                    _release_generation_slot()
 
                 if full_content:
                     _finish_turn(session_id, device_id, user_message,
@@ -1129,6 +1341,11 @@ async def websocket_logs(websocket: WebSocket):
     WebSocket 日志观察端点
     监控面板通过此端点实时接收日志
     """
+    # 这个端点会把聊天正文广播给订阅者，必须和聊天端点一样校验令牌
+    if not _ws_token_ok(websocket):
+        await _reject_ws(websocket)
+        return
+
     await connection_manager.add_log_observer(websocket)
     try:
         while True:

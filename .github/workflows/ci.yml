@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zjy9-server:
+    name: zjy9 服务端 · 静态检查 + 测试
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: zjy9/server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: zjy9/server/requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyflakes
+
+      - name: 语法编译检查
+        run: python -m compileall -q .
+
+      - name: 静态检查（pyflakes，零告警为门槛）
+        run: python -m pyflakes *.py tests/*.py
+
+      - name: 运行测试
+        # 需要 Ollama 的用例在 CI 上会自动跳过（脚本内部判断），不判失败
+        run: python run_tests.py
+
+  syntax-other-projects:
+    name: 其余项目 · 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 编译检查（排除虚拟环境与第三方 vendored 代码）
+        run: |
+          find zjy2 zjy5 zjy6 zjy7 zjy8 -name '*.py' \
+            -not -path '*/venv/*' -not -path '*/.venv/*' \
+            -not -path '*/lora_env/*' -not -path '*/llama.cpp/*' \
+            -not -path '*/__pycache__/*' \
+            -print0 | xargs -0 python -m py_compile

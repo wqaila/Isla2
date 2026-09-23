@@ -172,6 +172,52 @@ try:
     )[0]["content"]
     check("最终 system 提示词不含 [标签]", "[" not in sys_prompt)
 
+    print("\n=== 6. 模型调用重试（无需网络）===")
+    import asyncio as _asyncio
+    import httpx as _httpx
+    from retry import retry_async, is_retryable
+
+    class _Flaky:
+        """前 fail_times 次抛指定异常，之后成功"""
+        def __init__(self, exc, fail_times):
+            self.exc, self.fail_times, self.calls = exc, fail_times, 0
+
+        async def __call__(self):
+            self.calls += 1
+            if self.calls <= self.fail_times:
+                raise self.exc
+            return "ok"
+
+    f = _Flaky(_httpx.ConnectError("boom"), 2)
+    r = _asyncio.run(retry_async(f, attempts=3, base_delay=0.01))
+    check("连接错误会重试并最终成功", r == "ok" and f.calls == 3, f"calls={f.calls}")
+
+    _req = _httpx.Request("POST", "http://x")
+    f = _Flaky(_httpx.HTTPStatusError("401", request=_req,
+                                      response=_httpx.Response(401, request=_req)), 5)
+    try:
+        _asyncio.run(retry_async(f, attempts=3, base_delay=0.01))
+        raised = False
+    except _httpx.HTTPStatusError:
+        raised = True
+    check("4xx 不重试（立即失败，不浪费时间）", raised and f.calls == 1, f"calls={f.calls}")
+
+    f = _Flaky(_httpx.HTTPStatusError("503", request=_req,
+                                      response=_httpx.Response(503, request=_req)), 1)
+    r = _asyncio.run(retry_async(f, attempts=3, base_delay=0.01))
+    check("5xx 会重试", r == "ok" and f.calls == 2, f"calls={f.calls}")
+
+    f = _Flaky(_httpx.ReadTimeout("t"), 9)
+    try:
+        _asyncio.run(retry_async(f, attempts=2, base_delay=0.01))
+        raised = False
+    except _httpx.ReadTimeout:
+        raised = True
+    check("重试耗尽后抛出最后一次异常", raised and f.calls == 2, f"calls={f.calls}")
+
+    check("is_retryable 判定正确",
+          is_retryable(_httpx.ConnectError("x")) and not is_retryable(ValueError("x")))
+
 finally:
     # 清理测试数据
     db.delete_session(sid)

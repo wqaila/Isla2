@@ -7,6 +7,20 @@ import json
 import time
 import httpx
 from elysia_prompt import build_messages
+from config import runtime
+from retry import retry_async
+
+
+def _retry_attempts() -> int:
+    """云端调用的重试次数（含首次），可运行时配置"""
+    try:
+        return max(1, int(runtime("model_retry_attempts", 3)))
+    except Exception:
+        return 3
+
+
+def _on_retry_log(attempt: int, total: int, delay: float, exc: Exception) -> None:
+    print(f"[Cloud] 第 {attempt}/{total - 1} 次重试，{delay:.1f}s 后重来（{type(exc).__name__}）")
 
 # ===== 支持的云端 API 提供商 =====
 CLOUD_PROVIDERS = {
@@ -172,12 +186,27 @@ class CloudClient:
         start_time = time.time()
 
         try:
-            async with self._client.stream(
+            # 建连阶段可重试（网络抖动是云端最常见的失败原因）；
+            # 开始吐字后不再重试 —— 流式只能追加，重试会把内容重复发一遍。
+            _req = self._client.build_request(
                 "POST",
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-            ) as resp:
+            )
+
+            async def _open_stream():
+                r = await self._client.send(_req, stream=True)
+                if r.status_code >= 500:
+                    await r.aclose()
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {r.status_code}", request=_req, response=r)
+                return r
+
+            resp = await retry_async(
+                _open_stream, attempts=_retry_attempts(), on_retry=_on_retry_log,
+            )
+            try:
                     if resp.status_code != 200:
                         error_body = ""
                         async for chunk in resp.aiter_bytes():
@@ -219,6 +248,8 @@ class CloudClient:
                                     }
                             except json.JSONDecodeError:
                                 continue
+            finally:
+                await resp.aclose()
 
         except httpx.ConnectError:
             yield {
@@ -265,10 +296,12 @@ class CloudClient:
         }
 
         try:
-            resp = await self._client.post(
+            resp = await retry_async(
+                self._client.post,
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
+                attempts=_retry_attempts(), on_retry=_on_retry_log,
             )
             if resp.status_code == 200:
                 data = resp.json()

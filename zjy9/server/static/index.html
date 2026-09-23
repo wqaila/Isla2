@@ -891,7 +891,11 @@ async function loadPromptPreview() {
 // ===== WebSocket Live Logs =====
 let logWs = null;
 function connectLogWS() {
-    logWs = new WebSocket(`ws://${location.host}/ws/logs`);
+    // 协议跟随页面：HTTPS 页面必须用 wss://，写死 ws:// 会被浏览器当混合内容拦掉。
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const tok = getToken();
+    const qs = tok ? `?token=${encodeURIComponent(tok)}` : '';
+    logWs = new WebSocket(`${proto}//${location.host}/ws/logs${qs}`);
     logWs.onmessage = (e) => {
         const data = JSON.parse(e.data);
         if (data.type === 'log') {
@@ -903,7 +907,17 @@ function connectLogWS() {
             refreshDashboard();
         }
     };
-    logWs.onclose = () => setTimeout(connectLogWS, 3000);
+    logWs.onclose = (ev) => {
+        // 1008 = 服务端因鉴权失败拒绝。这种情况重试多少次都一样，别再无限重连刷日志。
+        if (ev && ev.code === 1008) {
+            appendLiveLog({
+                level: 'WARN', category: 'system',
+                message: '日志流认证失败：请在「服务设置」里填写访问令牌，然后刷新页面',
+            });
+            return;
+        }
+        setTimeout(connectLogWS, 3000);
+    };
 }
 function appendLiveLog(data) {
     const panels = ['dashLogPanel', 'logPanel'];

@@ -512,7 +512,14 @@ class ElysiaClient:
             self._add_system_msg("请输入服务器 IP 地址")
             return
 
+        # 服务端若设置了 api_token，/ws/chat 会要求认证。令牌从环境变量读取，
+        # 避免把凭据写死在脚本里：export ELYSIA_TOKEN=xxx
+        import os
+        from urllib.parse import quote
+        token = os.environ.get("ELYSIA_TOKEN", "").strip()
         ws_url = f"ws://{ip}:{port}/ws/chat?device_id=rpi&device_name=RPi"
+        if token:
+            ws_url += f"&token={quote(token)}"
         self._update_connection_status("connecting")
 
         self.status_bar_left.configure(text=f"正在连接 {ip}:{port}...")
