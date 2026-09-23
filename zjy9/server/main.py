@@ -558,6 +558,27 @@ def _finish_turn(session_id: str, device_id: str, user_message: str,
     return learn_result
 
 
+def _emotion_consistency(user_emotion, response_text: str):
+    """对 AI 回复做情绪分析，并与用户情绪比对一致性。
+
+    返回 (response_emotion: dict | None, consistency: dict | None)。
+
+    注意类型：check_response_consistency() 接收的是两个 **dict**（内部用
+    .get("valence") 取值），而 emotion_engine.analyze() 返回的是 EmotionResult
+    **数据类对象**。早前把对象/字符串直接传进去（且多传了一个参数），
+    导致 TypeError —— 且异常发生在回复生成之后，整轮对话都会失败。
+    """
+    if not response_text or len(response_text) <= 5:
+        return None, None
+    resp_emotion = analyze_generated_response(response_text)
+    user_emotion_dict = {
+        "valence": getattr(user_emotion, "valence", 0.0),
+        "arousal": getattr(user_emotion, "arousal", 0.0),
+    }
+    consistency = check_response_consistency(user_emotion_dict, resp_emotion)
+    return resp_emotion, consistency
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     """
@@ -622,8 +643,7 @@ async def chat(req: ChatRequest):
                                      full_content, tokens, response_ms)
                         finished = True
                         # ==== AI 回复情绪分析 + 一致性检查 ====
-                        resp_emotion = analyze_generated_response(full_content, emotion_result) if len(full_content) > 5 else None
-                        consistency = check_response_consistency(req.message, full_content) if len(full_content) > 5 else None
+                        resp_emotion, consistency = _emotion_consistency(emotion_result, full_content)
                         done_metadata = {
                             "content": "", "done": True,
                             "tokens": tokens, "response_ms": response_ms,
@@ -670,8 +690,7 @@ async def chat(req: ChatRequest):
                      full_content, tokens, response_ms)
 
         # ==== AI 回复情绪分析 + 一致性检查 ====
-        resp_emotion = analyze_generated_response(full_content, emotion_result) if len(full_content) > 5 else None
-        consistency = check_response_consistency(req.message, full_content) if len(full_content) > 5 else None
+        resp_emotion, consistency = _emotion_consistency(emotion_result, full_content)
         response_data = {
             "session_id": session_id,
             "content": full_content,
@@ -806,9 +825,9 @@ async def get_cloud_providers():
 @app.get("/api/cloud/config")
 async def get_cloud_config():
     """获取当前云端 API 配置"""
-    runtime = load_config()
+    cfg = load_config()
     config = cloud_client.get_config()
-    config["model_source"] = runtime.get("model_source", MODEL_SOURCE)
+    config["model_source"] = cfg.get("model_source", MODEL_SOURCE)
     return config
 
 
@@ -863,8 +882,10 @@ async def get_ai_stream(user_message: str, history: list, source: str = None,
     Yields:
         {"content": "...", "done": bool, ...}
     """
-    runtime = load_config()
-    use_source = source or runtime.get("model_source", MODEL_SOURCE)
+    # 注意：变量名不能叫 runtime —— 会遮蔽从 config 导入的 runtime() 函数，
+    # 导致下面 runtime("...", default) 调用报 'dict' object is not callable。
+    cfg = load_config()
+    use_source = source or cfg.get("model_source", MODEL_SOURCE)
     
     # 提取用户关键信息到记忆
     memory_manager.extract_and_save_facts(user_message, "", session_id)

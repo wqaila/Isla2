@@ -127,6 +127,26 @@ try:
     r = client.get("/api/config", headers={"Authorization": "Bearer __test_token_abc__"})
     check("带正确 token 可访问 /api/config", r.status_code == 200, r.status_code)
 
+    print("\n=== 5. 聊天链路关键修复（无需模型）===")
+    # 回归 1：main 里的 runtime 必须是 config.runtime 函数，不能被 load_config()
+    # 的返回值遮蔽 —— 曾导致 get_ai_stream() 里 runtime("...") 报
+    # 'dict' object is not callable，进而 /api/chat 全部 500。
+    check("main.runtime 仍可调用（未被局部变量遮蔽）", callable(main.runtime))
+    check("main.runtime(...) 可正常取值",
+          main.runtime("rate_limit_per_minute", 1) is not None)
+
+    # 回归 2：_emotion_consistency 的入参类型 —— check_response_consistency()
+    # 只收 dict，曾把 EmotionResult 对象/字符串直接传进去导致 TypeError。
+    from types import SimpleNamespace
+    fake_emo = SimpleNamespace(valence=0.5, arousal=0.3)
+    re_, co = main._emotion_consistency(
+        fake_emo, "这是一句足够长的测试回复文本，用于触发情绪分析。")
+    check("_emotion_consistency 返回 (dict, dict)",
+          isinstance(re_, dict) and isinstance(co, dict))
+    check("一致性结果含 consistent 字段", "consistent" in co)
+    check("过短回复返回 (None, None)",
+          main._emotion_consistency(fake_emo, "短") == (None, None))
+
 finally:
     # 清理测试数据
     db.delete_session(sid)
