@@ -97,6 +97,28 @@ def _ollama_alive() -> bool:
 
 
 WS_MSG = "只回两个字"
+REST_MSG = "只回一个字"
+
+
+def _purge_test_memory(msgs) -> int:
+    """把测试话术写进记忆库的条目清掉。
+
+    ⚠️ 必须做：`_finish_turn()` 除了写数据库，还会把这一轮对话写进**记忆库**。
+    只删数据库会话的话，测试话术会永久残留在真实记忆库里，之后还会被检索出来
+    注入提示词（实测残留过 10 条）。
+    """
+    mm = main.memory_manager
+    items = mm.backend.list_all("conversations")
+    keep = [x for x in items
+            if not any((x.get("content") or "").startswith(f"用户: {m}") for m in msgs)]
+    if len(keep) != len(items):
+        mm.backend.clear("conversations")
+        for x in keep:
+            mm.backend.add_document(
+                "conversations", x["id"], x["content"], x.get("metadata", {}))
+        mm.flush()
+    return len(items) - len(keep)
+
 
 if not _ollama_alive():
     print("  SKIP: 本机 Ollama 未运行，跳过真实模型相关用例（不算失败）")
@@ -106,17 +128,22 @@ else:
 
     with TestClient(main.app) as client:
         r = client.post("/api/chat", json={
-            "message": "只回一个字",
+            "message": REST_MSG,
             "device_id": "gate_test",
             "stream": False,
         })
         check("正常单发请求不被闸门挡住", r.status_code == 200, r.status_code)
         if r.status_code == 200:
-            sid = r.json().get("session_id")
+            body = r.json()
+            check("回复不是错误信息（模型真的答了）",
+                  "[错误]" not in (body.get("content") or ""),
+                  (body.get("content") or "")[:50].replace("\n", " "))
+            sid = body.get("session_id")
             if sid:
                 _db.delete_session(sid)
         check("请求结束后槽位已释放", main.generation_stats()["inflight"] == 0,
               main.generation_stats())
+    _purge_test_memory([REST_MSG])
 
     print("\n=== 5. WebSocket 路径：闸门不泄漏 + 落库正确 ===")
     with TestClient(main.app) as client:
@@ -154,16 +181,7 @@ else:
 
         # 清理：会话 + 记忆库（_finish_turn 也会写记忆）
         _db.delete_session(ws_sid)
-        mm = main.memory_manager
-        items = mm.backend.list_all("conversations")
-        keep = [x for x in items
-                if not x.get("content", "").startswith(f"用户: {WS_MSG}")]
-        if len(keep) != len(items):
-            mm.backend.clear("conversations")
-            for x in keep:
-                mm.backend.add_document(
-                    "conversations", x["id"], x["content"], x.get("metadata", {}))
-            mm.flush()
+        _purge_test_memory([WS_MSG])
 
 print("\n=== 6. WebSocket 鉴权（不需要模型）===")
 # 背景：HTTP 中间件管不到 WebSocket，两个 WS 端点此前完全不校验令牌，

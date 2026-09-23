@@ -354,6 +354,30 @@ MEMORY_BACKEND = "tfidf"      # 轻量模式（推荐）
 MEMORY_BACKEND = "chromadb"   # 精准语义搜索模式
 ```
 
+### 混合检索（BM25 + 向量）
+
+TF-IDF 后端默认启用**混合检索**：一路是 TF-IDF 余弦（衡量"整体像不像"），
+另一路是 **BM25**（衡量"关键词有没有精确命中"），两路结果用
+**RRF（Reciprocal Rank Fusion）**融合——只看排名、不看分数量纲，所以不需要
+做分数归一化。
+
+**为什么需要**：纯向量对"必须精确命中的词"不够敏感。例如查询「猫咪」时，
+`char_wb` 的二元组是「猫咪」，而记忆里写的是「橘**猫**」——**没有重叠的二元组，
+相似度算出来是 0，再被阈值一过滤就一条都召回不了**。BM25 的「单字 + 相邻双字」
+分词补上了这个洞。
+
+实测（24 条事实 / 24 个查询，有明确正确答案）：
+
+| 模式 | Top1 | Top3 |
+|------|------|------|
+| 混合检索 | **83%** | **88%** |
+| 纯向量 | 71% | 75% |
+
+中文分词策略：单字 + 相邻双字（双字抓"咖啡""名字"这类最小有意义单位，
+单字保证召回），英文/数字按整词切。
+
+可用 `PUT /api/config {"memory_hybrid_search": false}` 一键退回纯向量。
+
 ## Web 管理面板
 
 访问 `http://localhost:8080/dashboard` 使用完整的 Web 管理面板：
@@ -931,7 +955,8 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
   "system_logs_max_rows": 20000,
   "chat_messages_max_per_session": 500,
   "db_backup_interval_hours": 24,
-  "db_backup_keep": 7
+  "db_backup_keep": 7,
+  "memory_hybrid_search": true
 }
 ```
 
@@ -948,7 +973,7 @@ cd server
 
 | 脚本 | 覆盖内容 | 需要 Ollama |
 |------|----------|-------------|
-| `tests/test_regressions.py` | 65 项 接口 / 数据层 / 提示词 / 重试 / 记忆删除 / 导出备份回归 | 否 |
+| `tests/test_regressions.py` | 72 项 接口 / 数据层 / 提示词 / 重试 / 记忆 / 导出备份 / 混合检索回归 | 否 |
 | `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
 | `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
 | `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |

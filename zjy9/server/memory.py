@@ -5,15 +5,17 @@ RAG 记忆系统 - 双后端可切换
 """
 import json
 import hashlib
+import math
 import os
 import re
 import threading
 import time
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from abc import ABC, abstractmethod
 
-from config import BASE_DIR
+from config import BASE_DIR, runtime
 
 
 # ===== 提示词友好化工具 =====
@@ -31,6 +33,89 @@ def strip_leading_tag(text: str) -> str:
 
 # 合法的记忆集合名（白名单）。接口层用它校验，避免任意集合名越界读写。
 VALID_COLLECTIONS = ("conversations", "facts", "summaries")
+
+
+# ===== 混合检索（BM25 + 向量）=====
+#
+# 只用 TF-IDF 余弦的问题：它衡量的是"整体像不像"，对"必须精确命中的关键词"
+# （人名、专有名词、明确的词）不够敏感 —— 而记忆检索里恰恰经常是这类查询
+# （问"我喜欢喝什么"要能命中写着"咖啡"的那条）。
+# BM25 的词频饱和 + 文档长度归一化正好补这块。
+#
+# 两路结果用 RRF（Reciprocal Rank Fusion）融合：只看排名、不看原始分数，
+# 因此**不需要把两种分量的量纲对齐**，比加权求和稳得多。
+
+_LATIN_RE = re.compile(r"[a-zA-Z0-9_]+")
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+
+def _tokenize(text: str) -> list:
+    """中英混合分词（供 BM25 使用）。
+
+    中文没有空格，这里用「单字 + 相邻双字」：双字能抓住"咖啡""名字"这类最小的
+    有意义单位，单字保证召回。英文/数字按整词切并转小写。
+    """
+    tokens = [w.lower() for w in _LATIN_RE.findall(text)]
+    for run in _CJK_RUN_RE.findall(text):
+        tokens.extend(run)
+        tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
+    return tokens
+
+
+class _BM25:
+    """极简 BM25（Okapi），纯 Python 实现，不引入新依赖。"""
+
+    def __init__(self, tokenized_docs: list, k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.n = len(tokenized_docs)
+        self.doc_len = [len(d) for d in tokenized_docs]
+        self.avg_len = (sum(self.doc_len) / self.n) if self.n else 0.0
+        self.tf = [Counter(d) for d in tokenized_docs]
+
+        df = Counter()
+        for d in tokenized_docs:
+            df.update(set(d))
+        # BM25 标准 IDF 形式，+0.5 平滑以避免除零与负值
+        self.idf = {t: math.log(1 + (self.n - c + 0.5) / (c + 0.5))
+                    for t, c in df.items()}
+
+    def scores(self, query_tokens: list) -> list:
+        out = [0.0] * self.n
+        avg = self.avg_len or 1.0
+        for t in query_tokens:
+            idf = self.idf.get(t)
+            if idf is None:          # 查询里的词没在任何文档出现过
+                continue
+            for i, tf in enumerate(self.tf):
+                f = tf.get(t, 0)
+                if not f:
+                    continue
+                dl = self.doc_len[i] or 1
+                denom = f + self.k1 * (1 - self.b + self.b * dl / avg)
+                out[i] += idf * f * (self.k1 + 1) / denom
+        return out
+
+
+def _rrf_rank(score_lists: list, k: int = 60) -> list:
+    """把多路打分融合成一个排序。
+
+    返回 [(文档下标, 归一化融合分)]，按融合分降序。
+    RRF: score(d) = Σ 1/(k + rank_i(d)) —— 只看排名，不看分数量纲。
+    归一化分 = 融合分 / 理论上限，方便对外仍以 distance = 1 - score 返回。
+    """
+    fused = defaultdict(float)
+    for scores in score_lists:
+        order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        for pos, idx in enumerate(order):
+            if scores[idx] <= 0:
+                break               # 该路判为不相关，后面只会更差
+            fused[idx] += 1.0 / (k + pos + 1)
+    if not fused:
+        return []
+    ceiling = len(score_lists) * (1.0 / (k + 1))
+    return sorted(((idx, s / ceiling) for idx, s in fused.items()),
+                  key=lambda x: x[1], reverse=True)
 
 
 # ===== 抽象基类 =====
@@ -324,6 +409,8 @@ class TfidfBackend(MemoryBackend):
                 "tfidf_matrix": tfidf_matrix,
                 "doc_ids": doc_ids,
                 "version": version,
+                # BM25 索引与向量矩阵同源，一起构建、一起失效
+                "bm25": _BM25([_tokenize(c) for c in doc_contents]),
             }
             cache = self._tfidf_cache[collection]
         else:
@@ -332,20 +419,30 @@ class TfidfBackend(MemoryBackend):
 
         # 仅对查询文本进行 transform（不重新 fit）
         query_vec = vectorizer.transform([query])
-        similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+        similarities = cosine_similarity(query_vec, tfidf_matrix).flatten().tolist()
 
-        # 按相似度排序
-        indexed = sorted(enumerate(similarities), key=lambda x: x[1], reverse=True)
+        # 混合检索可以用运行时配置关掉（万一新逻辑在某些数据上表现异常，
+        # 能一键退回纯向量，不必改代码重发）
+        try:
+            hybrid = bool(runtime("memory_hybrid_search", True))
+        except Exception:
+            hybrid = True
+
+        if hybrid:
+            ranked = _rrf_rank([similarities, cache["bm25"].scores(_tokenize(query))])
+        else:
+            ranked = [(i, s) for i, s in sorted(
+                enumerate(similarities), key=lambda x: x[1], reverse=True) if s > 0]
 
         results = []
-        for idx, sim in indexed[:n_results]:
-            if sim < 0.01:  # 过滤完全不相关的
+        for idx, score in ranked[:n_results]:
+            if score <= 0:          # 两路都判为不相关
                 continue
             did = doc_ids[idx]
             results.append({
                 "id": did,
                 "content": docs[did]["content"],
-                "distance": 1.0 - sim,  # 转换为距离（越小越相关）
+                "distance": 1.0 - score,   # 转换为距离（越小越相关）
                 "metadata": docs[did].get("metadata", {}),
             })
 

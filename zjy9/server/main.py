@@ -654,6 +654,8 @@ async def update_runtime_config(updates: dict):
         "model_retry_attempts", "max_concurrent_generations",
         "system_logs_max_rows", "chat_messages_max_per_session",
         "db_backup_interval_hours", "db_backup_keep",
+        # 记忆检索
+        "memory_hybrid_search",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:

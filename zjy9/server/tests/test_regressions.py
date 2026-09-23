@@ -300,6 +300,69 @@ try:
         except Exception:
             pass
 
+    print("\n=== 9. 混合检索（BM25 + 向量）===")
+    import tempfile as _tf
+    from pathlib import Path as _P
+    from memory import TfidfBackend, _tokenize, _BM25
+
+    check("中文分词含单字与相邻双字", _tokenize("咖啡") == ["咖", "啡", "咖啡"],
+          _tokenize("咖啡"))
+    check("英文按整词切并转小写", "coffee" in _tokenize("Coffee 2024"))
+
+    _bm = _BM25([_tokenize(d) for d in
+                 ["咖啡", "咖啡今天天气不错适合出门散步走一走", "无关内容"]])
+    _sc = _bm.scores(_tokenize("咖啡"))
+    check("BM25 文档长度归一化生效", _sc[0] > _sc[1], f"{_sc[0]:.3f} vs {_sc[1]:.3f}")
+    check("BM25 无关文档得 0 分", _sc[2] == 0.0, _sc[2])
+
+    _TOPICS = [
+        ("咖啡", "喜欢喝咖啡，每天早上都要来一杯"),
+        ("猫咪", "养了一只叫豆豆的橘猫"),
+        ("钢琴", "小时候学过钢琴，考过八级"),
+        ("火锅", "最爱吃重庆火锅，越辣越好"),
+        ("日语", "在自学日语，准备考N2"),
+        ("象棋", "爷爷教我下中国象棋"),
+        ("天文", "对天文很感兴趣，有台望远镜"),
+        ("登山", "去年登过泰山看日出"),
+        ("钓鱼", "爸爸喜欢钓鱼，我偶尔陪他去"),
+        ("滑雪", "冬天想去滑雪"),
+        ("电影", "喜欢看悬疑电影"),
+        ("旅行", "想去冰岛看极光"),
+    ]
+    _tmp = _tf.TemporaryDirectory()
+    _b = TfidfBackend()
+    _b.db_path = _P(_tmp.name)
+    _b._data = {c: {} for c in ("conversations", "facts", "summaries")}
+    _b._version = {c: 0 for c in _b._data}
+    _b._dirty, _b._last_flush, _b._tfidf_cache = set(), {}, {}
+    for _i, (_kw, _txt) in enumerate(_TOPICS):
+        _b.add_document("facts", f"t{_i:02d}", _txt, {})
+
+    # 回归守卫：查询「猫咪」的二元组与文档里的「橘猫」不重叠，
+    # 纯向量会算成相似度 0 并被旧阈值过滤掉 —— 一条都召回不了。
+    # BM25 的单字词元补上了这个洞。
+    cp.save_config({"memory_hybrid_search": True})
+    _r = _b.search("facts", "猫咪", n_results=3)
+    check("混合检索能召回『猫咪』（纯向量会漏）",
+          bool(_r) and _r[0]["id"] == "t01", [x["id"] for x in _r])
+
+    def _top1(hybrid):
+        cp.save_config({"memory_hybrid_search": hybrid})
+        hits = 0
+        for _i, (_kw, _) in enumerate(_TOPICS):
+            _res = _b.search("facts", _kw, n_results=3)
+            if _res and _res[0]["id"] == f"t{_i:02d}":
+                hits += 1
+        return hits
+
+    _h, _v = _top1(True), _top1(False)
+    cp.save_config({"memory_hybrid_search": True})
+    _tmp.cleanup()
+
+    check(f"混合检索 Top1 不低于纯向量（{_h} vs {_v}）", _h >= _v, f"{_h} vs {_v}")
+    check("混合检索 Top1 命中率 >= 70%",
+          _h >= int(len(_TOPICS) * 0.7), f"{_h}/{len(_TOPICS)}")
+
 finally:
     # 清理测试数据
     db.delete_session(sid)
