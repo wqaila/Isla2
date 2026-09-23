@@ -188,6 +188,7 @@
             <div class="nav-item" onclick="showPage('logs')"><span class="icon">📋</span><span>日志</span></div>
             <div class="nav-item" onclick="showPage('connections')"><span class="icon">📱</span><span>连接设备</span></div>
             <div class="nav-item" onclick="showPage('memory')"><span class="icon">🧠</span><span>记忆管理</span></div>
+            <div class="nav-item" onclick="showPage('data')"><span class="icon">💾</span><span>数据管理</span></div>
         </div>
         <div class="sidebar-footer">爱莉希雅 AI v1.0</div>
     </div>
@@ -441,6 +442,38 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Data -->
+            <div class="page" id="page-data">
+                <div class="card">
+                    <div class="card-title">📤 导出</div>
+                    <p style="color:var(--text2);font-size:12px;margin:0 0 12px;">
+                        对话记录是最不该丢的资产。这里把对话与记忆导出成 JSON，可以自己留档或迁移到别的机器。
+                    </p>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn btn-sm" onclick="exportAllConversations()">导出全部对话 (JSON)</button>
+                        <button class="btn btn-sm" onclick="exportAllMemory()">导出全部记忆 (JSON)</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">💾 数据库备份
+                        <div style="margin-left:auto;display:flex;gap:8px;">
+                            <button class="btn btn-sm btn-outline" onclick="loadBackups()">刷新</button>
+                            <button class="btn btn-sm" onclick="createBackup()">立即备份</button>
+                        </div>
+                    </div>
+                    <p style="color:var(--text2);font-size:12px;margin:0 0 12px;">
+                        备份用 <code>VACUUM INTO</code> 生成自洽快照（不需要停服），默认保留最近 7 份、
+                        每 24 小时自动做一次。可在「服务设置」里调整间隔与保留份数。
+                    </p>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>文件</th><th>大小</th><th>时间</th></tr></thead>
+                            <tbody id="backupTable"><tr><td colspan="3" style="text-align:center;color:var(--text2);">切换到本页时自动加载</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -458,7 +491,7 @@ function showPage(name, pushHash = true) {
     document.getElementById('page-' + name).classList.add('active');
     const navEl = document.querySelector(`.nav-item[onclick="showPage('${name}')"]`);
     if (navEl) navEl.classList.add('active');
-    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理' };
+    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理', data:'💾 数据管理' };
     document.getElementById('pageTitle').textContent = titles[name] || name;
     if (name === 'logs') loadLogs();
     if (name === 'connections') { loadConnections(); loadConnLogs(); }
@@ -467,6 +500,7 @@ function showPage(name, pushHash = true) {
     if (name === 'ollama') { checkOllama(); loadModels(); }
     if (name === 'chat') loadChatSourceBanner();
     if (name === 'memory') loadMemoryEntries();
+    if (name === 'data') loadBackups();
     // 持久化当前页面到 URL hash，防止刷新后丢失导航状态
     if (pushHash) {
         history.replaceState(null, '', '#' + name);
@@ -970,6 +1004,63 @@ async function deleteMemoryEntry(id) {
         loadMemoryEntries();
     } else {
         toast('删除失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
+    }
+}
+
+// ===== 数据管理：导出与备份 =====
+function _stamp() {
+    return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+}
+// 走 fetch + Blob 下载：令牌放在 Authorization 头里，直接开链接是带不上的。
+async function downloadJson(path, filename) {
+    const headers = {};
+    const token = getToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    try {
+        const resp = await fetch(BASE + path, { headers });
+        if (!resp.ok) { toast('导出失败：HTTP ' + resp.status, 'error'); return; }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        toast('已开始下载 ' + filename, 'success');
+    } catch (e) {
+        toast('导出失败：' + e.message, 'error');
+    }
+}
+function exportAllConversations() {
+    downloadJson('/api/export/all', `elysia-conversations-${_stamp()}.json`);
+}
+function exportAllMemory() {
+    downloadJson('/api/memory/export', `elysia-memory-${_stamp()}.json`);
+}
+async function loadBackups() {
+    const tb = document.getElementById('backupTable');
+    const data = await api('/api/db/backups');
+    if (!data) {
+        tb.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text2);">加载失败（可能未认证）</td></tr>';
+        return;
+    }
+    const list = data.backups || [];
+    if (!list.length) {
+        tb.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text2);">还没有备份</td></tr>';
+        return;
+    }
+    tb.innerHTML = list.map(b => `<tr>
+        <td style="font-size:12px;">${escHtml(b.file)}</td>
+        <td style="color:var(--text2);font-size:12px;">${(b.size_bytes / 1024).toFixed(1)} KB</td>
+        <td style="color:var(--text2);font-size:12px;white-space:nowrap;">${escHtml((b.created_at || '').replace('T', ' '))}</td>
+    </tr>`).join('');
+}
+async function createBackup() {
+    const r = await api('/api/db/backup', { method: 'POST' });
+    if (r && r.status === 'ok') {
+        toast(`备份完成：${r.file}（${(r.size_bytes / 1024).toFixed(1)} KB，保留 ${r.kept} 份）`, 'success');
+        loadBackups();
+    } else {
+        toast('备份失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
     }
 }
 

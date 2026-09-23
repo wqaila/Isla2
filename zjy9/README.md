@@ -368,6 +368,7 @@ MEMORY_BACKEND = "chromadb"   # 精准语义搜索模式
 | 📋 日志 | 系统日志浏览（支持级别过滤、实时推送） |
 | 📱 连接设备 | 当前连接设备列表、连接历史日志 |
 | 🧠 记忆管理 | 浏览记忆库条目（事实/对话/摘要）、按内容筛选、**删除单条记忆** |
+| 💾 数据管理 | 导出全部对话/记忆（JSON）、数据库备份与备份列表 |
 
 公网用户也可以通过 `https://xxx.trycloudflare.com/dashboard` 访问管理面板。
 
@@ -517,6 +518,19 @@ curl http://localhost:8080/api/status
 | DELETE | `/api/memory/entries/{collection}/{id}` | **删除单条记忆**（集合名做白名单校验） |
 | GET | `/api/memory/export` | 导出记忆数据 |
 | POST | `/api/memory/import` | 导入记忆数据 |
+
+### 对话导出与数据库备份
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/sessions/{id}/export?format=json` | 导出单个会话（`format=md` 返回可读 Markdown 文件） |
+| GET | `/api/export/all` | 导出全部会话与消息（完整对话留档） |
+| POST | `/api/db/backup?keep=7` | 立刻做一次数据库快照备份（`VACUUM INTO`，不需要停服） |
+| GET | `/api/db/backups` | 列出已有备份 |
+
+> 备份默认**每 24 小时自动做一次**、保留最近 7 份，可用
+> `PUT /api/config` 调整 `db_backup_interval_hours`（0 = 关闭）与 `db_backup_keep`。
+> 备份文件在 `server/data/backups/`，不入库。
 
 ### 情绪分析
 
@@ -911,7 +925,13 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
   "use_fewshot_local": true,
   "memory_context_max_chars": 800,
   "learning_context_max_chars": 600,
-  "max_history_messages": 20
+  "max_history_messages": 20,
+  "model_retry_attempts": 3,
+  "max_concurrent_generations": 2,
+  "system_logs_max_rows": 20000,
+  "chat_messages_max_per_session": 500,
+  "db_backup_interval_hours": 24,
+  "db_backup_keep": 7
 }
 ```
 
@@ -928,7 +948,7 @@ cd server
 
 | 脚本 | 覆盖内容 | 需要 Ollama |
 |------|----------|-------------|
-| `tests/test_regressions.py` | 53 项 接口 / 数据层 / 提示词 / 重试 / 记忆删除回归 | 否 |
+| `tests/test_regressions.py` | 65 项 接口 / 数据层 / 提示词 / 重试 / 记忆删除 / 导出备份回归 | 否 |
 | `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
 | `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
 | `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |

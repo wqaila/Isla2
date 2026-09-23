@@ -6,6 +6,7 @@
 import sqlite3
 import uuid
 import threading
+from datetime import datetime
 from config import DB_PATH
 
 # 线程本地存储：每个线程使用独立连接，避免 SQLite 多线程并发冲突
@@ -512,6 +513,126 @@ def get_message_count(session_id: str) -> int:
         (session_id,)
     ).fetchone()
     return row[0] if row else 0
+
+
+# ===== 导出与备份 =====
+
+def _session_messages(conn, session_id: str) -> list:
+    rows = conn.execute(
+        """SELECT role, content, tokens_used, response_time_ms, created_at
+           FROM chat_messages WHERE session_id = ?
+           ORDER BY created_at ASC, rowid ASC""",
+        (session_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def export_session(session_id: str) -> dict | None:
+    """导出单个会话（元信息 + 全部消息），不存在返回 None。
+
+    注意：不能用 get_messages(session_id, limit=0) —— 那是 `LIMIT 0`，
+    返回的是空列表。这里直接不带 LIMIT 查全量。
+    """
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM chat_sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if not row:
+        return None
+    msgs = _session_messages(conn, session_id)
+    return {"session": dict(row), "message_count": len(msgs), "messages": msgs}
+
+
+def export_all_sessions() -> dict:
+    """导出全部会话及其消息（完整对话留档，用于备份 / 迁移）。"""
+    conn = _get_conn()
+    sessions = conn.execute(
+        "SELECT * FROM chat_sessions ORDER BY last_active DESC"
+    ).fetchall()
+    out = []
+    for s in sessions:
+        msgs = _session_messages(conn, s["id"])
+        out.append({
+            "session": dict(s),
+            "message_count": len(msgs),
+            "messages": msgs,
+        })
+    return {
+        "session_count": len(out),
+        "message_count": sum(x["message_count"] for x in out),
+        "sessions": out,
+    }
+
+
+# 备份目录（与数据库同级的 backups/，不入库）
+BACKUP_DIR = DB_PATH.parent / "backups"
+
+
+def _prune_backups(keep: int) -> int:
+    """只保留最近 keep 份备份，返回删除数量"""
+    if keep <= 0 or not BACKUP_DIR.exists():
+        return 0
+    files = sorted(BACKUP_DIR.glob("elysia_server-*.db"))
+    removed = 0
+    for f in (files[:-keep] if len(files) > keep else []):
+        try:
+            f.unlink()
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+def backup_database(keep: int = 5) -> dict:
+    """用 VACUUM INTO 做一次一致性快照，并只保留最近 keep 份。
+
+    为什么不用直接复制文件：WAL 模式下 `.db` 与 `-wal` 是分离的，直接 copy
+    很可能拿到一个不含最新写入的半成品。VACUUM INTO 会输出一个自洽的完整
+    副本，而且**不需要停服**。
+    """
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = BACKUP_DIR / f"elysia_server-{stamp}.db"
+    conn = _get_conn()
+    with _write_lock:
+        if target.exists():
+            target.unlink()          # VACUUM INTO 遇到已存在的文件会报错
+        conn.execute("VACUUM INTO ?", (str(target),))
+
+    removed = _prune_backups(keep)
+    return {
+        "file": target.name,
+        "size_bytes": target.stat().st_size,
+        "removed_old": removed,
+        "kept": len(list_backups()),
+    }
+
+
+def list_backups() -> list:
+    """列出已有备份（按时间倒序）"""
+    if not BACKUP_DIR.exists():
+        return []
+    files = sorted(BACKUP_DIR.glob("elysia_server-*.db"), reverse=True)
+    return [{
+        "file": f.name,
+        "size_bytes": f.stat().st_size,
+        "created_at": datetime.fromtimestamp(
+            f.stat().st_mtime).isoformat(timespec="seconds"),
+    } for f in files]
+
+
+def latest_backup_age_seconds() -> float | None:
+    """最近一次备份距今多少秒；一份备份都没有时返回 None。
+
+    给"自动备份"用：只有手动按钮等于没有，没人会记得按。
+    """
+    if not BACKUP_DIR.exists():
+        return None
+    files = list(BACKUP_DIR.glob("elysia_server-*.db"))
+    if not files:
+        return None
+    newest = max(f.stat().st_mtime for f in files)
+    return max(0.0, datetime.now().timestamp() - newest)
 
 
 # ===== 连接日志 =====

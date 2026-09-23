@@ -250,6 +250,56 @@ try:
     r = client.get("/api/memory/entries", params={"collection": "evil"}, headers=_auth)
     check("非法集合列表 -> 400", r.status_code == 400, r.status_code)
 
+    print("\n=== 8. 对话导出与数据库备份 ===")
+    _sid = db.create_session("export_test", "导出测试")
+    db.auto_title_session(_sid, "导出功能测试")
+    db.save_message(_sid, "user", "导出测试用户消息")
+    db.save_message(_sid, "assistant", "导出测试助手回复", 42, 800)
+
+    r = client.get(f"/api/sessions/{_sid}/export", headers=_auth)
+    check("导出单会话 JSON -> 200", r.status_code == 200, r.status_code)
+    if r.status_code == 200:
+        d = r.json()
+        check("导出包含 2 条消息", d.get("message_count") == 2, d.get("message_count"))
+        check("响应带附件下载头",
+              "attachment" in (r.headers.get("content-disposition") or ""),
+              r.headers.get("content-disposition"))
+
+    r = client.get(f"/api/sessions/{_sid}/export", params={"format": "md"},
+                   headers=_auth)
+    check("导出 Markdown -> 200", r.status_code == 200, r.status_code)
+    if r.status_code == 200:
+        check("Markdown 含对话正文", "导出测试用户消息" in r.text)
+
+    r = client.get("/api/sessions/__no_such_session__/export", headers=_auth)
+    check("导出不存在的会话 -> 404", r.status_code == 404, r.status_code)
+
+    r = client.get("/api/export/all", headers=_auth)
+    check("导出全部对话 -> 200", r.status_code == 200, r.status_code)
+    if r.status_code == 200:
+        check("导出全部含刚建的会话",
+              any(x["session"]["id"] == _sid for x in r.json().get("sessions", [])))
+
+    r = client.post("/api/db/backup", params={"keep": 7}, headers=_auth)
+    check("数据库备份 -> 200", r.status_code == 200, r.status_code)
+    created_backup = r.json().get("file") if r.status_code == 200 else None
+    check("备份文件非空",
+          bool(created_backup) and r.json().get("size_bytes", 0) > 0,
+          r.json().get("size_bytes") if r.status_code == 200 else None)
+
+    r = client.get("/api/db/backups", headers=_auth)
+    check("备份列表 -> 200", r.status_code == 200, r.status_code)
+    if r.status_code == 200:
+        check("列表含刚生成的备份",
+              any(b["file"] == created_backup for b in r.json().get("backups", [])))
+
+    db.delete_session(_sid)
+    if created_backup:      # 清掉本次测试产生的备份，避免每跑一次就多一份
+        try:
+            (db.BACKUP_DIR / created_backup).unlink()
+        except Exception:
+            pass
+
 finally:
     # 清理测试数据
     db.delete_session(sid)

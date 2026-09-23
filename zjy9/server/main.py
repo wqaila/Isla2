@@ -15,7 +15,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from collections import defaultdict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -246,6 +246,18 @@ async def _cleanup_rate_limits():
                     f"数据保留清理：日志 {trimmed_logs} 行 / 消息 {trimmed_msgs} 行")
         except Exception as e:
             logger.warning("system", f"数据保留清理失败: {str(e)[:100]}")
+
+        # 自动备份：默认每 24 小时一份（设 0 关闭）。
+        # 对话记录是最不该丢的资产，只有手动按钮等于没有 —— 没人会记得按。
+        try:
+            interval_h = int(runtime("db_backup_interval_hours", 24))
+            if interval_h > 0:
+                age = db.latest_backup_age_seconds()
+                if age is None or age >= interval_h * 3600:
+                    res = db.backup_database(keep=int(runtime("db_backup_keep", 7)))
+                    logger.info("system", f"自动备份完成: {res['file']}")
+        except Exception as e:
+            logger.warning("system", f"自动备份失败: {str(e)[:100]}")
 
 
 # ===== 生命周期（FIX #13+#14: 合并 on_event，添加优雅关闭） =====
@@ -641,6 +653,7 @@ async def update_runtime_config(updates: dict):
         # 可靠性与数据保留
         "model_retry_attempts", "max_concurrent_generations",
         "system_logs_max_rows", "chat_messages_max_per_session",
+        "db_backup_interval_hours", "db_backup_keep",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:
@@ -1693,6 +1706,84 @@ async def import_memory(data: dict):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"导入失败: {str(e)}")
+
+
+# ===== 对话导出与数据库备份 =====
+#
+# 对一个"陪伴型"应用来说，对话记录是最不该丢的资产。但此前只有**记忆库**能导出，
+# 真正的对话（chat_sessions / chat_messages）反而没有任何导出与备份手段。
+
+def _session_to_markdown(data: dict) -> str:
+    """把单个会话渲染成可读的 Markdown"""
+    s = data["session"]
+    lines = [
+        f"# 对话记录 {s.get('id', '')}",
+        "",
+        f"- 标题：{s.get('title') or '（无）'}",
+        f"- 设备：{s.get('device_name') or s.get('device_id', '')}",
+        f"- 连接方式：{s.get('device_type', '')}",
+        f"- 创建时间：{s.get('created_at', '')}",
+        f"- 最后活跃：{s.get('last_active', '')}",
+        f"- 消息数：{data['message_count']}",
+        "",
+        "---",
+        "",
+    ]
+    for m in data["messages"]:
+        who = "舰长" if m["role"] == "user" else "爱莉希雅"
+        ts = (m.get("created_at") or "")[:19]
+        lines.append(f"**{who}**（{ts}）")
+        lines.append("")
+        lines.append(m.get("content", ""))
+        lines.append("")
+    return "\n".join(lines)
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session_api(session_id: str, format: str = "json"):
+    """导出单个会话；format=md 时返回可读的 Markdown 文件。"""
+    data = db.export_session(session_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if format.lower() in ("md", "markdown"):
+        return Response(
+            content=_session_to_markdown(data),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition":
+                     f'attachment; filename="conversation-{stamp}.md"'},
+        )
+    return JSONResponse(
+        data,
+        headers={"Content-Disposition":
+                 f'attachment; filename="conversation-{stamp}.json"'},
+    )
+
+
+@app.get("/api/export/all")
+async def export_all_api():
+    """导出全部会话与消息（完整对话留档，用于备份 / 迁移）"""
+    data = db.export_all_sessions()
+    data["export_time"] = datetime.now().isoformat()
+    return data
+
+
+@app.post("/api/db/backup")
+async def create_db_backup(keep: int = 5):
+    """立刻做一次数据库快照备份（VACUUM INTO，不需要停服）"""
+    try:
+        result = db.backup_database(keep=keep)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"备份失败: {str(e)[:150]}")
+    logger.info("system", f"数据库备份完成: {result['file']}")
+    return {"status": "ok", **result}
+
+
+@app.get("/api/db/backups")
+async def list_db_backups():
+    """列出已有数据库备份"""
+    return {"backups": db.list_backups()}
 
 
 # ===== 会话管理 API =====
