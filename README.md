@@ -89,7 +89,11 @@ python main.py
 ```
 
 能力比"OCR"广 —— 同时走 **语音识别（whisper / faster-whisper）** 与
-**OCR（PaddleOCR）** 两条路，并支持**说话人分离 / 多人声识别**。
+**OCR（PaddleOCR）** 两条路，两者可以单独启用或同时用。
+
+> ⚠️ 代码的模块 docstring 一度声称"支持说话人分离 / 多人声识别"，
+> 但**实际并未实现**（`speaker_diarization` 参数只是个空壳，依赖里也没有
+> 任何声纹/分离库）。该 docstring 已更正，别按那个说法规划用途。
 
 > `chibtaici/main.py` 里的 `import whisper` 是**有意的能力探测**（缺失时降级到
 > OCR 路径），带 `# noqa: F401`，**不要当成无用导入删掉**。

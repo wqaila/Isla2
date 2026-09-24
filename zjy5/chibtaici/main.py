@@ -4,8 +4,11 @@
 """
 视频台词识别工具（增强版）
 支持语音识别（openai-whisper/faster-whisper）、OCR（PaddleOCR）
-支持说话人分离、多人声识别
 输出结果：纯文本台词（无时间戳）
+
+注意：**说话人分离尚未实现**。构造参数里的 speaker_diarization 只为保持
+接口兼容而保留，传 True 只会打印一条警告，不会生效。
+（原先的 docstring 写着"支持说话人分离、多人声识别"，与实际不符，已更正。）
 """
 
 import os
