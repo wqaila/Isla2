@@ -189,6 +189,7 @@
             <div class="nav-item" onclick="showPage('connections')"><span class="icon">📱</span><span>连接设备</span></div>
             <div class="nav-item" onclick="showPage('memory')"><span class="icon">🧠</span><span>记忆管理</span></div>
             <div class="nav-item" onclick="showPage('data')"><span class="icon">💾</span><span>数据管理</span></div>
+            <div class="nav-item" onclick="showPage('characters')"><span class="icon">🎭</span><span>角色卡</span></div>
         </div>
         <div class="sidebar-footer">爱莉希雅 AI v1.0</div>
     </div>
@@ -474,6 +475,34 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Characters -->
+            <div class="page" id="page-characters">
+                <div class="card">
+                    <div class="card-title">🎭 角色卡
+                        <span class="badge" id="charCount">—</span>
+                        <div style="margin-left:auto;display:flex;gap:8px;">
+                            <button class="btn btn-sm btn-outline" onclick="loadCharacters()">刷新</button>
+                        </div>
+                    </div>
+                    <p style="color:var(--text2);font-size:12px;margin:0 0 12px;">
+                        切换角色后，<b>下一轮对话立即生效</b>，不需要重启服务。<br>
+                        想自己写角色？在 <code>server/characters/</code> 里放一个 JSON 卡即可
+                        （内置卡会入库）；私密角色请放 <code>server/data/characters/</code>，那个目录不会推送。
+                    </p>
+                    <div id="charList" style="display:flex;flex-direction:column;gap:12px;">
+                        <div style="color:var(--text2);text-align:center;padding:16px;">切换到本页时自动加载</div>
+                    </div>
+                </div>
+                <div class="card" id="charPreviewCard" style="display:none;">
+                    <div class="card-title">📄 人设预览 <span class="badge" id="charPreviewName">—</span>
+                        <div style="margin-left:auto;">
+                            <button class="btn btn-sm btn-outline" onclick="document.getElementById('charPreviewCard').style.display='none'">关闭</button>
+                        </div>
+                    </div>
+                    <pre id="charPreviewBody" style="white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--text2);max-height:420px;overflow:auto;margin:0;"></pre>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -491,7 +520,7 @@ function showPage(name, pushHash = true) {
     document.getElementById('page-' + name).classList.add('active');
     const navEl = document.querySelector(`.nav-item[onclick="showPage('${name}')"]`);
     if (navEl) navEl.classList.add('active');
-    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理', data:'💾 数据管理' };
+    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理', data:'💾 数据管理', characters:'🎭 角色卡' };
     document.getElementById('pageTitle').textContent = titles[name] || name;
     if (name === 'logs') loadLogs();
     if (name === 'connections') { loadConnections(); loadConnLogs(); }
@@ -501,6 +530,7 @@ function showPage(name, pushHash = true) {
     if (name === 'chat') loadChatSourceBanner();
     if (name === 'memory') loadMemoryEntries();
     if (name === 'data') loadBackups();
+    if (name === 'characters') loadCharacters();
     // 持久化当前页面到 URL hash，防止刷新后丢失导航状态
     if (pushHash) {
         history.replaceState(null, '', '#' + name);
@@ -1062,6 +1092,55 @@ async function createBackup() {
     } else {
         toast('备份失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
     }
+}
+
+// ===== 角色卡 =====
+async function loadCharacters() {
+    const box = document.getElementById('charList');
+    const data = await api('/api/characters');
+    if (!data) {
+        box.innerHTML = '<div style="color:var(--text2);text-align:center;padding:16px;">加载失败（可能未认证）</div>';
+        return;
+    }
+    const cards = data.characters || [];
+    document.getElementById('charCount').textContent = cards.length + ' 张';
+    if (!cards.length) {
+        box.innerHTML = '<div style="color:var(--text2);text-align:center;padding:16px;">没有找到角色卡</div>';
+        return;
+    }
+    box.innerHTML = cards.map(c => `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;${c.active ? 'border-color:var(--accent);' : ''}">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <b style="font-size:14px;">${escHtml(c.name)}</b>
+                ${c.full_name ? `<span style="color:var(--text2);font-size:12px;">${escHtml(c.full_name)}</span>` : ''}
+                ${c.active ? '<span class="badge">当前使用中</span>' : ''}
+                ${c.builtin ? '' : '<span class="badge">自建</span>'}
+                <div style="margin-left:auto;display:flex;gap:6px;">
+                    <button class="btn btn-sm btn-outline" onclick="previewCharacter('${c.id}')">预览人设</button>
+                    ${c.active ? '' : `<button class="btn btn-sm" onclick="activateCharacter('${c.id}')">切换到此角色</button>`}
+                </div>
+            </div>
+            ${c.description ? `<div style="color:var(--text2);font-size:12px;margin-top:6px;">${escHtml(c.description)}</div>` : ''}
+            <div style="color:var(--text2);font-size:12px;margin-top:6px;">
+                提示词 ${c.prompt_chars} 字 · Few-Shot ${c.few_shot_count} 条${c.source ? ' · 出处 ' + escHtml(c.source) : ''}${c.user_address ? ' · 称呼用户为「' + escHtml(c.user_address) + '」' : ''}${(c.tags && c.tags.length) ? ' · ' + c.tags.map(t => escHtml(t)).join(' / ') : ''}
+            </div>
+        </div>`).join('');
+}
+async function activateCharacter(id) {
+    const r = await api('/api/characters/' + encodeURIComponent(id) + '/activate', { method: 'POST' });
+    if (r && r.status === 'ok') {
+        toast('已切换为「' + r.name + '」，下一轮对话生效', 'success');
+        loadCharacters();
+    } else {
+        toast('切换失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
+    }
+}
+async function previewCharacter(id) {
+    const r = await api('/api/characters/' + encodeURIComponent(id));
+    if (!r || r.detail) { toast('读取失败', 'error'); return; }
+    document.getElementById('charPreviewName').textContent = r.name;
+    document.getElementById('charPreviewBody').textContent = r.system_prompt || '';
+    document.getElementById('charPreviewCard').style.display = '';
 }
 
 // ===== WebSocket Live Logs =====

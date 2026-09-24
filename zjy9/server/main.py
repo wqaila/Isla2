@@ -34,6 +34,7 @@ from config import (
 from ollama_client import ollama_client, GENERATION_OPTIONS, MAX_OUTPUT_CHARS
 from cloud_client import cloud_client, CLOUD_PROVIDERS
 from memory import memory_manager, VALID_COLLECTIONS
+import characters
 from connection_manager import connection_manager
 from logger_service import logger
 from config_persistence import load_config, save_config
@@ -660,6 +661,8 @@ async def update_runtime_config(updates: dict):
         # 会话中期摘要
         "memory_session_summary", "memory_summary_trigger_messages",
         "memory_summary_step", "memory_summary_model",
+        # 角色卡
+        "active_character",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:
@@ -1266,34 +1269,23 @@ async def get_ai_stream(user_message: str, history: list, source: str = None,
         async for chunk in cloud_client.chat(user_message, history, memory_context=memory_context, learning_context=learning_context, emotion_context=emotion_context, time_context=time_context):
             yield chunk
     else:
-        # Ollama 路径：手动构建含人设 + Few-Shot + 记忆 + 学习上下文 + 情感指导的完整消息列表
-        from elysia_prompt import ELYSIA_SYSTEM_PROMPT, ELYSIA_FEWSHOT_EXAMPLES
-        full_messages = []
-        # System Prompt + 时间上下文 + 记忆上下文 + 学习上下文 + 情感指导
-        system_content = ELYSIA_SYSTEM_PROMPT
-        if time_context:
-            system_content += f"\n\n{time_context}"
-        if memory_context:
-            system_content += ("\n\n以下是你从之前的对话中记住的关于用户的信息，在回答时请自然地融入这些记忆。"
-                               "这些只是供你参考的背景资料，不要原样复述它们：\n" + memory_context)
-        if learning_context:
-            system_content += ("\n\n以下是你通过长期学习了解到的用户画像，请根据这些信息调整你的回复风格和内容。"
-                               "同样只是参考，不要原样复述：\n" + learning_context)
-        if emotion_context:
-            system_content += f"\n\n{emotion_context}"
-        full_messages.append({"role": "system", "content": system_content})
-        # Few-Shot 示例：占约 500 token 上下文，可通过运行时配置 use_fewshot_local 关闭。
-        # 注意：这里原本读的是 CLOUD_USE_FEWSHOT（一个"云端"配置项），
-        # 却用来控制本地 Ollama 路径，语义是错的。
-        if runtime("use_fewshot_local", CLOUD_USE_FEWSHOT):
-            full_messages.extend(ELYSIA_FEWSHOT_EXAMPLES)
-        # 历史消息（条数可运行时配置）
-        history_limit = _history_limit()
-        recent = history[-history_limit:] if len(history) > history_limit else history
-        full_messages.extend(recent)
-        # 用户最新消息
-        full_messages.append({"role": "user", "content": user_message})
-        
+        # Ollama 路径：与云端**共用 build_messages**。
+        # 以前这里手写了一份拼装逻辑，措辞还和云端不一致
+        # （本地写「关于用户的信息」、云端写「关于舰长的信息」），
+        # 任何改动都要改两处，属于典型的重复实现。
+        from elysia_prompt import build_messages
+        full_messages = build_messages(
+            user_message, history,
+            # Few-Shot 占约 500 token 上下文，可通过运行时配置 use_fewshot_local 关闭。
+            # 注意：这里原本读的是 CLOUD_USE_FEWSHOT（一个"云端"配置项），
+            # 却用来控制本地 Ollama 路径，语义是错的。
+            few_shot=bool(runtime("use_fewshot_local", CLOUD_USE_FEWSHOT)),
+            memory_context=memory_context,
+            learning_context=learning_context,
+            emotion_context=emotion_context,
+            time_context=time_context,
+        )
+
         async for chunk in ollama_client.chat(full_messages, stream=True):
             yield chunk
 
@@ -1968,15 +1960,53 @@ async def list_sessions_overview(limit: int = 20):
     return {"sessions": result, "total": len(result)}
 
 
+# ===== 角色卡 API =====
+
+@app.get("/api/characters")
+async def list_characters():
+    """列出全部角色卡（**不含**人设正文，避免列表响应过大）"""
+    cards = characters.list_cards()
+    active = characters.active_id()
+    return {
+        "active": active,
+        "characters": [dict(c.to_summary(), active=(c.id == active)) for c in cards],
+    }
+
+
+@app.get("/api/characters/{card_id}")
+async def get_character(card_id: str):
+    """取单张角色卡的完整内容（含人设正文与 Few-Shot，供预览/编辑）"""
+    card = characters.get_card(card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="角色卡不存在")
+    data = card.to_summary()
+    data["system_prompt"] = card.system_prompt
+    data["few_shot"] = card.few_shot
+    return data
+
+
+@app.post("/api/characters/{card_id}/activate")
+async def activate_character(card_id: str):
+    """切换当前角色。下一轮对话立即生效，不需要重启服务。"""
+    if not characters.activate(card_id):
+        raise HTTPException(status_code=404, detail="角色卡不存在")
+    card = characters.get_card(card_id)
+    logger.info("system", f"当前角色已切换为「{card.name}」")
+    return {"status": "ok", "active": card_id, "name": card.name}
+
+
 # ===== 系统提示词 API =====
 
 @app.get("/api/prompt/current")
 async def get_current_prompt():
-    """获取当前使用的系统提示词"""
-    from elysia_prompt import ELYSIA_SYSTEM_PROMPT
+    """获取当前生效的系统提示词（来自当前角色卡）"""
+    card = characters.active_card()
+    prompt = card.system_prompt if card else ""
     return {
-        "prompt": ELYSIA_SYSTEM_PROMPT,
-        "length": len(ELYSIA_SYSTEM_PROMPT),
+        "prompt": prompt,
+        "length": len(prompt),
+        "character": card.id if card else "",
+        "character_name": card.name if card else "",
     }
 
 

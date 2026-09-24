@@ -294,13 +294,57 @@ ollama create elysia-lora -f Modelfile
 
 所有模型都会自动注入爱莉希雅的 System Prompt 和 Few-Shot 示例，确保回复风格一致。
 
-## 爱莉希雅人设注入
+## 角色卡
 
-`elysia_prompt.py` 中定义了完整的角色人设：
+人设**不再硬编码在代码里**，每个角色是一张 JSON 卡：
 
-- **System Prompt**：包含性格特点、说话风格、经典台词、反重复指令
-- **Few-Shot 示例**：8 组示例对话（打招呼/自我介绍/天气/安慰/讲笑话等）
-- **自动构建**：`build_messages()` 函数自动组装 System + 记忆 + Few-Shot + 历史 + 用户消息
+```
+server/characters/*.json        内置卡，随项目发布（入库）
+server/data/characters/*.json   用户自建卡（**不会**被推送到仓库）
+```
+
+同名 `id` 时用户卡覆盖内置卡——想微调内置角色不用改项目文件。
+
+### 卡片字段
+
+`id` / `name` / `system_prompt` 必填，其余可选：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 唯一标识，只允许小写字母、数字、`_`、`-` |
+| `name` | 显示名，例如「爱莉希雅」 |
+| `full_name` / `source` | 全名、出处（例如《崩坏3》） |
+| `description` | 一句话简介，给角色选择界面用 |
+| `user_address` | 角色怎么称呼用户（爱莉希雅是「舰长」），记忆/画像注入时会跟着变 |
+| `system_prompt` | 人设正文 |
+| `few_shot` | Few-Shot 示例，`[{"role": "user"/"assistant", "content": "..."}]` |
+| `greeting` | 首次连接的问候语 |
+| `tags` | 标签列表 |
+
+### 切换角色
+
+面板「🎭 角色卡」页可以直接切换；也可以调接口：
+
+```bash
+# 列出全部角色（不含人设正文）
+curl -H "Authorization: Bearer <api_token>" http://localhost:8080/api/characters
+
+# 切换（下一轮对话立即生效，不需要重启）
+curl -X POST -H "Authorization: Bearer <api_token>" \
+     http://localhost:8080/api/characters/assistant/activate
+```
+
+也可用 `PUT /api/config {"active_character": "assistant"}`。
+
+### 容错
+
+- 单张卡片写坏（JSON 语法错、缺必填字段、`id` 非法）**只跳过那一张**并打印原因，
+  不影响其它卡片，也不会让服务起不来。
+- `active_character` 指向的卡片不存在时**不报错**，自动退回默认角色。
+- 卡片大小有上限（提示词 20000 字、Few-Shot 40 条），防止一张畸形卡片撑爆上下文。
+
+内置两张卡：`elysia`（爱莉希雅）与 `assistant`（无角色扮演的通用助手），
+后者也可以当作写自己角色时的模板。
 
 ## 情感识别引擎
 
@@ -415,6 +459,7 @@ TF-IDF 后端默认启用**混合检索**：一路是 TF-IDF 余弦（衡量"整
 | 📱 连接设备 | 当前连接设备列表、连接历史日志 |
 | 🧠 记忆管理 | 浏览记忆库条目（事实/对话/摘要）、按内容筛选、**删除单条记忆** |
 | 💾 数据管理 | 导出全部对话/记忆（JSON）、数据库备份与备份列表 |
+| 🎭 角色卡 | 查看/切换角色、预览人设正文 |
 
 公网用户也可以通过 `https://xxx.trycloudflare.com/dashboard` 访问管理面板。
 
@@ -577,6 +622,15 @@ curl http://localhost:8080/api/status
 > 备份默认**每 24 小时自动做一次**、保留最近 7 份，可用
 > `PUT /api/config` 调整 `db_backup_interval_hours`（0 = 关闭）与 `db_backup_keep`。
 > 备份文件在 `server/data/backups/`，不入库。
+
+### 角色卡
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/characters` | 列出全部角色卡（不含人设正文） |
+| GET | `/api/characters/{id}` | 取单张卡片的完整内容（含人设与 Few-Shot） |
+| POST | `/api/characters/{id}/activate` | 切换当前角色（下一轮对话生效） |
+| GET | `/api/prompt/current` | 当前生效的系统提示词（来自当前角色卡） |
 
 ### 情绪分析
 
@@ -982,7 +1036,8 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
   "memory_session_summary": true,
   "memory_summary_trigger_messages": 30,
   "memory_summary_step": 20,
-  "memory_summary_model": "qwen3.8-27b:latest"
+  "memory_summary_model": "qwen3.8-27b:latest",
+  "active_character": "elysia"
 }
 ```
 
@@ -999,7 +1054,7 @@ cd server
 
 | 脚本 | 覆盖内容 | 需要 Ollama |
 |------|----------|-------------|
-| `tests/test_regressions.py` | 83 项 接口 / 数据层 / 提示词 / 重试 / 记忆 / 导出备份 / 混合检索 / 分层记忆回归 | 否 |
+| `tests/test_regressions.py` | 101 项 接口 / 数据层 / 提示词 / 重试 / 记忆 / 导出备份 / 检索 / 分层记忆 / 角色卡回归 | 否 |
 | `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
 | `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
 | `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |

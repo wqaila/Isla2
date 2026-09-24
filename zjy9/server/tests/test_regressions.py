@@ -441,6 +441,67 @@ try:
             _mm.delete_entry("summaries", _x["id"])
     _mm.flush()
 
+    print("\n=== 12. 角色卡 ===")
+    import characters as _ch
+
+    _ch.load_cards(force=True)
+    _cards = {c.id: c for c in _ch.list_cards()}
+    check("内置爱莉希雅卡片已加载", "elysia" in _cards, sorted(_cards))
+    check("卡片含人设正文与 Few-Shot",
+          len(_cards["elysia"].system_prompt) > 500
+          and len(_cards["elysia"].few_shot) >= 8,
+          f"{len(_cards['elysia'].system_prompt)}字 / "
+          f"{len(_cards['elysia'].few_shot)}条")
+    check("列表摘要不含人设正文（控制接口体积）",
+          "system_prompt" not in _cards["elysia"].to_summary())
+
+    # 坏卡片只跳过、不影响其它卡片 —— 用户手写卡片出错不该让服务起不来
+    _ud = _ch.USER_DIR
+    _ud.mkdir(parents=True, exist_ok=True)
+    (_ud / "__bad_json.json").write_text("{ 这不是合法 JSON", encoding="utf-8")
+    (_ud / "__bad_id.json").write_text(
+        '{"id":"BadID","name":"x","system_prompt":"y"}', encoding="utf-8")
+    (_ud / "__bad_empty.json").write_text(
+        '{"id":"bad_empty","name":"没提示词"}', encoding="utf-8")
+    try:
+        _ids = {c.id for c in _ch.list_cards()}
+        check("非法 JSON 卡片被跳过", "elysia" in _ids, sorted(_ids))
+        check("非法 id 的卡片被跳过", "BadID" not in _ids, sorted(_ids))
+        check("缺 system_prompt 的卡片被跳过", "bad_empty" not in _ids, sorted(_ids))
+    finally:
+        for _f in ("__bad_json.json", "__bad_id.json", "__bad_empty.json"):
+            (_ud / _f).unlink(missing_ok=True)
+
+    check("切换到存在的卡片成功", _ch.activate("assistant") is True)
+    check("激活状态跟随切换", _ch.active_id() == "assistant", _ch.active_id())
+    check("切换到不存在的卡片返回 False", _ch.activate("__nope__") is False)
+    check("失败后激活状态不变", _ch.active_id() == "assistant", _ch.active_id())
+
+    # build_messages 必须用**当前**卡片，而不是还抱着老常量
+    _m = build_messages("你好", [], few_shot=True)
+    check("build_messages 使用当前卡片的人设",
+          "务实" in _m[0]["content"], _m[0]["content"][:40])
+    _ch.activate("elysia")
+    _m2 = build_messages("你好", [], few_shot=True)
+    check("切回后提示词随之改变", "爱莉希雅" in _m2[0]["content"])
+    check("Few-Shot 条数与卡片一致",
+          len(_m2) - 2 == len(_ch.get_card("elysia").few_shot), len(_m2) - 2)
+
+    _r = client.get("/api/characters", headers=_auth)
+    check("GET /api/characters -> 200", _r.status_code == 200, _r.status_code)
+    if _r.status_code == 200:
+        check("列表标出当前角色", _r.json().get("active") == "elysia",
+              _r.json().get("active"))
+    check("取不存在的卡片 -> 404",
+          client.get("/api/characters/__nope__", headers=_auth).status_code == 404)
+    check("激活不存在的卡片 -> 404",
+          client.post("/api/characters/__nope__/activate",
+                      headers=_auth).status_code == 404)
+    _r = client.get("/api/prompt/current", headers=_auth)
+    check("prompt/current 反映当前角色",
+          _r.status_code == 200 and _r.json().get("character") == "elysia",
+          _r.status_code)
+
 finally:
     # 清理测试数据
     for _s in _TEST_SESSION_IDS:
@@ -456,7 +517,8 @@ finally:
                     or "__测试" in (_x.get("content") or "")):
                 mm.delete_entry(coll, _x["id"])
     mm.flush()
-    cp.save_config({"rate_limit_per_minute": 120, "api_token": ""})
+    cp.save_config({"rate_limit_per_minute": 120, "api_token": "",
+                    "active_character": "elysia"})
     print("\n[清理] 测试会话/记忆已删除，运行时配置已还原")
 
 print(f"\n=== 结果: {len(PASS)} 通过 / {len(FAIL)} 失败 ===")
