@@ -208,7 +208,14 @@ class OllamaClient:
                 read=float(REQUEST_TIMEOUT),
                 write=30.0,
                 pool=10.0,
-            )
+            ),
+            # ⚠️ 必须关掉 trust_env：httpx 默认会读取系统代理环境变量
+            # （HTTP_PROXY / HTTPS_PROXY / ALL_PROXY），而 Ollama 是**本机**服务，
+            # 走代理只会被拦掉。实测：开着代理时 /api/tags 和 /api/chat 全部返回
+            # 502，报错信息还是 "Ollama API 返回 502"，完全看不出是代理问题。
+            # 用户只要开了全局代理/VPN，本地推理就整个不可用。
+            # 局域网里跑 Ollama（如指向另一台机器）同样不该绕代理。
+            trust_env=False,
         )
 
     async def close(self):
@@ -258,13 +265,19 @@ class OllamaClient:
         except Exception as e:
             return {"error": str(e)}
 
-    async def chat(self, messages: list, stream: bool = False):
+    async def chat(self, messages: list, stream: bool = False,
+                   model: str | None = None, options_override: dict | None = None):
         """
         发送聊天请求
 
         Args:
             messages: 消息列表 [{"role": "user", "content": "..."}]
             stream: 是否流式返回
+            model: 临时指定模型；默认用 self.model（聊天模型）。
+                   会话摘要会传通用模型 —— 人设 LoRA 做摘要会编造细节。
+            options_override: 覆盖默认生成参数。默认那套是为"有创意的角色扮演"
+                   调的（temperature 0.7 + mirostat tau 4.5 专门追求多样性），
+                   摘要这类**要求忠实**的任务必须传自己的参数。
 
         Yields (流式) 或 Returns (非流式):
             {"content": "...", "done": bool, "tokens_per_sec": float}
@@ -281,9 +294,11 @@ class OllamaClient:
         options["num_predict"] = dynamic_num_predict
         # 允许通过运行时配置调整上下文窗口（显存/内存吃紧时可以调小）
         options["num_ctx"] = int(runtime("num_ctx", GENERATION_OPTIONS["num_ctx"]))
+        if options_override:
+            options.update(options_override)
 
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "stream": stream,
             "options": options,

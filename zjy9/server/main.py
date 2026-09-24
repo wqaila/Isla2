@@ -29,6 +29,7 @@ from config import (
     MODEL_SOURCE, CLOUD_USE_FEWSHOT,
     API_TOKEN, RATE_LIMIT_PER_MINUTE, CHAT_RATE_LIMIT_PER_MINUTE,
     REQUEST_TIMEOUT, CORS_ORIGINS, ensure_directories, runtime,
+    OLLAMA_SUMMARY_MODEL,
 )
 from ollama_client import ollama_client, GENERATION_OPTIONS, MAX_OUTPUT_CHARS
 from cloud_client import cloud_client, CLOUD_PROVIDERS
@@ -656,6 +657,9 @@ async def update_runtime_config(updates: dict):
         "db_backup_interval_hours", "db_backup_keep",
         # 记忆检索
         "memory_hybrid_search",
+        # 会话中期摘要
+        "memory_session_summary", "memory_summary_trigger_messages",
+        "memory_summary_step", "memory_summary_model",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:
@@ -712,6 +716,15 @@ async def _build_chat_context(session_id: str, device_id: str, user_message: str
         max_chars=int(runtime("memory_context_max_chars", 800)),
     )
 
+    # 把本会话的中期摘要拼进来 —— 「最近窗口之外」的早前内容靠它保住。
+    # 沿用既有约定：用自然语言引导句而不是方括号标签（模型会把标签照抄进回复），
+    # 并声明这只是参考、不要原样复述。
+    _summary = memory_manager.get_session_summary(session_id)
+    if _summary and _summary.get("content"):
+        _line = ("- 你们更早之前聊过的（摘要，仅供你回忆，不要原样复述）："
+                 + _summary["content"])
+        memory_context = (_line + "\n" + memory_context) if memory_context else _line
+
     time_context = build_time_enhanced_context(
         user_message, session_id, db.get_message_count(session_id)
     )
@@ -734,6 +747,120 @@ async def _build_chat_context(session_id: str, device_id: str, user_message: str
     }
 
 
+# ===== 会话中期摘要（分层记忆的中间层）=====
+#
+# 为什么需要：_build_chat_context 只喂「最近 N 条」历史，聊久了早前内容就
+# 彻底丢失（表现就是"她忘了我们之前说过什么"）。这一层把「最近窗口之外」的
+# 旧消息压成一份摘要常驻，补上短期窗口与长期事实之间的空缺。
+
+_SUMMARY_PROMPT = (
+    "把下面这段对话压缩成简洁的第三人称中文摘要，供日后回忆使用。\n"
+    "要求：\n"
+    "1. 保留人物、地点、时间、约定、喜好、情绪变化等关键信息；\n"
+    "2. 丢掉寒暄、重复与无信息量的内容；\n"
+    "3. 不超过 200 字；\n"
+    "4. 直接输出摘要正文，不要标题、前后缀、解释或点评；\n"
+    "5. 只写对话里真实出现过的信息，绝对不要推测或补充原文没有的内容。\n"
+)
+
+# 摘要用的生成参数：**刻意与聊天参数相反**。
+# 聊天那套（temperature 0.7 + mirostat tau 4.5）是为"有创意、够多样"调的，
+# 拿来做摘要会编造细节 —— 实测编出过原文根本没有的"2019年4月8日 晚上"，
+# 还爱输出"整段对话没有提及…"这类元评论。摘要要的是忠实与稳定。
+_SUMMARY_OPTIONS = {
+    "temperature": 0.2,
+    "top_p": 0.8,
+    "top_k": 20,
+    "mirostat": 0,          # 关掉：mirostat 存在的意义就是提升多样性
+    "repeat_penalty": 1.1,
+    "num_predict": 400,     # 摘要比一句回复长，默认动态值只有 120
+}
+
+
+async def _summarize_transcript(msgs: list) -> str:
+    """用本地模型把一段对话压成摘要；失败返回空串（调用方跳过即可）。
+
+    模型选择：优先用通用模型（OLLAMA_SUMMARY_MODEL），失败再退回聊天模型。
+    实测人设 LoRA 做摘要会**编造细节**（把"下周还有二面"写成"下周一…"），
+    而摘要会被当作记忆喂回去，编造比没有更糟。
+    """
+    lines = []
+    for m in msgs:
+        content = (m.get("content") or "").strip()
+        if content:
+            who = "用户" if m.get("role") == "user" else "爱莉希雅"
+            lines.append(f"{who}：{content}")
+    if not lines:
+        return ""
+
+    prompt = _SUMMARY_PROMPT + "\n对话内容：\n" + "\n".join(lines)
+    chat = [{"role": "user", "content": prompt}]
+
+    async def _run(model):
+        parts = []
+        async for chunk in ollama_client.chat(
+                chat, stream=False, model=model,
+                options_override=_SUMMARY_OPTIONS):
+            parts.append(chunk.get("content") or "")
+        return "".join(parts).strip()
+
+    preferred = (runtime("memory_summary_model", OLLAMA_SUMMARY_MODEL) or "").strip()
+    for model in ([preferred, None] if preferred else [None]):
+        try:
+            text = await _run(model)
+        except Exception as e:
+            logger.warning("memory", f"生成会话摘要失败: {str(e)[:80]}")
+            continue
+        if text and not text.startswith("[错误]"):
+            return text
+    return ""
+
+
+async def _maybe_update_session_summary(session_id: str) -> None:
+    """会话变长后，把「最近窗口之外」的旧内容压成摘要存进记忆库。
+
+    只在新增的旧消息足够多时才动手，避免每轮都把整段对话重新压一遍。
+    这个函数是后台任务，任何异常都不该冒泡出去影响对话。
+    """
+    try:
+        if not runtime("memory_session_summary", True):
+            return
+
+        total = db.get_message_count(session_id)
+        if total < int(runtime("memory_summary_trigger_messages", 30)):
+            return
+
+        end = total - _history_limit()      # 只总结最近窗口之外的部分
+        if end <= 0:
+            return
+
+        prev = memory_manager.get_session_summary(session_id)
+        covered = int(prev.get("covered_until", 0)) if prev else 0
+        if end - covered < int(runtime("memory_summary_step", 20)):
+            return
+
+        msgs = db.get_messages_range(session_id, covered, end - covered)
+        if not msgs:
+            return
+
+        # 摘要要走并发闸门：一次生成可能要几十秒，不能让它和聊天抢 Ollama，
+        # 更不能多个会话同时触发把模型打爆。抢不到就跳过，下一轮再试。
+        if not await _acquire_generation_slot():
+            return
+        try:
+            summary = await _summarize_transcript(msgs)
+        finally:
+            _release_generation_slot()
+
+        if not summary:
+            return
+
+        memory_manager.set_session_summary(session_id, summary, covered_until=end)
+        logger.info("memory", f"会话摘要已更新（已覆盖前 {end} 条消息）")
+    except Exception as e:
+        logger.warning("memory", f"更新会话摘要失败: {str(e)[:100]}")
+
+
 def _finish_turn(session_id: str, device_id: str, user_message: str,
                  full_content: str, tokens: int, response_ms: int):
     """一次对话的收尾：落库 + 写记忆 + 触发学习引擎（两条路径共用）"""
@@ -747,6 +874,8 @@ def _finish_turn(session_id: str, device_id: str, user_message: str,
         asyncio.create_task(
             _run_llm_learning_analysis(learn_result["llm_prompt"], device_id)
         )
+    # 会话变长后更新中期摘要（后台跑，不阻塞回复）
+    asyncio.create_task(_maybe_update_session_summary(session_id))
     return learn_result
 
 

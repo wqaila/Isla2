@@ -471,6 +471,25 @@ def get_messages(session_id: str, limit: int = 100) -> list:
     return [dict(r) for r in rows]
 
 
+def get_messages_range(session_id: str, offset: int, limit: int) -> list:
+    """按时间正序取会话中第 [offset, offset+limit) 条消息。
+
+    给"会话中期摘要"用：只需要总结「最近窗口之外」的旧消息 ——
+    既不能把整个会话重新读一遍，也不能把最近的消息重复总结。
+    """
+    if limit <= 0:
+        return []
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT * FROM chat_messages
+           WHERE session_id = ?
+           ORDER BY created_at ASC, rowid ASC
+           LIMIT ? OFFSET ?""",
+        (session_id, limit, max(0, offset))
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_recent_messages(session_id: str, limit: int = 10) -> list:
     """获取会话**最近** limit 条消息，并按时间正序返回。
 

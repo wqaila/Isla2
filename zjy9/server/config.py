@@ -11,6 +11,12 @@ SERVER_PORT = 8080
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "elysia-lora"  # 默认模型名
 
+# 会话摘要专用模型：**刻意不用人设 LoRA**。
+# 实测 elysia-lora 会把原文的"下周还有二面"改写成"下周一要进行第二次面试" ——
+# 凭空多出一个日期。摘要会被当作记忆喂回给模型，**编造的细节比没有摘要更糟**，
+# 所以这里用通用模型。留空则退回聊天模型。
+OLLAMA_SUMMARY_MODEL = "qwen3.8-27b:latest"
+
 # ===== 数据库配置 =====
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "data" / "elysia_server.db"

@@ -378,6 +378,28 @@ TF-IDF 后端默认启用**混合检索**：一路是 TF-IDF 余弦（衡量"整
 
 可用 `PUT /api/config {"memory_hybrid_search": false}` 一键退回纯向量。
 
+### 分层记忆（短期窗口 / 中期摘要 / 长期事实）
+
+对话上下文由三层构成，解决"聊久了就忘了早前内容"的问题：
+
+| 层 | 内容 | 来源 |
+|----|------|------|
+| 短期 | 最近 N 条原始消息 | `chat_messages`（`max_history_messages`，默认 20） |
+| **中期** | 更早内容的滚动摘要 | 会话变长后**自动生成**，每个会话一份、原地覆盖 |
+| 长期 | 提取出的用户事实 | `extract_and_save_facts()` 的模式匹配 |
+
+**中期摘要的工作方式**：会话消息数超过 `memory_summary_trigger_messages`（默认 30）
+之后，把「最近窗口之外」的旧消息交给模型压成一份摘要，记录 `covered_until`，
+下次只总结新增的部分，不会重复压整段对话。摘要生成在**后台任务**里执行、
+走并发闸门，抢不到槽位就下一轮再试，不影响回复速度。
+
+> ⚠️ **摘要刻意不使用人设模型**。实测人设 LoRA 会把原文的「下周还有二面」
+> 改写成「**下周一**要进行第二次面试」——凭空多出一个日期。摘要会被当作记忆
+> 喂回给模型，**编造的细节比没有摘要更糟**，所以摘要走 `OLLAMA_SUMMARY_MODEL`
+> （通用模型），并使用独立的低温度生成参数（关掉 mirostat）。
+>
+> 可用 `PUT /api/config {"memory_session_summary": false}` 关闭。
+
 ## Web 管理面板
 
 访问 `http://localhost:8080/dashboard` 使用完整的 Web 管理面板：
@@ -956,7 +978,11 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
   "chat_messages_max_per_session": 500,
   "db_backup_interval_hours": 24,
   "db_backup_keep": 7,
-  "memory_hybrid_search": true
+  "memory_hybrid_search": true,
+  "memory_session_summary": true,
+  "memory_summary_trigger_messages": 30,
+  "memory_summary_step": 20,
+  "memory_summary_model": "qwen3.8-27b:latest"
 }
 ```
 
@@ -973,7 +999,7 @@ cd server
 
 | 脚本 | 覆盖内容 | 需要 Ollama |
 |------|----------|-------------|
-| `tests/test_regressions.py` | 72 项 接口 / 数据层 / 提示词 / 重试 / 记忆 / 导出备份 / 混合检索回归 | 否 |
+| `tests/test_regressions.py` | 83 项 接口 / 数据层 / 提示词 / 重试 / 记忆 / 导出备份 / 混合检索 / 分层记忆回归 | 否 |
 | `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
 | `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
 | `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |

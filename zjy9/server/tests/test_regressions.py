@@ -363,6 +363,76 @@ try:
     check("混合检索 Top1 命中率 >= 70%",
           _h >= int(len(_TOPICS) * 0.7), f"{_h}/{len(_TOPICS)}")
 
+    print("\n=== 10. 本地 Ollama 不受系统代理影响 ===")
+    # httpx 默认 trust_env=True，会读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY，
+    # 把**本机**的 Ollama 也塞进代理 —— 结果整个本地推理返回 502，
+    # 而报错信息是 "Ollama API 返回 502"，完全看不出是代理导致的。
+    # 用户只要开了全局代理/VPN，本地模型就整个不可用。
+    from ollama_client import ollama_client as _oc
+    check("ollama 客户端已关闭 trust_env（不读系统代理）",
+          getattr(_oc._client, "trust_env", None) is False,
+          getattr(_oc._client, "trust_env", "无此属性"))
+
+    print("\n=== 11. 会话中期摘要（分层记忆）===")
+    # 说明：这里**不调用模型** —— 只验证存取、切片、注入与开关这些确定性逻辑。
+    # 真实的摘要生成质量已单独实测过（基座模型准确；人设 LoRA 会编造日期，
+    # 所以摘要刻意不走人设模型）。
+    from memory import memory_manager as _mm
+    import asyncio as _aio
+
+    _sid2 = db.create_session("summary_reg", "摘要回归")
+    for _i in range(6):
+        db.save_message(_sid2, "user", f"第{_i}条用户消息")
+        db.save_message(_sid2, "assistant", f"第{_i}条回复")
+
+    _part = db.get_messages_range(_sid2, 2, 3)
+    check("get_messages_range 切片正确",
+          [m["content"] for m in _part]
+          == ["第1条用户消息", "第1条回复", "第2条用户消息"],
+          [m["content"] for m in _part])
+    check("get_messages_range limit=0 返回空",
+          db.get_messages_range(_sid2, 0, 0) == [])
+
+    check("初始没有会话摘要", _mm.get_session_summary(_sid2) is None)
+
+    def _count_summaries():
+        return sum(1 for x in _mm.backend.list_all("summaries")
+                   if (x.get("metadata") or {}).get("session_id") == _sid2)
+
+    _mm.set_session_summary(_sid2, "用户面试了杭州的机器人公司，下周三去上海出差。",
+                            covered_until=7)
+    _got = _mm.get_session_summary(_sid2)
+    check("写入后能读回摘要", bool(_got) and "上海出差" in _got["content"],
+          (_got or {}).get("content", "")[:40])
+    check("覆盖范围被正确记录", bool(_got) and _got["covered_until"] == 7, _got)
+    check("每个会话只保留一份摘要", _count_summaries() == 1, _count_summaries())
+
+    _mm.set_session_summary(_sid2, "更新后的摘要内容", covered_until=9)
+    check("重复写入是覆盖而非新增", _count_summaries() == 1, _count_summaries())
+
+    _ctx = _aio.run(main._build_chat_context(_sid2, "summary_reg", "下周三我要干嘛"))
+    _mc = _ctx["memory_context"]
+    check("摘要被注入到 memory_context",
+          "更早之前聊过的" in _mc and "更新后的摘要内容" in _mc, _mc[:60])
+    check("注入内容不含方括号标签（模型会照抄）", "[" not in _mc)
+
+    # 开关关闭时不应该更新摘要（也顺带证明不会去调模型）
+    _mm.set_session_summary(_sid2, "占位内容", covered_until=0)
+    cp.save_config({"memory_session_summary": False})
+    try:
+        _aio.run(main._maybe_update_session_summary(_sid2))
+        _after = _mm.get_session_summary(_sid2)
+        check("开关关闭时不更新摘要",
+              bool(_after) and _after["covered_until"] == 0, _after)
+    finally:
+        cp.save_config({"memory_session_summary": True})
+
+    db.delete_session(_sid2)
+    for _x in _mm.backend.list_all("summaries"):
+        if (_x.get("metadata") or {}).get("session_id") == _sid2:
+            _mm.delete_entry("summaries", _x["id"])
+    _mm.flush()
+
 finally:
     # 清理测试数据
     db.delete_session(sid)

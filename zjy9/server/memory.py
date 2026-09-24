@@ -553,6 +553,46 @@ class MemoryManager:
         except Exception as e:
             print(f"[Memory] 保存摘要失败: {e}")
 
+    # ===== 会话中期摘要（分层记忆的中间层）=====
+    #
+    # 为什么需要：对话历史只喂「最近 N 条」，聊久了早前内容就彻底丢失
+    # （表现就是"她忘了我们之前说过什么"）。这里把「最近窗口之外」的旧消息
+    # 压成一份摘要常驻，补上短期窗口与长期事实之间的那一层。
+
+    def set_session_summary(self, session_id: str, summary: str,
+                            covered_until: int = 0):
+        """写入/覆盖某个会话的中期摘要（每个会话只保留一份，原地覆盖）。
+
+        covered_until = 已总结到第几条消息（按时间正序计数）。下次只总结这之后
+        的新增部分，避免每轮都把整段对话重新压一遍。
+        """
+        doc_id = hashlib.md5(f"session_summary_{session_id}".encode()).hexdigest()
+        try:
+            self.backend.add_document("summaries", doc_id, summary, {
+                "session_id": session_id,
+                "covered_until": int(covered_until),
+                "timestamp": datetime.now().isoformat(),
+                "type": "session_summary",
+            })
+        except Exception as e:
+            print(f"[Memory] 保存会话摘要失败: {e}")
+
+    def get_session_summary(self, session_id: str) -> dict | None:
+        """取某个会话的中期摘要；没有则返回 None。
+
+        summaries 集合很小（每个会话最多一条），直接遍历即可 —— 比给后端抽象
+        接口加 get_document、再改两个后端实现更省事。
+        """
+        for item in self.backend.list_all("summaries"):
+            meta = item.get("metadata") or {}
+            if (meta.get("type") == "session_summary"
+                    and meta.get("session_id") == session_id):
+                return {
+                    "content": item.get("content", ""),
+                    "covered_until": int(meta.get("covered_until") or 0),
+                }
+        return None
+
     def search_memory(self, query: str, n_results: int = 5) -> list:
         results = []
         for collection in ["conversations", "facts", "summaries"]:
