@@ -16,6 +16,7 @@ from pathlib import Path
 from abc import ABC, abstractmethod
 
 from config import BASE_DIR, runtime
+from logger_service import logger
 
 
 # ===== 提示词友好化工具 =====
@@ -511,7 +512,7 @@ class MemoryManager:
 
     def __init__(self, backend: MemoryBackend):
         self.backend = backend
-        print(f"[Memory] 使用后端: {backend.get_name()}")
+        logger.info("memory", f"使用后端: {backend.get_name()}")
 
     def add_conversation(self, session_id: str, user_msg: str, ai_msg: str,
                          timestamp: str = None):
@@ -527,7 +528,7 @@ class MemoryManager:
                 "type": "conversation",
             })
         except Exception as e:
-            print(f"[Memory] 保存对话失败: {e}")
+            logger.error("memory", f"保存对话失败: {e}")
 
     def add_fact(self, fact: str, source: str = "auto", session_id: str = ""):
         doc_id = hashlib.md5(f"fact_{fact}".encode()).hexdigest()
@@ -539,7 +540,7 @@ class MemoryManager:
                 "type": "fact",
             })
         except Exception as e:
-            print(f"[Memory] 保存事实失败: {e}")
+            logger.error("memory", f"保存事实失败: {e}")
 
     def add_summary(self, summary: str, session_id: str, message_range: str = ""):
         doc_id = hashlib.md5(f"summary_{session_id}_{summary[:50]}".encode()).hexdigest()
@@ -551,7 +552,7 @@ class MemoryManager:
                 "type": "summary",
             })
         except Exception as e:
-            print(f"[Memory] 保存摘要失败: {e}")
+            logger.error("memory", f"保存摘要失败: {e}")
 
     # ===== 会话中期摘要（分层记忆的中间层）=====
     #
@@ -575,7 +576,7 @@ class MemoryManager:
                 "type": "session_summary",
             })
         except Exception as e:
-            print(f"[Memory] 保存会话摘要失败: {e}")
+            logger.error("memory", f"保存会话摘要失败: {e}")
 
     def get_session_summary(self, session_id: str) -> dict | None:
         """取某个会话的中期摘要；没有则返回 None。
@@ -602,7 +603,7 @@ class MemoryManager:
                     item["collection"] = collection
                 results.extend(items)
             except Exception as e:
-                print(f"[Memory] 搜索 {collection} 失败: {e}")
+                logger.error("memory", f"搜索 {collection} 失败: {e}")
 
         # 按距离排序
         results.sort(key=lambda x: x["distance"])
@@ -808,7 +809,7 @@ class MemoryManager:
                     self.flush()
                     cleaned[collection] = len(all_items) - len(keep_items)
             except Exception as e:
-                print(f"[Memory] 清理 {collection} 失败: {e}")
+                logger.error("memory", f"清理 {collection} 失败: {e}")
         
         return cleaned
 
@@ -831,10 +832,10 @@ class MemoryManager:
             try:
                 count = self.backend.count(collection)
                 if count > max_count * 1.2:  # 超过 20% 时触发清理
-                    print(f"[Memory] {collection} 条目数 ({count}) 超过阈值 ({max_count})，开始清理...")
+                    logger.warning("memory", f"{collection} 条目数 ({count}) 超过阈值 ({max_count})，开始清理")
                     self._trim_collection(collection, max_count)
             except Exception as e:
-                print(f"[Memory] 自动清理 {collection} 失败: {e}")
+                logger.error("memory", f"自动清理 {collection} 失败: {e}")
 
     def _trim_collection(self, collection: str, target_count: int):
         """裁剪集合到目标数量（保留最新的）"""
@@ -857,9 +858,9 @@ class MemoryManager:
                     item.get("metadata", {})
                 )
             self.flush()
-            print(f"[Memory] {collection} 已裁剪到 {len(keep_items)} 条")
+            logger.info("memory", f"{collection} 已裁剪到 {len(keep_items)} 条")
         except Exception as e:
-            print(f"[Memory] 裁剪 {collection} 失败: {e}")
+            logger.error("memory", f"裁剪 {collection} 失败: {e}")
 
 
 # ===== 初始化 =====
@@ -878,9 +879,9 @@ def create_memory_manager(backend_name: str = None) -> MemoryManager:
             backend = ChromaBackend()
             return MemoryManager(backend)
         except ImportError:
-            print("[Memory] ChromaDB 未安装，回退到 TF-IDF")
+            logger.warning("memory", "ChromaDB 未安装，回退到 TF-IDF")
         except Exception as e:
-            print(f"[Memory] ChromaDB 初始化失败: {e}，回退到 TF-IDF")
+            logger.warning("memory", f"ChromaDB 初始化失败: {e}，回退到 TF-IDF")
 
     # 默认使用 TF-IDF
     return MemoryManager(TfidfBackend())

@@ -662,13 +662,30 @@ curl http://localhost:8080/api/status
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/` | 服务首页 |
-| GET | `/health` | 健康检查（轻量级，供客户端探测） |
+| GET | `/` | 服务首页（返回名称/版本/状态） |
+| GET | `/health` | 存活探针（轻量级，只回答"进程还在吗"） |
+| GET | `/ready` | **就绪探针**（额外检查数据库、模型来源、生成闸门） |
 | GET | `/api/status` | 服务状态（Ollama/GPU/连接数） |
 | GET | `/api/logs` | 系统日志 |
 | GET | `/api/logs/connections` | 连接日志 |
 | GET | `/dashboard` | Web 管理面板 |
 | WS | `/ws/logs` | 实时日志流 |
+
+### `/health` 与 `/ready` 的区别
+
+这两个别混用：
+
+| 端点 | 回答的问题 | 失败时 |
+|------|-----------|--------|
+| `/health` | 进程还活着吗？ | 只在进程挂了时不可用 |
+| `/ready` | **现在真的能提供服务吗？** | 任一检查不过返回 **503** |
+
+`/ready` 会检查数据库可读、模型来源可用、生成闸门是否正常。
+**反向代理 / Cloudflare Tunnel 应该用它来判断要不要把流量打过来** ——
+只用 `/health` 的话，进程活着但模型没起来时，流量照样会被打进来然后全部失败。
+
+> 注意：`/ready` 里的 Ollama 探测**刻意不重试**（`check_status(attempts=1)`），
+> 探针必须快速返回，不能因为重试把自己拖慢。
 
 ## API 认证与安全
 
@@ -1010,9 +1027,9 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
 - `scikit-learn` 由注释改为正式依赖（`MEMORY_BACKEND` 默认就是 `tfidf`，缺了它只能退化成字符级匹配）
 - 新增可选依赖 `psutil`
 
-## 新增 / 变更的运行时配置项
+## 运行时配置项完整参考
 
-`PUT /api/config` 现在可以设置（且立即生效）：
+全部 **34 个键**都可以通过 `PUT /api/config` 设置并**立即生效**（需重启的单独标注）：
 
 ```json
 {
@@ -1021,11 +1038,12 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
   "chat_rate_limit_per_minute": 60,
   "request_timeout": 120,
   "max_connections": 10,
+  "heartbeat_interval": 30,
   "num_ctx": 4096,
   "use_fewshot_local": true,
+  "max_history_messages": 20,
   "memory_context_max_chars": 800,
   "learning_context_max_chars": 600,
-  "max_history_messages": 20,
   "model_retry_attempts": 3,
   "max_concurrent_generations": 2,
   "system_logs_max_rows": 20000,
@@ -1041,7 +1059,71 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
 }
 ```
 
-> `memory_backend` 仍需要重启才能切换（后端在进程启动时实例化）。
+### 服务与访问控制
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `api_token` | `""` | 访问令牌。设为非空后管理类接口都要求认证 |
+| `rate_limit_per_minute` | `120` | 全局每分钟请求上限 |
+| `chat_rate_limit_per_minute` | `60` | 聊天接口单独的每分钟上限 |
+| `request_timeout` | `120` | 单次请求超时（秒） |
+| `max_connections` | `10` | WebSocket 并发连接上限 |
+| `heartbeat_interval` | `30` | WS 心跳间隔（秒） |
+
+### 模型与上下文
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `model_source` | `"auto"` | `auto`（本地优先，不可用切云端）/ `ollama` / `cloud` |
+| `num_ctx` | `4096` | 上下文窗口。**调小会导致人设被静默截断** |
+| `use_fewshot_local` | `true` | 本地路径是否带 Few-Shot（占约 500 token） |
+| `max_history_messages` | `20` | 短期窗口：带多少条历史 |
+| `memory_context_max_chars` | `800` | 记忆注入上限 |
+| `learning_context_max_chars` | `600` | 用户画像注入上限 |
+| `model_retry_attempts` | `3` | 模型调用重试次数（只重试建连阶段） |
+
+### 云端 API
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `cloud_provider` | `"deepseek"` | 服务商 |
+| `cloud_api_key` | `""` | API Key（**持久化时加密**） |
+| `cloud_model` | `""` | 模型名；留空用服务商默认 |
+| `cloud_temperature` | `0.7` | 云端采样温度 |
+| `cloud_max_tokens` | `512` | 云端单次最大输出 token |
+| `cloud_use_fewshot` | `true` | 云端是否带 Few-Shot |
+
+### 记忆
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `memory_backend` | `"tfidf"` | `tfidf`（轻量）/ `chromadb`（精准）。**需重启** |
+| `memory_hybrid_search` | `true` | 混合检索（BM25 + 向量）；关掉退回纯向量 |
+| `memory_session_summary` | `true` | 会话中期摘要 |
+| `memory_summary_trigger_messages` | `30` | 超过多少条消息才开始生成摘要 |
+| `memory_summary_step` | `20` | 窗口外新增多少条后重新总结一次 |
+| `memory_summary_model` | `qwen3.8-27b:latest` | 摘要用的模型。**不要用人设 LoRA**（会编造细节） |
+| `memory_max_conversations` | `5000` | 对话记忆条数上限 |
+| `memory_max_facts` | `2000` | 长期事实条数上限 |
+| `memory_max_summaries` | `500` | 摘要条数上限 |
+
+### 可靠性与数据保留
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `max_concurrent_generations` | `2` | 同时生成数上限（闸门），满了返回 429 |
+| `system_logs_max_rows` | `20000` | 系统日志表保留行数 |
+| `chat_messages_max_per_session` | `500` | 单会话消息保留上限（超出裁掉最旧的） |
+| `db_backup_interval_hours` | `24` | 自动备份间隔（小时）；`0` = 关闭 |
+| `db_backup_keep` | `7` | 保留最近几份备份 |
+
+### 角色
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `active_character` | `"elysia"` | 当前角色卡 id；下一轮对话生效 |
+
+> `memory_backend` 是唯一需要重启才能切换的项（后端在进程启动时实例化）。
 
 ## 测试
 

@@ -1820,7 +1820,7 @@ async def import_memory(data: dict):
                     )
                     imported[coll_name] += 1
                 except Exception as e:
-                    print(f"[Memory] 导入失败: {e}")
+                    logger.error("memory", f"导入失败: {e}")
         
         return {
             "status": "ok",

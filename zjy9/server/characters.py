@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import BASE_DIR, runtime
+from logger_service import logger
 
 # 内置卡目录（入库）与用户卡目录（不入库）
 BUILTIN_DIR = BASE_DIR / "characters"
@@ -160,7 +161,7 @@ def load_cards(force: bool = False) -> dict:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 card = _validate(raw, path, builtin)
             except Exception as e:
-                print(f"[Character] 跳过 {path.name}：{e}")
+                logger.warning("character", f"跳过 {path.name}：{e}")
                 continue
             # 用户卡覆盖同名内置卡
             cards[card.id] = card

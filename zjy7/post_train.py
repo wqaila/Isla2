@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """后处理：LoRA合并 → GGUF转换 → 量化 → 推理测试"""
 
-import os, sys, json, re, subprocess, logging, torch, tempfile, atexit
+import os, sys, json, re, subprocess, logging, torch, tempfile, atexit, shutil
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
@@ -51,10 +51,26 @@ def hf2gguf(name):
     return f"blk.{i}.{L.get(r, r)}"
 
 # ============ Step 1: LoRA 合并到基础模型 ============
-def merge_lora():
-    if os.path.isdir(MERGED_DIR) and os.path.exists(os.path.join(MERGED_DIR, "config.json")):
-        logging.info(f"已存在合并模型目录: {MERGED_DIR}，跳过合并")
-        return
+def merge_lora(force: bool = False):
+    """把 LoRA 合并进基础模型，产物写到 MERGED_DIR。
+
+    ⚠️ 这里有个很容易踩的陷阱：MERGED_DIR 里已有产物时会跳过合并。
+    重新训练 LoRA 之后重跑本脚本，如果没意识到被跳过了，就会拿**旧的**合并模型
+    去转换 / 量化 / 部署，最后得到的是上一版的效果，而且全程不报错。
+    所以：
+      - 跳过时打印醒目告警（而不是一行轻描淡写的 info）
+      - 提供 --force-merge 强制重新合并
+    """
+    marker = os.path.join(MERGED_DIR, "config.json")
+    if os.path.isdir(MERGED_DIR) and os.path.exists(marker):
+        if not force:
+            logging.warning(f"已存在合并模型目录，跳过合并: {MERGED_DIR}")
+            logging.warning("  如果你刚重训过 LoRA，这里的产物就是**旧的** ——")
+            logging.warning("  请加 --force-merge 强制重新合并，否则后面转换/量化出来的")
+            logging.warning("  都是上一版模型的效果（而且不会有任何报错）。")
+            return
+        logging.warning(f"--force-merge：先删除已有合并产物再重新合并: {MERGED_DIR}")
+        shutil.rmtree(MERGED_DIR, ignore_errors=True)
 
     logging.info(f"合并 LoRA: {BASE_MODEL} + {LORA_DIR} → {MERGED_DIR}")
     for p in [BASE_MODEL, LORA_DIR]:
@@ -180,7 +196,7 @@ def convert_f16():
     return out
 
 # ============ Step 3: 量化 ============
-def quantize(f16f, level):
+def quantize(f16f, level, remove_f16: bool = False):
     if not os.path.exists(QUANT_EXE):
         logging.error(f"量化工具不存在: {QUANT_EXE}")
         sys.exit(1)
@@ -193,8 +209,13 @@ def quantize(f16f, level):
         return f16f
 
     if os.path.exists(qf):
-        os.remove(f16f)
-        logging.info(f"量化完成: {os.path.getsize(qf) / 1e9:.1f}GB")
+        # 默认**保留** F16：它被删掉之后，想换个量化级别就得从头重跑一遍转换，
+        # 而且 --skip-convert 会直接失效（找不到源文件）。想省磁盘请显式加 --remove-f16。
+        if remove_f16:
+            os.remove(f16f)
+            logging.info(f"量化完成: {os.path.getsize(qf) / 1e9:.1f}GB（已按 --remove-f16 删除 F16）")
+        else:
+            logging.info(f"量化完成: {os.path.getsize(qf) / 1e9:.1f}GB（F16 已保留，换级别可重新量化）")
     return qf
 
 # ============ Step 4: 推理测试 ============
@@ -266,6 +287,10 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="LoRA 合并 → GGUF 转换 → 量化 → 测试")
     p.add_argument("--quant", default="Q8_0", help="量化级别 (F16/Q8_0/Q5_K_M/Q4_K_M 等)")
     p.add_argument("--skip-merge", action="store_true", help="跳过 LoRA 合并（已合并时使用）")
+    p.add_argument("--force-merge", action="store_true",
+                   help="强制重新合并（重训 LoRA 后必须加，否则会静默复用旧产物）")
+    p.add_argument("--remove-f16", action="store_true",
+                   help="量化后删除 F16（默认保留，删了换量化级别就要重跑转换）")
     p.add_argument("--skip-convert", action="store_true", help="跳过 GGUF 转换")
     p.add_argument("--test-only", type=str, help="仅测试指定 GGUF 文件")
     args = p.parse_args()
@@ -278,9 +303,9 @@ if __name__ == "__main__":
     else:
         # Step 1: 合并 LoRA
         if not args.skip_merge:
-            merge_lora()
+            merge_lora(force=args.force_merge)
         else:
-            logging.info("跳过 LoRA 合并")
+            logging.info("跳过 LoRA 合并（--skip-merge）")
 
         # Step 2: 转换 GGUF
         if not args.skip_convert:
@@ -290,7 +315,7 @@ if __name__ == "__main__":
             logging.info(f"跳过 GGUF 转换，使用: {f16}")
 
         # Step 3: 量化
-        gf = quantize(f16, args.quant)
+        gf = quantize(f16, args.quant, remove_f16=args.remove_f16)
 
         # Step 4: 测试
         test(gf)

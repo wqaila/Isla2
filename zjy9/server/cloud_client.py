@@ -9,6 +9,7 @@ import httpx
 from elysia_prompt import build_messages
 from config import runtime
 from retry import retry_async
+from logger_service import logger
 
 
 def _retry_attempts() -> int:
@@ -20,7 +21,7 @@ def _retry_attempts() -> int:
 
 
 def _on_retry_log(attempt: int, total: int, delay: float, exc: Exception) -> None:
-    print(f"[Cloud] 第 {attempt}/{total - 1} 次重试，{delay:.1f}s 后重来（{type(exc).__name__}）")
+    logger.warning("cloud", f"第 {attempt}/{total - 1} 次重试，{delay:.1f}s 后重来（{type(exc).__name__}）")
 
 # ===== 支持的云端 API 提供商 =====
 CLOUD_PROVIDERS = {

@@ -194,6 +194,7 @@
         .project-icon.zjy7 { background: linear-gradient(135deg, rgba(168,85,247,0.25), rgba(236,72,153,0.25)); }
         .project-icon.zjy8 { background: linear-gradient(135deg, rgba(74,222,128,0.2), rgba(34,197,94,0.2)); }
         .project-icon.zjy9 { background: linear-gradient(135deg, rgba(236,72,153,0.3), rgba(168,85,247,0.3)); }
+        .project-icon.zjy10 { background: linear-gradient(135deg, rgba(251,191,36,0.28), rgba(236,72,153,0.28)); }
         .project-title-area { flex: 1; min-width: 200px; }
         .project-tag {
             display: inline-block; padding: 3px 12px; border-radius: 50px; font-size: 0.72rem; font-weight: 600;
@@ -331,6 +332,7 @@
                 <li><a href="#zjy7">zjy7</a></li>
                 <li><a href="#zjy8">zjy8</a></li>
                 <li><a href="#zjy9">zjy9</a></li>
+                <li><a href="#zjy10">zjy10</a></li>
                 <li><a href="#summary">总结</a></li>
             </ul>
         </div>
@@ -851,6 +853,55 @@
     </section>
 
     <!-- 总结 -->
+    <!-- ========== zjy10 ========== -->
+    <section class="section" id="zjy10">
+        <div class="section-header">
+            <div class="section-badge">Phase 6 · 规划中</div>
+            <h2 class="section-title">zjy10 — Anime Voice Lab</h2>
+            <p class="section-desc">动漫角色声线复刻与可控语音生成系统：Windows + RTX 5070 + GPT-SoVITS</p>
+        </div>
+        <div class="project-card">
+            <div class="project-header">
+                <div class="project-icon zjy10">🎙️</div>
+                <div class="project-title-area">
+                    <div class="project-tag tag-training">声音克隆</div>
+                    <h3>角色声线复刻 + 情绪控制 + 声线参数化</h3>
+                    <div class="desc">目标不是简单的「文字 → AI 声音」，而是一个可管理多角色、保存声线、控制情绪、生成并自动优化的本地平台。目前处于规划阶段，只有文档，尚无代码。</div>
+                </div>
+            </div>
+            <div class="project-body">
+                <h4>📄 核心文档</h4>
+                <div class="file-list">
+                    <div class="file-item file-highlight">
+                        <div class="file-name">声音生成.md（47 节）</div>
+                        <div class="file-desc">主体流程：环境搭建 → Zero-shot → 数据集 → 微调 → 声线参数化 → 情绪控制 → 后处理 → 声音评价 → 自动调参 → GUI</div>
+                    </div>
+                    <div class="file-item">
+                        <div class="file-name">技术选型与资源.md（42 节）</div>
+                        <div class="file-desc">独立补充：开源生态选型（GitHub / Hugging Face / ModelScope）、7 个模型候选池、Model Controller + Adapter 架构、统一测试集与「任务→模型适配关系」</div>
+                    </div>
+                </div>
+                <h4>🎯 技术选型</h4>
+                <table class="info-table">
+                    <tr><th style="width:30%">项</th><th>选择</th></tr>
+                    <tr><td>核心引擎</td><td>GPT-SoVITS（有 Windows 整合包，安装门槛最低）</td></tr>
+                    <tr><td>候选池</td><td>CosyVoice / Fish Speech / F5-TTS / OpenVoice / RVC / Seed-VC</td></tr>
+                    <tr><td>硬件</td><td>Windows + RTX 5070</td></tr>
+                    <tr><td>架构主张</td><td>Model Controller + Adapter，不把任何模型写成硬编码依赖</td></tr>
+                </table>
+                <h4>⚠️ 数据不入库</h4>
+                <p style="color:var(--text2);font-size:0.9rem;line-height:1.7;">
+                    <code>models/</code>、<code>dataset/</code>、<code>outputs/</code>、<code>history/</code>、<code>characters/</code>、<code>configs/</code>
+                    全部排除。两条理由：模型权重动辄几 GB；参考音频来自动漫角色时实际是<b>配音演员的声音</b>，不适合随公开仓库分发。
+                </p>
+                <h4>🚧 当前进度</h4>
+                <p style="color:var(--text2);font-size:0.9rem;line-height:1.7;">
+                    Phase 1（基础环境）尚未完成 —— 第一步 <code>nvidia-smi</code> 就报 <code>Failed to initialize NVML</code>，需先解决驱动问题。
+                </p>
+            </div>
+        </div>
+    </section>
+
     <section class="section" id="summary">
         <div class="section-header">
             <div class="section-badge">Summary</div>

@@ -21,10 +21,20 @@ os.environ['FLAGS_enable_filelock'] = '0'
 
 import argparse
 import tempfile
-import cv2
-import numpy as np
 from typing import List, Tuple, Dict, Any
 import re
+
+# ⚠️ cv2 / numpy / moviepy 这些第三方依赖**不要写成裸 import**。
+#    裸导入会让 `python main.py --help` 在装依赖之前就崩掉 —— 用户连参数说明
+#    都看不到，只能先去猜着装依赖。这里统一放进 try 块，缺依赖时给出可执行的指引。
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    cv2 = None
+    np = None
+    CV2_AVAILABLE = False
 
 # 可选依赖检查
 try:
@@ -61,7 +71,12 @@ try:
 except ImportError:
     OPENCC_AVAILABLE = False
 
-from moviepy.editor import VideoFileClip
+try:
+    from moviepy.editor import VideoFileClip
+    MOVIEPY_AVAILABLE = True
+except ImportError:
+    VideoFileClip = None
+    MOVIEPY_AVAILABLE = False
 
 
 class RoleLineExtractor:
@@ -211,7 +226,7 @@ class RoleLineExtractor:
         self.paddle_ocr = PaddleOCR(
             lang="ch"
         )
-        print(f"PaddleOCR 初始化完成（使用轻量版模型）")
+        print("PaddleOCR 初始化完成（使用轻量版模型）")
 
         # 初始化简繁体转换器
         if OPENCC_AVAILABLE:
@@ -309,7 +324,7 @@ class RoleLineExtractor:
         
         return text
 
-    def _ocr_from_frame(self, frame: np.ndarray) -> str:
+    def _ocr_from_frame(self, frame: "np.ndarray") -> str:
         """从单帧提取 OCR 文字"""
         h, w = frame.shape[:2]
         x1 = int(self.ocr_region[0] * w)
@@ -574,6 +589,25 @@ def main():
     parser.add_argument("--interactive_ocr", action="store_true",
                         help="启用交互式 OCR 区域设置（命令行输入模式）")
     args = parser.parse_args()
+
+    # 依赖预检：缺什么直接说清楚怎么装，而不是让用户撞上一串 ModuleNotFoundError 堆栈。
+    # （`--help` 在上面就已经返回了，不受这里影响。）
+    _missing = []
+    if not CV2_AVAILABLE:
+        _missing.append("opencv-python（视频帧读取）")
+    if not MOVIEPY_AVAILABLE:
+        _missing.append("moviepy（音轨提取）")
+    if _missing:
+        print("缺少核心依赖，无法继续：")
+        for _m in _missing:
+            print(f"  - {_m}")
+        print()
+        print("请先安装依赖：")
+        print("  pip install -r requirements.txt")
+        print()
+        print("注意 requirements.txt 里有几个版本是刻意钉住的（见文件内注释），")
+        print("不要单独升级其中一个，否则容易出现 PaddleOCR 兼容性问题。")
+        return 1
 
     # 解析 OCR 区域坐标（去除空格）
     try:

@@ -64,12 +64,17 @@ try:
     check("上限很大时早退", db.trim_chat_messages(max_per_session=100000) == 0)
 
     print("\n=== 3. system_logs 裁剪 ===")
+    # ⚠️ 不要假设日志表是空的：应用自身在启动时就会写日志
+    # （例如数据库迁移完成后会记录 schema 版本）。所以这里断言的是**增量**，
+    # 而不是绝对条数 —— 否则上游多打一行日志，这个测试就会莫名其妙地失败。
+    logs_before = len(db.get_system_logs(limit=10000))
     for i in range(30):
         db.log_system("INFO", "test", f"日志{i}")
-    check("写入 30 条日志", len(db.get_system_logs(limit=100)) == 30,
-          len(db.get_system_logs(limit=100)))
+    logs_after = len(db.get_system_logs(limit=10000))
+    check("写入 30 条日志", logs_after - logs_before == 30, logs_after - logs_before)
     removed = db.trim_system_logs(max_rows=10)
-    check("裁剪删除了 20 行", removed == 20, removed)
+    check(f"裁剪删除到只剩 10 行（删除 {logs_after - 10} 行）",
+          removed == logs_after - 10, removed)
     check("裁剪后剩 10 行", len(db.get_system_logs(limit=100)) == 10,
           len(db.get_system_logs(limit=100)))
     check("再裁无删除", db.trim_system_logs(max_rows=10) == 0)

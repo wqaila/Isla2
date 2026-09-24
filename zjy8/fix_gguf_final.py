@@ -30,6 +30,7 @@ align_up(tensor_info 结束位置, general.alignment)（默认 32 字节）。
 import argparse
 import shutil
 import struct
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def list_local_gguf() -> list[Path]:
     return sorted(p for p in SCRIPT_DIR.glob("*.gguf") if p.is_file())
 
 
-def fix_gguf(src: Path, out: Path) -> int:
+def fix_gguf(src: Path, out: Path, force: bool = False) -> int:
     """把缺失的 KV 补进 GGUF，返回进程退出码"""
     info = read_gguf_info(src)
 
@@ -87,6 +88,18 @@ def fix_gguf(src: Path, out: Path) -> int:
     if out.resolve() == info.path.resolve():
         print("❌ 输出文件不能与输入文件相同（避免写坏原始模型），请用 --output 指定另一个路径。")
         return 1
+
+    # 输出文件已存在时不要静默截断：直接覆盖会丢掉上一份产物，
+    # 而且万一这次写入有问题（GGUF 是二进制，出错不一定马上发现）就没法回退了。
+    if out.exists():
+        if not force:
+            print(f"❌ 输出文件已存在：{out}")
+            print("   直接覆盖会丢掉上一份产物，且万一这次写入有问题就无法回退。")
+            print("   请换一个 --output 路径，或加 --force 覆盖（会先自动备份）。")
+            return 1
+        backup = out.with_name(out.name + f".bak-{datetime.now():%Y%m%d-%H%M%S}")
+        out.replace(backup)
+        print(f"⚠️ 输出文件已存在，已先备份为：{backup.name}")
 
     new_kv = build_kv_bytes(NEW_KEY, NEW_VALUE)
     # 只改文件头里的 kv_count，其余字段（magic/version/tensor_count）原样保留
@@ -141,6 +154,8 @@ def main() -> int:
     )
     parser.add_argument("-i", "--input", default=None, help="输入的 .gguf 文件（默认取本目录下唯一的 .gguf）")
     parser.add_argument("-o", "--output", default=None, help="输出的 .gguf 文件（默认 <输入名>-fixed.gguf）")
+    parser.add_argument("--force", action="store_true",
+                        help="输出文件已存在时允许覆盖（会先自动备份成 .bak-<时间戳>）")
     args = parser.parse_args()
 
     if args.input:
@@ -162,7 +177,7 @@ def main() -> int:
     out = Path(args.output).expanduser() if args.output else src.with_name(f"{src.stem}-fixed{src.suffix}")
 
     try:
-        return fix_gguf(src, out)
+        return fix_gguf(src, out, force=args.force)
     except GgufError as e:
         print(f"❌ {e}")
         return 1

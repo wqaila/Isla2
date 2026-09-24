@@ -209,7 +209,10 @@ def init_db():
 
         # 结构升级：老库在这里补齐后来新增的字段（全新库因 CREATE TABLE 已是最新，迁移为空操作）
         applied = _apply_migrations(cursor, conn)
-        print(f"[DB] schema 版本: {applied}")
+        # 延迟导入：logger_service 在模块级 import 了 database，
+        # 这里若也模块级 import 会形成循环。
+        from logger_service import logger
+        logger.info("db", f"schema 版本: {applied}")
 
         conn.commit()
 

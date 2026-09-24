@@ -28,6 +28,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from config import BASE_DIR
+from logger_service import logger
 
 
 # ===== 数据结构 =====
@@ -785,14 +786,14 @@ class UserLearningEngine:
                     data = json.load(f)
                 return UserProfile.from_dict(data)
             except Exception as e:
-                print(f"[UserLearning] 加载画像失败: {e}")
+                logger.error("learning", f"加载画像失败: {e}")
         return UserProfile()
     
     def reset_profile(self):
         """重置用户画像"""
         self.profile = UserProfile()
         self.save_profile()
-        print("[UserLearning] 用户画像已重置")
+        logger.info("learning", "用户画像已重置")
 
     # ================================================================
     #  高级功能：LLM 辅助分析、记忆衰减、多用户、摘要生成、反馈修正
@@ -903,7 +904,7 @@ class UserLearningEngine:
 
         # 保存
         self.save_profile()
-        print(f"[UserLearning] LLM 分析已应用: 性格更新={bool(traits)}, 兴趣={len(analysis.get('interests', []))}个")
+        logger.info("learning", f"LLM 分析已应用: 性格更新={bool(traits)}, 兴趣={len(analysis.get('interests', []))}个")
 
     # ----- 2. 记忆衰减机制 -----
 
@@ -947,7 +948,7 @@ class UserLearningEngine:
 
         if decayed_count > 0:
             self.save_profile()
-            print(f"[UserLearning] 记忆衰减: {decayed_count} 个节点权重已衰减")
+            logger.info("learning", f"记忆衰减: {decayed_count} 个节点权重已衰减")
 
         return decayed_count
 
@@ -1060,7 +1061,7 @@ class UserLearningEngine:
             # 保存到内存缓存
             self._profiles[self._current_device] = self.profile
         except Exception as e:
-            print(f"[UserLearning] 保存画像失败: {e}")
+            logger.error("learning", f"保存画像失败: {e}")
 
     # ----- 4. 对话摘要自动生成 -----
 
@@ -1156,7 +1157,7 @@ class UserLearningEngine:
                     if new_id != node_id:
                         nodes_to_rekey.append((node_id, new_id))
 
-                    print(f"[UserLearning] 知识修正: '{wrong}' → '{right}'")
+                    logger.info("learning", f"知识修正: '{wrong}' → '{right}'")
 
             # 重新映射节点 ID（修复修正后 ID 不匹配问题）
             for old_id, new_id in nodes_to_rekey:
@@ -1228,7 +1229,7 @@ class UserLearningEngine:
             for eid in edges_to_remove:
                 del edges[eid]
             
-            print(f"[UserLearning] 知识图谱修剪: 删除 {len(remove_ids)} 个节点, {len(edges_to_remove)} 条边")
+            logger.info("learning", f"知识图谱修剪: 删除 {len(remove_ids)} 个节点, {len(edges_to_remove)} 条边")
         
         # 修剪边
         if len(edges) > self.MAX_EDGES:
@@ -1236,7 +1237,7 @@ class UserLearningEngine:
             keep_edges = dict(sorted_edges[:self.MAX_EDGES])
             removed = len(edges) - len(keep_edges)
             self.profile.knowledge_graph["edges"] = keep_edges
-            print(f"[UserLearning] 边修剪: 删除 {removed} 条弱连接")
+            logger.info("learning", f"边修剪: 删除 {removed} 条弱连接")
 
     # ----- 7. 增强的 learn_from_message（修复所有缺陷） -----
 
@@ -1278,7 +1279,7 @@ class UserLearningEngine:
                 self._apply_correction(user_message)
                 result["detected_correction"] = True
         except Exception as e:
-            print(f"[UserLearning] 纠正检测异常: {e}")
+            logger.error("learning", f"纠正检测异常: {e}")
 
         # 规则引擎分析（每步独立 try-except）
         for step_name, step_fn in [
@@ -1292,13 +1293,13 @@ class UserLearningEngine:
             try:
                 step_fn()
             except Exception as e:
-                print(f"[UserLearning] {step_name}分析异常: {e}")
+                logger.error("learning", f"{step_name}分析异常: {e}")
 
         if ai_response:
             try:
                 self._analyze_response_preference(user_message, ai_response)
             except Exception as e:
-                print(f"[UserLearning] 回复偏好分析异常: {e}")
+                logger.error("learning", f"回复偏好分析异常: {e}")
 
         # 更新学习元数据
         self.profile.learning_meta["last_active"] = now.isoformat()
@@ -1315,7 +1316,7 @@ class UserLearningEngine:
             try:
                 self.save_profile()
             except Exception as e:
-                print(f"[UserLearning] 保存异常: {e}")
+                logger.error("learning", f"保存异常: {e}")
 
         # 每 50 次执行记忆衰减 + 知识图谱修剪
         if sessions % 50 == 0:
@@ -1323,7 +1324,7 @@ class UserLearningEngine:
                 self.apply_memory_decay()
                 self._prune_knowledge_graph()
             except Exception as e:
-                print(f"[UserLearning] 衰减/修剪异常: {e}")
+                logger.error("learning", f"衰减/修剪异常: {e}")
 
         # 检查是否需要 LLM 深度分析（使用 _llm_pending 防止重复触发）
         if len(self._message_buffer) >= self._buffer_size and not self._llm_pending:

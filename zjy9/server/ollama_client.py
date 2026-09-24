@@ -9,6 +9,7 @@ from collections import Counter
 import httpx
 from config import OLLAMA_BASE_URL, OLLAMA_MODEL, REQUEST_TIMEOUT, runtime
 from retry import retry_async
+from logger_service import logger
 
 
 def _retry_attempts() -> int:
@@ -20,7 +21,7 @@ def _retry_attempts() -> int:
 
 
 def _on_retry_log(attempt: int, total: int, delay: float, exc: Exception) -> None:
-    print(f"[Ollama] 第 {attempt}/{total - 1} 次重试，{delay:.1f}s 后重来（{type(exc).__name__}）")
+    logger.warning("ollama", f"第 {attempt}/{total - 1} 次重试，{delay:.1f}s 后重来（{type(exc).__name__}）")
 
 
 # ===== 生成参数配置（平衡创意与防重复） =====
@@ -442,10 +443,11 @@ class OllamaClient:
                             #   导致客户端看到回复重复一整遍。）
                             if not repetition_detected and _detect_repetition(full_content):
                                 truncated = _truncate_at_repetition(full_content)
-                                print(
-                                    f"[Ollama] 检测到重复输出：已生成 {len(full_content)} 字符，"
+                                logger.warning(
+                                    "ollama",
+                                    f"检测到重复输出：已生成 {len(full_content)} 字符，"
                                     f"理想截断点 {len(truncated)} 字符"
-                                    f"（内容已流式发送，无法回撤，仅记录告警）"
+                                    f"（内容已流式发送，无法回撤，仅记录告警）",
                                 )
 
                             tps = total_tokens / (response_time / 1000) if response_time > 0 else 0
