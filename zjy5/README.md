@@ -16,8 +16,9 @@
 
 ```bash
 # ① 下载（含 AI 字幕）
+#    注意：视频链接是**位置参数**，不要写成 --url
 cd bilibili_downloader
-python -m bilibili_downloader --url "视频链接" --subtitle
+python -m bilibili_downloader "视频链接" --subtitle
 
 # ② 识别台词（视频没有字幕时）
 cd ../chibtaici

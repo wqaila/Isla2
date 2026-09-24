@@ -63,7 +63,7 @@ python main.py --video 你的视频.mp4
 | `--device` | `auto` | `auto`/`cpu`/`cuda`，`auto` 会优先用 CUDA |
 | `--ocr_region` | `0,0.7,1,0.95` | OCR 区域，见下 |
 | `--ocr_interval` | `5` | 每多少帧做一次 OCR（越大越快，但可能漏字） |
-| `--use_faster_whisper` | 关 | 用 faster-whisper 替代 openai-whisper（更快更轻） |
+| `--use_faster_whisper` | 关 | **强制**用 faster-whisper；不传则自动挑已安装的后端（见下） |
 | `--disable_ocr` | 关 | 只用语音识别 |
 | `--disable_voice` | 关 | 只用 OCR |
 | `--interactive_ocr` | 关 | 交互式设置 OCR 区域（命令行输入） |
@@ -80,6 +80,28 @@ python main.py --video 录屏.mp4 --disable_ocr --whisper_model small
 # 想更准一点
 python main.py --video 番剧.mp4 --whisper_model medium --ocr_interval 3
 ```
+
+---
+
+### 语音识别用哪个后端：自动挑
+
+代码支持两个后端：`openai-whisper` 和 `faster-whisper`。
+`requirements.txt` 装的是 **faster-whisper**（更快更轻）。
+
+**不传 `--use_faster_whisper` 时会自动挑一个已安装的**：
+
+| 已安装 | 未指定参数时选谁 |
+|--------|-----------------|
+| 只有 faster-whisper（默认安装结果） | faster-whisper（会打印一行提示） |
+| 只有 openai-whisper | openai-whisper |
+| 两个都有 | openai-whisper（尊重原有默认） |
+| 两个都没有 | 抛清晰的错误，并告诉你怎么装 |
+
+所以**装完 requirements 直接跑就行**，不用记着加参数。
+
+> 这个自动挑选是 2026-09-24 补的。在此之前 `use_faster_whisper` 默认 `False`，
+> 于是「按文档装完直接跑」必然报「openai-whisper 未安装」——
+> 装的和默认要的对不上。
 
 ---
 

@@ -6,39 +6,45 @@
 
 ---
 
-## ⚠️ 目录结构不直观
-
-这个目录**内嵌了一份 llama.cpp 源码**，真正的 Android 工程藏在它里面：
+## 目录结构
 
 ```text
 android_app/
-├── app/
-│   └── llama.cpp/                                  ← 内嵌的 llama.cpp 源码
-│       └── examples/llama.android/
-│           ├── app/                                ← Android 应用（Kotlin）
-│           │   └── src/main/java/com/example/llama/
-│           │       ├── MainActivity.kt
-│           │       └── MessageAdapter.kt
-│           └── lib/
-│               └── src/main/java/com/arm/aichat/   ← 推理封装
-│                   ├── AiChat.kt
-│                   ├── InferenceEngine.kt
-│                   └── gguf/                       ← GGUF 元数据读取
-└── gradle-8.2/                                     ← Gradle 发行包（**不入库**，137MB）
+├── settings.gradle              rootProject.name = "qwenchat"，include ':app'
+├── build.gradle                 顶层构建配置
+├── app/                         ← **真正被构建的模块**
+│   ├── build.gradle             namespace / applicationId = com.example.qwenchat
+│   ├── CMakeLists.txt           add_subdirectory(llama.cpp) + add_library(llama-helper)
+│   ├── src/main/cpp/
+│   │   └── llama-helper.cpp     ← JNI 胶水层（Kotlin ↔ llama.cpp）
+│   ├── src/main/java/com/example/qwenchat/
+│   │   ├── MainActivity.kt      ← 界面与交互
+│   │   └── LlamaEngine.kt       ← 推理调用封装
+│   ├── llama.cpp/               ← 第三方源码依赖（由 CMake 引入，非本仓库编写）
+│   └── llama.cpp.zip            ← llama.cpp 压缩包（34MB，冗余，不入库）
+└── gradle-8.2/                  ← Gradle 发行包本体（不入库，137MB）
 ```
 
-所以**构建目录是 `android_app/`，不是 `android_app/app/`**，别找错。
+**构建目录是 `android_app/`**（有 `settings.gradle` 的那一层），不是 `android_app/app/`。
 
 ---
 
-## 两个包名
+## ⚠️ 一个容易看错的地方
 
-| 包名 | 内容 |
-|------|------|
-| `com.example.llama` | 界面层（Activity、消息列表） |
-| `com.arm.aichat` | 推理层（引擎、GGUF 解析） |
+`app/llama.cpp/examples/llama.android/` 里**也有一套 Android 工程**
+（包名 `com.example.llama` + `com.arm.aichat`），但那是
+**llama.cpp 官方自带的上游示例**：
 
-后者是 llama.cpp 官方示例自带的包名，没有改名。
+- 它有自己的 `settings.gradle.kts`，是**独立工程**
+- **不参与本项目的构建**（`android_app/settings.gradle` 只 `include ':app'`）
+- 本项目**没有**基于它改造
+
+本项目实际构建的是 **`com.example.qwenchat`**（`android_app/app/`），
+用的是自己写的 `LlamaEngine.kt` + `llama-helper.cpp`，
+只把 `app/llama.cpp/` 当作**源码依赖**通过 CMake 的 `add_subdirectory` 引入。
+
+> 本 README 的早期版本把这两者写反了（说真正工程在上游示例里），
+> 已于 **2026-09-24 更正**。
 
 ---
 
@@ -55,5 +61,6 @@ android_app/
 | 路径 | 说明 |
 |------|------|
 | `android_app/gradle-8.2/` | Gradle 8.2 发行包本体（137MB 第三方产物） |
+| `android_app/app/llama.cpp.zip` | llama.cpp 压缩包（34MB，与 `llama.cpp/` 重复） |
 | `models/` | 模型权重 |
 | `build/`、`.gradle/`、`.cxx/`、`.idea/` | 构建产物与 IDE 配置 |

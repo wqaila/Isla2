@@ -82,7 +82,9 @@ class RoleLineExtractor:
         :param device: 设备 "cpu"/"cuda"/"auto"
         :param ocr_region: OCR 区域相对坐标 (x1, y1, x2, y2)
         :param ocr_interval: OCR 帧间隔（减少 OCR 次数提升速度）
-        :param use_faster_whisper: 是否使用 faster-whisper（更快更轻量）
+        :param use_faster_whisper: 是否使用 faster-whisper（更快更轻量）。
+               传 True 表示**强制**用它；传 False（默认）则自动挑一个已安装的后端
+               （优先尊重默认的 openai-whisper，它没装就用 faster-whisper）
         :param speaker_diarization: 是否启用说话人分离
         :param ocr_method: OCR 方法 "paddle"
         :param enable_ocr: 是否启用 OCR 识别
@@ -142,11 +144,28 @@ class RoleLineExtractor:
         # 初始化语音识别模型
         self.whisper_model = None
         if enable_voice:
-            if use_faster_whisper:
-                if not FASTER_WHISPER_AVAILABLE:
-                    raise ImportError("faster-whisper 未安装，请安装：pip install faster-whisper")
-            elif not WHISPER_AVAILABLE:
-                raise ImportError("openai-whisper 未安装，请安装：pip install openai-whisper")
+            # 后端选择：显式指定的优先，否则**自动挑一个已安装的**。
+            #
+            # 为什么需要自动挑：requirements.txt 装的是 faster-whisper，而
+            # use_faster_whisper 的默认值是 False —— 于是「照文档装完直接跑」
+            # 必然报「openai-whisper 未安装」。让默认行为跟着实际装了什么走，
+            # 才能做到开箱可用。
+            if use_faster_whisper and FASTER_WHISPER_AVAILABLE:
+                self.use_faster_whisper = True
+            elif not use_faster_whisper and WHISPER_AVAILABLE:
+                self.use_faster_whisper = False
+            elif FASTER_WHISPER_AVAILABLE:
+                self.use_faster_whisper = True
+                print("提示：未安装 openai-whisper，自动改用 faster-whisper")
+            elif WHISPER_AVAILABLE:
+                self.use_faster_whisper = False
+                print("提示：未安装 faster-whisper，自动改用 openai-whisper")
+            else:
+                raise ImportError(
+                    "语音识别后端未安装，二者装其一即可：\n"
+                    "  pip install faster-whisper    （推荐：更快更轻，requirements 里装的就是它）\n"
+                    "  pip install openai-whisper"
+                )
 
     def close(self):
         """释放视频句柄"""
@@ -547,7 +566,7 @@ def main():
     parser.add_argument("--ocr_interval", type=int, default=5, 
                         help="OCR 帧间隔（越大越快，但可能漏识别）")
     parser.add_argument("--use_faster_whisper", action="store_true",
-                        help="使用 faster-whisper（更快更轻量）")
+                        help="强制使用 faster-whisper（默认会自动挑已安装的那个后端）")
     parser.add_argument("--disable_ocr", action="store_true",
                         help="禁用 OCR 识别（仅使用语音识别）")
     parser.add_argument("--disable_voice", action="store_true",

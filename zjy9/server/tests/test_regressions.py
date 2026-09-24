@@ -2,6 +2,7 @@
 
 运行：cd server && ./venv/Scripts/python.exe tests/test_regressions.py
 """
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,31 @@ PASS, FAIL = [], []
 def check(name, cond, extra=""):
     (PASS if cond else FAIL).append(name)
     print(f"  {'PASS' if cond else 'FAIL'}  {name}{('  -> ' + str(extra)) if extra else ''}")
+
+
+def safe_remove(path) -> bool:
+    """尽力删除一个测试自己产生的文件。
+
+    ⚠️ **不要直接用 `Path.unlink()` 做清理**。某些运行环境会拦截删除操作并在
+    无法完成时**直接抛异常**（例如把删除重定向到回收站，而回收站不可用时
+    fail-closed），这会让整个测试套件崩在清理步骤上 —— 明明所有断言都已经过了。
+
+    清理是"尽力而为"的动作，失败不该影响测试结论。这里吞掉异常，但**不掩盖残留**：
+    文件还在就打印出来，让问题可见。
+    """
+    p = Path(path)
+    for attempt in (lambda: p.unlink(), lambda: os.remove(p)):
+        try:
+            attempt()
+            return True
+        except FileNotFoundError:
+            return True
+        except Exception:
+            continue
+    if p.exists():
+        print(f"  ⚠️ 清理失败（文件仍残留，不影响测试结论）：{p}")
+        return False
+    return True
 
 
 client = TestClient(main.app)
@@ -302,10 +328,7 @@ try:
 
     db.delete_session(_sid)
     if created_backup:      # 清掉本次测试产生的备份，避免每跑一次就多一份
-        try:
-            (db.BACKUP_DIR / created_backup).unlink()
-        except Exception:
-            pass
+        safe_remove(db.BACKUP_DIR / created_backup)
 
     print("\n=== 9. 混合检索（BM25 + 向量）===")
     import tempfile as _tf
@@ -470,7 +493,7 @@ try:
         check("缺 system_prompt 的卡片被跳过", "bad_empty" not in _ids, sorted(_ids))
     finally:
         for _f in ("__bad_json.json", "__bad_id.json", "__bad_empty.json"):
-            (_ud / _f).unlink(missing_ok=True)
+            safe_remove(_ud / _f)
 
     check("切换到存在的卡片成功", _ch.activate("assistant") is True)
     check("激活状态跟随切换", _ch.active_id() == "assistant", _ch.active_id())
