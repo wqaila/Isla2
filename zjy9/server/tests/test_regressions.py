@@ -23,6 +23,11 @@ def check(name, cond, extra=""):
 
 client = TestClient(main.app)
 
+# 测试创建过的会话 id：外层 finally 用它**精确**清理记忆库条目。
+# ⚠️ 不要按内容关键词清理 —— 原过滤器里带 "咖啡" 条件，
+# 用户只要记过跟咖啡有关的真实记忆，跑一次测试就会被删掉。
+_TEST_SESSION_IDS = set()
+
 print("\n=== 1. 只读接口可用性 ===")
 r = client.get("/api/health/detailed")
 check("GET /api/health/detailed 返回 200", r.status_code == 200, r.status_code)
@@ -53,6 +58,7 @@ check("GET /api/session/stats 返回 200", r.status_code == 200, r.status_code)
 
 print("\n=== 2. 对话历史顺序（核心 bug）===")
 sid = db.create_session("__test_device__", "测试设备", "wifi")
+_TEST_SESSION_IDS.add(sid)
 try:
     for i in range(1, 13):
         db.save_message(sid, "user", f"用户消息{i}")
@@ -252,6 +258,7 @@ try:
 
     print("\n=== 8. 对话导出与数据库备份 ===")
     _sid = db.create_session("export_test", "导出测试")
+    _TEST_SESSION_IDS.add(_sid)
     db.auto_title_session(_sid, "导出功能测试")
     db.save_message(_sid, "user", "导出测试用户消息")
     db.save_message(_sid, "assistant", "导出测试助手回复", 42, 800)
@@ -381,6 +388,7 @@ try:
     import asyncio as _aio
 
     _sid2 = db.create_session("summary_reg", "摘要回归")
+    _TEST_SESSION_IDS.add(_sid2)
     for _i in range(6):
         db.save_message(_sid2, "user", f"第{_i}条用户消息")
         db.save_message(_sid2, "assistant", f"第{_i}条回复")
@@ -435,17 +443,18 @@ try:
 
 finally:
     # 清理测试数据
-    db.delete_session(sid)
+    for _s in _TEST_SESSION_IDS:
+        db.delete_session(_s)
     mm = main.memory_manager
-    # 删掉测试写入的记忆条目（后端没有单条删除接口，用重建集合实现）
+    # 用单条删除接口 + 会话 id 精确匹配。
+    # 之前是"按内容关键词过滤 + 清空集合再写回"：既会误删用户的真实记忆
+    # （过滤器里有 "咖啡"），又会在中途出错时把整个记忆库搞坏。
     for coll in ["facts", "conversations", "summaries"]:
-        items = mm.list_all(coll)
-        keep = [x for x in items if "__测试" not in x.get("content", "")
-                and "咖啡" not in x.get("content", "")]
-        if len(keep) != len(items):
-            mm.backend.clear(coll)
-            for x in keep:
-                mm.backend.add_document(coll, x["id"], x["content"], x.get("metadata", {}))
+        for _x in mm.list_all(coll):
+            _meta = _x.get("metadata") or {}
+            if (_meta.get("session_id") in _TEST_SESSION_IDS
+                    or "__测试" in (_x.get("content") or "")):
+                mm.delete_entry(coll, _x["id"])
     mm.flush()
     cp.save_config({"rate_limit_per_minute": 120, "api_token": ""})
     print("\n[清理] 测试会话/记忆已删除，运行时配置已还原")
