@@ -91,22 +91,47 @@ cufft64_11.dll    curand64_10.dll     cusolver64_11.dll
 cusparse64_12.dll nvrtc64_120_0.dll   nvJitLink_120_0.dll
 ```
 
+> ⚠️ **`nvJitLink_120_0.dll` 千万别漏**。`cusolver64_11.dll` 依赖它，
+> 而 paddle 启动时就会加载 cusolver —— 少了它直接
+> `OSError: [WinError 126] ... Error loading "…\libs\cusolver64_11.dll"`，
+> **报错文件名会误导你去查 cusolver，其实 cusolver 本身是好的**。
+>
+> 复制完请跑一次自检（能全 OK 才算齐）：
+>
+> ```bash
+> python -c "
+> import ctypes, os, paddle
+> libs = os.path.join(os.path.dirname(paddle.__file__), 'libs')
+> for n in ['cublas64_12.dll','cudart64_12.dll','cusolver64_11.dll']:
+>     ctypes.WinDLL(os.path.join(libs, n)); print('OK', n)
+> "
+> ```
+>
+> 如果报的正是 `cusolver64_11.dll`，先怀疑 `nvJitLink_120_0.dll` 缺失。
+
 > 更规范的做法是 `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 …` 再复制，
 > 但要多下 1 GB 多；从已有的 torch 里复制零下载，效果一样。
+> 本机现成来源：`zjy7/lora_env/Lib/site-packages/torch/lib/`（55 个文件，含上述全部）。
 
 ### 怎么确认真的在用 GPU
 
 ```bash
-python -c "from paddlex.utils.device import get_default_device; print(get_default_device())"
-# 输出 gpu:0 才是真的在用 GPU
+python -c "
+import paddle as p
+print('device:', p.device.get_device())
+a = p.ones([1024, 1024]); print('matmul sum:', float(p.matmul(a, a).sum()))
+"
+# device: gpu:0  且 matmul sum: 1073741824.0  才是真的在用 GPU
 ```
 
 > **别只看 `paddle.device.is_compiled_with_cuda()`** —— 它返回 `True` 只说明
 > 「编译时带了 CUDA」，不代表运行时能找到 CUDA 库、更不代表能真跑。
-> 必须**实际跑一次运算**（或看 `get_default_device()`）。
+> 必须**实际跑一次运算**。只看 `get_default_device()` 也不够 ——
+> 它只报告「打算用哪块设备」，**缺 DLL 时它照样输出 `gpu:0`**，
+> 真正的错误要等第一次运算才抛出来。
 >
-> PaddleOCR 3.x 会自己调 `get_default_device()` 选设备，所以只要上面输出
-> `gpu:0`，OCR 就自动走 GPU，代码不用改。
+> PaddleOCR 3.x 会自己调 `get_default_device()` 选设备，所以只要 `device: gpu:0`
+> 且运算能跑通，OCR 就自动走 GPU，代码不用改。
 
 ---
 
