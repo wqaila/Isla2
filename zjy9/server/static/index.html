@@ -143,6 +143,22 @@
         .chat-input-row { display: flex; gap: 8px; }
         .chat-input-row input { flex: 1; }
 
+        /* 语音合成（TTS） */
+        .tts-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                   padding: 8px 12px; margin-bottom: 10px; border-radius: 8px;
+                   background: rgba(0,206,209,0.07); border: 1px solid rgba(0,206,209,0.2);
+                   font-size: 12px; color: var(--text2); }
+        .tts-bar label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--text); }
+        .tts-bar select { width: auto; padding: 3px 6px; font-size: 12px; }
+        .tts-bar .grow { flex: 1; }
+        .tts-play { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.7;
+                    border-radius: 8px; cursor: pointer; border: 1px solid var(--pink-border);
+                    background: rgba(255,105,180,0.12); color: var(--pink); }
+        .tts-play:hover { background: rgba(255,105,180,0.25); }
+        .tts-play.busy { opacity: .6; cursor: progress; }
+        .tts-play.playing { background: rgba(0,206,209,0.2); border-color: rgba(0,206,209,0.5);
+                            color: var(--cyan); }
+
         /* Table */
         .table-wrap { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -246,6 +262,9 @@
                 </div>
                 <div class="card">
                     <div class="card-title">💬 聊天测试 <span class="badge">网页端直接测试</span></div>
+                    <!-- 语音合成工具条。内容由 loadTtsBar() 渲染
+                         （未启用时只显示一个「启用语音」按钮），避免两处各写一份。 -->
+                    <div class="tts-bar" id="ttsBar" style="display:none;"></div>
                     <div class="chat-container">
                         <div class="chat-messages" id="chatMessages"></div>
                         <div class="chat-input-row">
@@ -573,7 +592,7 @@ function showPage(name, pushHash = true) {
     if (name === 'cloud') loadCloudConfig();
     if (name === 'server') { loadPromptPreview(); loadServerConfig(); }
     if (name === 'ollama') { checkOllama(); loadModels(); }
-    if (name === 'chat') loadChatSourceBanner();
+    if (name === 'chat') { loadChatSourceBanner(); loadTtsBar(); }
     if (name === 'memory') loadMemoryEntries();
     if (name === 'learning') loadLearning();
     if (name === 'data') loadBackups();
@@ -858,6 +877,205 @@ function finishChatMsg(content, tokens, ms) {
         // 隐藏加载提示
         const hint = last.querySelector('.chat-loading-hint');
         if (hint) hint.textContent = '';
+
+        // 语音：给这条回复加「播放」按钮。
+        // 注意要在 meta.textContent 赋值**之后**加 —— 那个赋值会清空 meta 的子节点。
+        if (content && ttsState.enabled) attachTtsButton(last, content);
+    }
+}
+
+// ===== 语音合成（TTS）=====
+// 面板只负责「把音频播出来」；引擎选择、失败降级、缓存全在服务端（server/tts/）。
+
+let ttsState = { enabled: false, engines: [], voices: {}, config: {},
+                 defaultEngine: '', loaded: false };
+let ttsAudio = null;       // 当前正在播的 Audio
+let ttsPlayingBtn = null;  // 当前正在播的那个按钮
+
+async function loadTtsBar() {
+    const data = await api('/api/tts/engines');
+    if (!data) return;
+    ttsState.enabled = !!(data.config && data.config.enabled);
+    ttsState.engines = data.engines || [];
+    ttsState.voices = data.voices || {};
+    ttsState.config = data.config || {};
+    ttsState.defaultEngine = data.default_engine || '';
+    ttsState.loaded = true;
+
+    const bar = document.getElementById('ttsBar');
+    // ⚠️ 先无条件显形。初始 HTML 里是 display:none，
+    // 只在「未启用」分支设 display 会漏掉「已启用」分支 —— 那样内容渲染了却看不见。
+    bar.style.display = 'flex';
+    if (!ttsState.enabled) {
+        // 未启用时也要给个入口，否则用户根本找不到在哪开
+        bar.innerHTML = '<span>🔇 语音未启用</span>'
+            + '<span class="grow"></span>'
+            + '<button class="btn btn-sm btn-pink" onclick="enableTts()">🔊 启用语音</button>';
+        return;
+    }
+
+    const usable = ttsState.engines.filter(e => e.available);
+    bar.innerHTML = `
+        <label title="每条回复自动朗读">
+            <input type="checkbox" id="ttsAutoPlay" onchange="saveTtsConfig({tts_auto_play: this.checked})"> 自动朗读
+        </label>
+        <span>引擎</span>
+        <select id="ttsEngine" onchange="onTtsEngineChange()">
+            <option value="auto">自动（${escHtml(ttsState.defaultEngine || '无可用')}）</option>
+            ${ttsState.engines.map(e =>
+                `<option value="${e.name}"${e.available ? '' : ' disabled'}>${escHtml(e.label)}${e.available ? '' : '（不可用）'}</option>`
+            ).join('')}
+        </select>
+        <span>音色</span>
+        <select id="ttsVoice" onchange="saveTtsConfig({tts_voice: this.value})"></select>
+        <span>语速</span>
+        <select id="ttsSpeed" onchange="saveTtsConfig({tts_speed: parseFloat(this.value)})">
+            <option value="0.8">0.8×</option>
+            <option value="1.0">1.0×</option>
+            <option value="1.2">1.2×</option>
+            <option value="1.5">1.5×</option>
+        </select>
+        <span class="grow"></span>
+        <span id="ttsCacheInfo"></span>
+        <button class="btn btn-sm btn-outline" onclick="clearTtsCache()">清缓存</button>
+        <button class="btn btn-sm btn-outline" onclick="disableTts()" title="关闭语音">关闭</button>
+    `;
+
+    const engSel = document.getElementById('ttsEngine');
+    engSel.value = ttsState.config.engine || 'auto';
+    if (!engSel.value) engSel.value = 'auto';   // 配置里是个已不存在的引擎时回落
+    document.getElementById('ttsAutoPlay').checked = !!ttsState.config.auto_play;
+    const spdSel = document.getElementById('ttsSpeed');
+    spdSel.value = String(ttsState.config.speed ?? 1.0);
+    if (!spdSel.value) spdSel.value = '1.0';
+
+    fillTtsVoices();
+    refreshTtsCacheInfo();
+
+    if (!usable.length) {
+        toast('语音已启用，但本机没有可用引擎（edge-tts 未装 / 非 Windows）', 'error');
+    }
+}
+
+function fillTtsVoices() {
+    const engSel = document.getElementById('ttsEngine');
+    const sel = document.getElementById('ttsVoice');
+    if (!engSel || !sel) return;
+    // auto 时按「默认引擎」的音色来展示
+    const key = (engSel.value === 'auto') ? ttsState.defaultEngine : engSel.value;
+    const list = (key && ttsState.voices[key]) || [];
+    sel.innerHTML = '<option value="">默认音色</option>'
+        + list.map(v => `<option value="${escHtml(v.id)}">${escHtml(v.label)}</option>`).join('');
+    sel.value = ttsState.config.voice || '';
+    if (!sel.value) sel.value = '';
+}
+
+async function enableTts() {
+    await saveTtsConfig({ tts_enabled: true });
+    await loadTtsBar();          // 重新拉一次，这次才会带上音色列表
+}
+
+async function disableTts() {
+    await saveTtsConfig({ tts_enabled: false });
+    await loadTtsBar();
+}
+
+function onTtsEngineChange() {
+    fillTtsVoices();
+    saveTtsConfig({ tts_engine: document.getElementById('ttsEngine').value });
+}
+
+async function saveTtsConfig(patch) {
+    const r = await api('/api/config', { method: 'PUT', body: JSON.stringify(patch) });
+    if (r && r.status === 'ok') {
+        Object.assign(ttsState.config, patch);
+        toast('语音设置已保存', 'success');
+    } else {
+        toast('保存失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
+    }
+}
+
+async function refreshTtsCacheInfo() {
+    const el = document.getElementById('ttsCacheInfo');
+    if (!el) return;
+    const s = await api('/api/tts/cache');
+    if (!s) return;
+    el.textContent = `缓存 ${s.count} 条 / ${(s.bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function clearTtsCache() {
+    if (!confirm('确定清空语音缓存吗？\n\n清掉后下次播放会重新合成。')) return;
+    const r = await api('/api/tts/cache/clear', { method: 'POST' });
+    if (r && r.status === 'ok') {
+        toast(`已清空 ${r.removed} 条缓存`, 'success');
+        refreshTtsCacheInfo();
+    } else {
+        toast('清空失败', 'error');
+    }
+}
+
+function attachTtsButton(msgEl, content) {
+    const meta = msgEl.querySelector('.meta');
+    if (!meta || meta.querySelector('.tts-play')) return;   // 已有就不重复加
+    const btn = document.createElement('button');
+    btn.className = 'tts-play';
+    btn.textContent = '🔊 播放';
+    btn.onclick = () => playTts(btn);
+    meta.appendChild(btn);
+    if (ttsState.config.auto_play) playTts(btn);
+}
+
+// 播放某条消息的语音。btn 是被点的按钮（再点一次 = 停止）。
+async function playTts(btn) {
+    if (ttsPlayingBtn === btn && ttsAudio) {   // 再点 = 停止
+        ttsAudio.pause();
+        ttsAudio = null;
+        btn.classList.remove('playing');
+        btn.textContent = '🔊 播放';
+        ttsPlayingBtn = null;
+        return;
+    }
+    if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }   // 换一条：先停上一条
+    if (ttsPlayingBtn) {
+        ttsPlayingBtn.classList.remove('playing');
+        ttsPlayingBtn.textContent = '🔊 播放';
+    }
+
+    const msgEl = btn.closest('.chat-msg');
+    const text = msgEl ? (msgEl.querySelector('.bubble').textContent || '').trim() : '';
+    if (!text) { toast('这条消息没有内容', 'error'); return; }
+
+    btn.classList.add('busy');
+    btn.textContent = '⏳ 合成中';
+    try {
+        const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text }) });
+        if (!r || !r.url) {
+            btn.classList.remove('busy');
+            btn.textContent = '⚠️ 失败';
+            setTimeout(() => { btn.textContent = '🔊 播放'; }, 2500);
+            toast('语音合成失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
+            return;
+        }
+        if (r.cached) refreshTtsCacheInfo();
+        const audio = new Audio(BASE + r.url);
+        ttsAudio = audio;
+        ttsPlayingBtn = btn;
+        btn.classList.remove('busy');
+        btn.classList.add('playing');
+        btn.textContent = '⏹ 停止';
+        audio.onended = audio.onerror = () => {
+            if (ttsPlayingBtn === btn) {
+                btn.classList.remove('playing');
+                btn.textContent = '🔊 播放';
+                ttsPlayingBtn = null;
+                ttsAudio = null;
+            }
+        };
+        await audio.play();
+    } catch (e) {
+        btn.classList.remove('busy', 'playing');
+        btn.textContent = '🔊 播放';
+        toast('播放失败：' + e.message, 'error');
     }
 }
 
@@ -1438,6 +1656,11 @@ function escHtml(t) { const d = document.createElement('div'); d.textContent = t
 
 // ===== Init =====
 restorePageFromHash();  // 从 URL hash 恢复上次浏览的页面（必须在 refreshDashboard 之前）
+// 直接落在聊天页时，把语音工具条也拉起来（showPage 只在切换时才触发）
+if (document.getElementById('page-chat').classList.contains('active')) {
+    loadChatSourceBanner();
+    loadTtsBar();
+}
 // 如果当前页是仪表盘，刷新仪表盘数据
 const currentHash = location.hash.replace('#', '');
 if (!currentHash || currentHash === 'dashboard') {

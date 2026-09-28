@@ -698,19 +698,23 @@ def _tts_config() -> dict:
 
 
 @app.get("/api/tts/engines")
-async def tts_engines():
+async def tts_engines(with_voices: bool = True):
     """可用引擎 + 各自音色 + 当前配置（面板渲染下拉用）。"""
     ctrl = get_tts_controller()
     engines = ctrl.available()
+    cfg = _tts_config()
     voices: dict = {}
-    for e in engines:
-        if e["available"]:
-            voices[e["name"]] = await ctrl.list_voices(e["name"])
+    # 未启用时**不去拉音色** —— edge 的列表要走网络，
+    # 没必要为一个还看不见的 UI 付这个代价。
+    if with_voices and cfg["enabled"]:
+        for e in engines:
+            if e["available"]:
+                voices[e["name"]] = await ctrl.list_voices(e["name"])
     return {
         "engines": engines,
         "default_engine": ctrl.default_engine(),
         "voices": voices,
-        "config": _tts_config(),
+        "config": cfg,
     }
 
 
