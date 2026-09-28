@@ -896,7 +896,9 @@
                 </p>
                 <h4>🚧 当前进度</h4>
                 <p style="color:var(--text2);font-size:0.9rem;line-height:1.7;">
-                    Phase 1（基础环境）尚未完成 —— 第一步 <code>nvidia-smi</code> 就报 <code>Failed to initialize NVML</code>，需先解决驱动问题。
+                    GPU 本身正常 —— 实测 CUDA 可用、显存分配正常（Ollama 加载模型时 7.89 GB 全在显存）。
+                    只有 <code>nvidia-smi</code> 的 NVML 查询不可用，不影响 GPT-SoVITS。
+                    目前停在「装 Python 3.10 环境」这一步。
                 </p>
             </div>
         </div>

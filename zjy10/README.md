@@ -33,14 +33,27 @@
 
 ## 当前进度
 
-**Phase 1（基础环境）尚未完成**，第一步就卡住了：
+**Phase 1（基础环境）尚未完成。** 但要先更正一个此前的判断：
 
-```bat
-nvidia-smi
-```
+> **GPU 本身是好的，并没有卡在驱动上。**
 
-实测报 `Failed to initialize NVML: Unknown Error`。
-**这是整条链路的地基**，必须先解决（重启 → 重装/回滚 NVIDIA 驱动）才能继续。
+之前这里记录说「第一步 `nvidia-smi` 就报 `Failed to initialize NVML`，
+**这是整条链路的地基**，必须先解决（重启 → 重装驱动）才能继续」。
+**这个结论是错的**，实测复核如下。
+
+2026-09-28 实测：**CUDA 完全正常** —— Ollama 加载 `elysia-lora` 时
+**7.89 GB 全部在显存**、29/29 层 offload 到 `CUDA0 (RTX 5070)`；
+设备状态 OK、`nvlddmkm` 与两个 Container 服务都在跑、
+驱动文件 System32↔DriverStore MD5 一致、事件日志无报错。
+
+**结论：只有 `nvidia-smi` 这条 NVML 查询路径不可用，CUDA 算力不受影响。**
+GPT-SoVITS 依赖 CUDA 而不依赖 NVML，所以**这一项不构成阻塞**。
+
+> ⚠️ 判断 GPU 是否可用，**别用 `nvidia-smi`**，改用：
+> Ollama `/api/ps` 的 `size_vram`（> 0 即在 GPU 上），
+> 或 `torch.cuda.is_available()` 加一次真实矩阵运算。
+
+所以真正待办的只是**下一步**：装 Python 3.10 环境（见 `声音生成.md` 第七节起）。
 
 另外本机 `python` 与 `pip` 指向了**不同的 Python**（3.13 / 3.11 混用），
 所以建虚拟环境必须显式指定版本：`py -3.10 -m venv .venv`。
