@@ -161,6 +161,23 @@
         .page { display: none; }
         .page.active { display: block; }
 
+        /* 学习画像 / 记忆网络的可视化 */
+        .lbar-row { display: flex; align-items: center; gap: 10px; margin: 7px 0; }
+        .lbar-label { width: 118px; font-size: 12px; color: var(--text2); flex-shrink: 0; }
+        .lbar { flex: 1; height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; }
+        .lbar-fill { height: 100%; border-radius: 4px; transition: width .4s; }
+        .lbar-val { width: 64px; text-align: right; font-size: 12px; color: var(--text); flex-shrink: 0; }
+        .lchip { display: inline-block; padding: 3px 10px; margin: 3px 5px 3px 0; border-radius: 12px;
+                 background: rgba(255,105,180,0.12); border: 1px solid var(--pink-border);
+                 font-size: 12px; color: var(--pink-light); }
+        .lkv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; font-size: 13px; margin: 4px 0; }
+        .lkv .k { color: var(--text2); }
+        .ledge { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 6px 0; color: var(--text); }
+        .ledge .arrow { color: var(--pink); }
+        .ledge .w { margin-left: auto; color: var(--text2); flex-shrink: 0; }
+        .lempty { color: var(--text2); font-size: 12px; line-height: 1.7; }
+        .lsub { color: var(--text2); font-size: 12px; margin: 14px 0 4px; }
+
         /* Responsive */
         @media (max-width: 768px) {
             .sidebar { width: 60px; }
@@ -188,6 +205,7 @@
             <div class="nav-item" onclick="showPage('logs')"><span class="icon">📋</span><span>日志</span></div>
             <div class="nav-item" onclick="showPage('connections')"><span class="icon">📱</span><span>连接设备</span></div>
             <div class="nav-item" onclick="showPage('memory')"><span class="icon">🧠</span><span>记忆管理</span></div>
+            <div class="nav-item" onclick="showPage('learning')"><span class="icon">🌱</span><span>学习画像</span></div>
             <div class="nav-item" onclick="showPage('data')"><span class="icon">💾</span><span>数据管理</span></div>
             <div class="nav-item" onclick="showPage('characters')"><span class="icon">🎭</span><span>角色卡</span></div>
         </div>
@@ -444,6 +462,34 @@
                 </div>
             </div>
 
+            <!-- Learning -->
+            <div class="page" id="page-learning">
+                <div class="card">
+                    <div class="card-title">🌱 学习进度 <span class="badge" id="learnOverall">—</span>
+                        <button class="btn btn-sm btn-outline" style="margin-left:auto;" onclick="loadLearning()">刷新</button>
+                    </div>
+                    <p class="lempty" style="margin:0 0 12px;">
+                        她通过对话逐步了解你。这里显示「学到了多少」—— 数据来自已有的学习引擎，
+                        本页只负责把它显示出来，不改动任何学习逻辑。
+                    </p>
+                    <div id="learnDims"><div class="lempty">切换到本页时自动加载</div></div>
+                    <div id="learnMeta" class="lempty" style="margin-top:12px;"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">👤 用户画像</div>
+                    <div id="learnProfile"><div class="lempty">切换到本页时自动加载</div></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">🕸️ 记忆神经网络 <span class="badge" id="learnNetCount">—</span></div>
+                    <p class="lempty" style="margin:0 0 12px;">
+                        节点是她记住的概念，连线是概念之间的关系。聊得越多，这张网越密。
+                    </p>
+                    <div id="learnNetwork"><div class="lempty">切换到本页时自动加载</div></div>
+                </div>
+            </div>
+
             <!-- Data -->
             <div class="page" id="page-data">
                 <div class="card">
@@ -520,7 +566,7 @@ function showPage(name, pushHash = true) {
     document.getElementById('page-' + name).classList.add('active');
     const navEl = document.querySelector(`.nav-item[onclick="showPage('${name}')"]`);
     if (navEl) navEl.classList.add('active');
-    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理', data:'💾 数据管理', characters:'🎭 角色卡' };
+    const titles = { dashboard:'📊 仪表盘', chat:'💬 聊天测试', ollama:'🖥️ Ollama 设置', cloud:'☁️ 云端 API', server:'⚙️ 服务设置', logs:'📋 日志', connections:'📱 连接设备', memory:'🧠 记忆管理', learning:'🌱 学习画像', data:'💾 数据管理', characters:'🎭 角色卡' };
     document.getElementById('pageTitle').textContent = titles[name] || name;
     if (name === 'logs') loadLogs();
     if (name === 'connections') { loadConnections(); loadConnLogs(); }
@@ -529,6 +575,7 @@ function showPage(name, pushHash = true) {
     if (name === 'ollama') { checkOllama(); loadModels(); }
     if (name === 'chat') loadChatSourceBanner();
     if (name === 'memory') loadMemoryEntries();
+    if (name === 'learning') loadLearning();
     if (name === 'data') loadBackups();
     if (name === 'characters') loadCharacters();
     // 持久化当前页面到 URL hash，防止刷新后丢失导航状态
@@ -540,7 +587,11 @@ function showPage(name, pushHash = true) {
 // 页面加载时从 URL hash 恢复上次浏览的页面
 function restorePageFromHash() {
     const hash = location.hash.replace('#', '');
-    const validPages = ['dashboard', 'chat', 'ollama', 'cloud', 'server', 'logs', 'connections'];
+    // 从实际存在的页面容器推导合法页名 —— 原来这里是**硬编码白名单**，
+    // 漏了 memory / data / characters（刷新后会丢导航状态），加新页时又漏了 learning。
+    // 改成从 DOM 推导后，以后新增页面不必再记得同步这份列表。
+    const validPages = Array.from(document.querySelectorAll('.page[id^="page-"]'))
+        .map(p => p.id.slice('page-'.length));
     if (hash && validPages.includes(hash)) {
         showPage(hash, false);  // 不重复写入 hash
     }
@@ -1035,6 +1086,173 @@ async function deleteMemoryEntry(id) {
     } else {
         toast('删除失败：' + ((r && (r.detail || r.error)) || '未知错误'), 'error');
     }
+}
+
+// ===== 学习画像 / 记忆网络 =====
+// 这三个接口（/api/learning/*）服务端早就有，但面板一直没调用 ——
+// 数据算好了却看不见。本页只做**只读展示**，不改动任何学习逻辑。
+
+const LEARN_DIM_LABELS = {
+    basic_info: '基本信息',
+    personality: '性格',
+    communication_style: '说话风格',
+    preferences: '兴趣偏好',
+    knowledge_graph: '知识图谱',
+};
+
+// 一条带标签的横条；ratio 取 0~1
+function learnBar(label, ratio, valText) {
+    const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+    const shown = (valText === undefined || valText === null) ? Math.round(r * 100) + '%' : valText;
+    return `<div class="lbar-row">
+        <div class="lbar-label" title="${escHtml(label)}">${escHtml(label)}</div>
+        <div class="lbar"><div class="lbar-fill" style="width:${(r * 100).toFixed(1)}%;background:linear-gradient(90deg,var(--pink),var(--cyan));"></div></div>
+        <div class="lbar-val">${escHtml(String(shown))}</div>
+    </div>`;
+}
+
+function learnKV(k, v) {
+    return `<div class="lkv"><div class="k">${escHtml(k)}</div><div>${escHtml(String(v))}</div></div>`;
+}
+
+// 数值落在 0~1 的当比例画条，否则当普通文本
+function learnAuto(k, v) {
+    return (typeof v === 'number' && v >= 0 && v <= 1) ? learnBar(k, v) : learnKV(k, v);
+}
+
+async function loadLearning() {
+    const [progress, profile, network] = await Promise.all([
+        api('/api/learning/progress'),
+        api('/api/learning/profile'),
+        api('/api/learning/network'),
+    ]);
+    renderLearnProgress(progress);
+    renderLearnProfile(profile);
+    renderLearnNetwork(network);
+}
+
+function renderLearnProgress(p) {
+    const box = document.getElementById('learnDims');
+    const badge = document.getElementById('learnOverall');
+    const meta = document.getElementById('learnMeta');
+    if (!p) {
+        badge.textContent = '—';
+        box.innerHTML = '<div class="lempty">加载失败：请确认「访问令牌」是否填写正确。</div>';
+        meta.innerHTML = '';
+        return;
+    }
+    badge.textContent = Math.round((Number(p.overall_progress) || 0) * 100) + '%';
+    const dims = p.dimensions || {};
+    const order = ['basic_info', 'personality', 'communication_style', 'preferences', 'knowledge_graph'];
+    const keys = order.filter(k => k in dims).concat(Object.keys(dims).filter(k => order.indexOf(k) < 0));
+    box.innerHTML = keys.length
+        ? keys.map(k => learnBar(LEARN_DIM_LABELS[k] || k, dims[k])).join('')
+        : '<div class="lempty">还没有可统计的维度。</div>';
+    meta.innerHTML = [
+        `已分析消息 <b>${Number(p.total_messages_analyzed) || 0}</b> 条`,
+        `学习轮次 <b>${Number(p.total_learning_sessions) || 0}</b> 次`,
+        `知识节点 <b>${Number(p.knowledge_nodes) || 0}</b> 个`,
+        `置信度 <b>${(Number(p.confidence_score) || 0).toFixed(2)}</b>`,
+    ].join('　·　')
+        + (p.first_seen
+            ? `<br>首次见面：${escHtml(String(p.first_seen))}　最近活跃：${escHtml(String(p.last_active || '—'))}`
+            : '');
+}
+
+function renderLearnProfile(pr) {
+    const box = document.getElementById('learnProfile');
+    if (!pr) { box.innerHTML = '<div class="lempty">加载失败。</div>'; return; }
+    const parts = [];
+
+    const bi = pr.basic_info || {};
+    const biRows = [['称呼', bi.name], ['性别', bi.gender], ['年龄段', bi.age_range],
+                    ['所在地', bi.location], ['职业', bi.occupation]].filter(x => x[1]);
+    parts.push(biRows.length
+        ? biRows.map(x => learnKV(x[0], x[1])).join('')
+        : '<div class="lempty">基本信息还没学到 —— 多聊聊，她会慢慢记下来。</div>');
+
+    const pers = pr.personality || {};
+    if (Object.keys(pers).length) {
+        parts.push('<div class="lsub">性格特征</div>');
+        parts.push(Object.keys(pers).map(k => learnAuto(k, pers[k])).join(''));
+    }
+
+    const cs = pr.communication_style || {};
+    if (Object.keys(cs).length) {
+        parts.push('<div class="lsub">沟通风格</div>');
+        parts.push(Object.keys(cs).map(k => learnAuto(k, cs[k])).join(''));
+    }
+
+    const pref = pr.preferences || {};
+    const topics = (pref.topics && typeof pref.topics === 'object') ? Object.keys(pref.topics) : [];
+    if (topics.length) {
+        parts.push('<div class="lsub">兴趣话题</div>');
+        parts.push(topics.map(t => `<span class="lchip">${escHtml(t)}</span>`).join(''));
+    }
+
+    const emo = pr.emotional_state || {};
+    if (emo.dominant_emotion) {
+        parts.push('<div class="lsub">近期情绪</div>');
+        parts.push(learnKV('主导情绪', emo.dominant_emotion));
+        if (typeof emo.recent_sentiment === 'number') parts.push(learnBar('情绪倾向', emo.recent_sentiment));
+    }
+
+    const act = pr.activity_patterns || {};
+    if (act.total_messages !== undefined) {
+        parts.push('<div class="lsub">活跃度</div>');
+        parts.push(learnKV('累计消息', (Number(act.total_messages) || 0) + ' 条'));
+        const hours = act.active_hours || {};
+        const hk = Object.keys(hours);
+        if (hk.length) {
+            const sorted = hk.map(h => [h, Number(hours[h]) || 0]).sort((a, b) => b[1] - a[1]).slice(0, 6);
+            const max = Math.max.apply(null, sorted.map(x => x[1]).concat([1]));
+            parts.push('<div class="lsub">常活跃时段（Top 6）</div>');
+            parts.push(sorted.map(x => learnBar(x[0] + ' 点', x[1] / max, x[1] + ' 条')).join(''));
+        }
+    }
+
+    box.innerHTML = parts.join('');
+}
+
+function renderLearnNetwork(n) {
+    const box = document.getElementById('learnNetwork');
+    const badge = document.getElementById('learnNetCount');
+    if (!n) { badge.textContent = '—'; box.innerHTML = '<div class="lempty">加载失败。</div>'; return; }
+    const nodes = Number(n.total_nodes) || 0;
+    const edges = Number(n.total_edges) || 0;
+    badge.textContent = `${nodes} 节点 / ${edges} 连线`;
+    if (!nodes) {
+        box.innerHTML = '<div class="lempty">还没有形成知识网络 —— 多聊几次，她会开始把概念连起来。</div>';
+        return;
+    }
+    const parts = [];
+    parts.push(learnKV('网络密度', (Number(n.network_density) || 0).toFixed(4)));
+    parts.push(learnKV('置信度', (Number(n.confidence_score) || 0).toFixed(2)));
+
+    const cats = n.category_distribution || {};
+    const ck = Object.keys(cats);
+    if (ck.length) {
+        ck.sort((a, b) => (Number(cats[b]) || 0) - (Number(cats[a]) || 0));
+        const max = Math.max.apply(null, ck.map(k => Number(cats[k]) || 0).concat([1]));
+        parts.push('<div class="lsub">概念类别分布</div>');
+        parts.push(ck.map(k => learnBar(k, (Number(cats[k]) || 0) / max, cats[k] + ' 个')).join(''));
+    }
+
+    const hubs = n.hub_nodes || [];
+    if (hubs.length) {
+        parts.push('<div class="lsub">中心概念（被连接最多）</div>');
+        parts.push(hubs.map(h => `<span class="lchip">${escHtml(h.content || '?')} ×${Number(h.degree) || 0}</span>`).join(''));
+    }
+
+    const strong = n.strongest_connections || [];
+    if (strong.length) {
+        parts.push('<div class="lsub">最强关联</div>');
+        parts.push(strong.map(e => `<div class="ledge">
+            <span>${escHtml(e.from || '?')}</span><span class="arrow">→</span><span>${escHtml(e.to || '?')}</span>
+            <span class="w">强度 ${(Number(e.strength) || 0).toFixed(2)}</span>
+        </div>`).join(''));
+    }
+    box.innerHTML = parts.join('');
 }
 
 // ===== 数据管理：导出与备份 =====
