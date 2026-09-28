@@ -176,7 +176,11 @@ class BilibiliDownloader:
             "--retries", "3",
             "--fragment-retries", "3",
             "--retry-sleep", "5",
-            "--no-clean-info-json"
+            "--no-clean-info-json",
+            # 让进度按行输出。不加这个的话 yt-dlp 用 \r 原地刷新，
+            # 被管道接住时会攒成一大块、最后才一起冒出来 ——
+            # 表现就是「下载全程没有百分比，然后突然结束」。
+            "--newline",
         ])
         
         # 仅在显式关闭校验时才跳过证书验证
@@ -187,7 +191,40 @@ class BilibiliDownloader:
         args.append(video_url)
         
         return args
-    
+
+    def _stream_ytdlp_output(self, process) -> None:
+        """逐行转发 yt-dlp 的输出，并把进度整理成"原地刷新"的一行。
+
+        配合命令里的 `--newline`：yt-dlp 的进度行会按行给出，这里再用 `\\r`
+        覆盖同一行，既能看到实时百分比，又不会把终端刷满。
+
+        进度行形如：
+            [download]  45.2% of  123.45MiB at  1.23MiB/s ETA 00:45
+        其它行（Destination / 合并 / 错误等）正常换行输出。
+        """
+        in_progress = False
+        for line in process.stdout:
+            text = line.rstrip("\r\n")
+            if not text:
+                continue
+
+            is_progress = text.startswith("[download]") and "%" in text
+            if is_progress:
+                print(f"\r  {text}", end="", flush=True)
+                in_progress = True
+            else:
+                if in_progress:      # 结束上一行的原地刷新，避免与后续输出黏连
+                    print()
+                    in_progress = False
+                print(f"  {text}")
+
+            # 保留回调能力：调用方设了 progress_callback 就能拿到原始行
+            if self.progress_callback:
+                self.progress_callback(line)
+
+        if in_progress:
+            print()
+
     def download_video(self, video_url: str, title: str = None, 
                        output_dir: str = None, download_subtitle: bool = False,
                        force_subtitle: bool = False, quality: str = "best") -> Optional[str]:
@@ -239,10 +276,7 @@ class BilibiliDownloader:
                 )
                 
                 # 实时输出进度
-                for line in process.stdout:
-                    print(line.strip())
-                    if self.progress_callback:
-                        self.progress_callback(line)
+                self._stream_ytdlp_output(process)
                 
                 process.wait()
                 
@@ -423,8 +457,7 @@ class BilibiliDownloader:
                 errors='ignore'
             )
             
-            for line in process.stdout:
-                print(line.strip())
+            self._stream_ytdlp_output(process)
             
             process.wait()
             
@@ -432,7 +465,7 @@ class BilibiliDownloader:
                 print(f"✓ 音频下载完成：{output_path}")
                 return output_path
             else:
-                print(f"✗ 下载失败")
+                print("✗ 下载失败")
                 return None
                 
         except Exception as e:
@@ -459,6 +492,7 @@ class BilibiliDownloader:
             "--yes-playlist",
             "--playlist-end", str(max_videos),
             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "--newline",   # 进度按行输出，理由同 _build_download_args
         ])
         args.append(playlist_url)
         
@@ -473,8 +507,7 @@ class BilibiliDownloader:
                 errors='ignore'
             )
             
-            for line in process.stdout:
-                print(line.strip())
+            self._stream_ytdlp_output(process)
             
             process.wait()
             

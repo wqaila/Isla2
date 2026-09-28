@@ -11,6 +11,7 @@
 - 📝 **AI 字幕**: 提取 Bilibili AI 生成的字幕
 - 🔄 **批量下载**: 支持批量下载多个视频
 - 🍪 **Cookie 管理**: 支持自动和手动获取 Cookie
+- 📊 **实时进度**: 下载时原地刷新显示百分比、速度与剩余时间
 
 ## 安装
 
@@ -140,6 +141,34 @@ search_downloader.download_search_results("Python 教程", max_videos=5)
 extractor = SubtitleExtractor()
 extractor.extract_subtitle("https://www.bilibili.com/video/BV1xx411c7mD")
 ```
+
+## 下载进度
+
+下载时会在原地刷新显示进度，不会把终端刷满：
+
+```text
+  正在下载：某视频
+  [download] Destination: 某视频.f100026.mp4
+  [download]  45.2% of  123.45MiB at  2.10MiB/s ETA 00:32
+  [Merger] Merging formats into "某视频.mp4"
+```
+
+进度行（含百分比的 `[download]` 行）用回车覆盖同一行；其它行（Destination、
+合并、报错等）正常换行输出。
+
+> **为什么之前看不到百分比**：yt-dlp 默认用 `\r` 原地刷新进度条，被管道
+> 接住时会攒成一大块、最后才一起冒出来。所以命令里加了 `--newline`
+> 让进度按行输出，再统一整理。如果你要自己写脚本调 yt-dlp，也要加这个参数。
+
+需要拿到原始输出行做自定义处理时，可以用回调：
+
+```python
+downloader = BilibiliDownloader()
+downloader.progress_callback = lambda line: print("RAW:", line)
+downloader.download_video(url)
+```
+
+---
 
 ## Cookie 设置
 

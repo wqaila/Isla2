@@ -4,7 +4,7 @@
 """
 视频台词识别工具（增强版）
 支持语音识别（openai-whisper/faster-whisper）、OCR（PaddleOCR）
-输出结果：纯文本台词（无时间戳）
+输出结果：纯文本台词（去重，用于喂给微调流水线）或 SRT 字幕（保留时间轴）
 
 注意：**说话人分离尚未实现**。构造参数里的 speaker_diarization 只为保持
 接口兼容而保留，传 True 只会打印一条警告，不会生效。
@@ -20,6 +20,8 @@ os.environ['FLAGS_cinn_new_group_scheduler'] = '0'
 os.environ['FLAGS_enable_filelock'] = '0'
 
 import argparse
+import sys
+import time
 import tempfile
 from typing import List, Tuple, Dict, Any
 import re
@@ -108,7 +110,12 @@ class RoleLineExtractor:
         """
         self.video_path = video_path
         self.ocr_region = ocr_region
-        self.ocr_interval = ocr_interval
+        # 帧间隔必须 >= 1：0 会让 range() 直接报错。原来静默接受任意值，
+        # 跑起来才炸，这里改成显式纠正 + 提示。
+        if ocr_interval is None or int(ocr_interval) < 1:
+            print(f"警告：ocr_interval={ocr_interval} 非法，已改用 1（逐帧，最慢但最全）")
+            ocr_interval = 1
+        self.ocr_interval = int(ocr_interval)
         self.whisper_model_name = whisper_model
         self.use_faster_whisper = use_faster_whisper
         # 注意：说话人分离功能暂未实现，该参数仅为保持接口兼容而保留
@@ -118,6 +125,10 @@ class RoleLineExtractor:
         self.ocr_method = ocr_method
         self.enable_ocr = enable_ocr
         self.enable_voice = enable_voice
+
+        # 进度显示状态：tty 下用 \r 原地刷新并节流；重定向到文件时按 10% 分桶打印
+        self._last_progress_at = 0.0
+        self._last_progress_bucket = -1
 
         # 设备设置
         if device == "auto":
@@ -202,6 +213,31 @@ class RoleLineExtractor:
 
     def __del__(self):
         self.close()
+
+    def _report_progress(self, stage: str, ratio: float, extra: str = "") -> None:
+        """打印一行原地刷新的进度。
+
+        长任务（OCR 逐帧、ASR 逐段）全程无反馈时，用户会以为卡死。这里统一处理：
+        - 交互终端：用 `\\r` 覆盖同一行，按时间节流（0.15s）避免刷屏
+        - 重定向到文件/管道：改成每跨过 10% 打一行，避免日志被百分比刷爆
+        """
+        ratio = max(0.0, min(1.0, float(ratio)))
+        done = ratio >= 1.0
+        line = f"  [{stage}] {ratio * 100:5.1f}%"
+        if extra:
+            line += f"  {extra}"
+
+        if sys.stdout.isatty():
+            now = time.time()
+            if not done and now - self._last_progress_at < 0.15:
+                return
+            self._last_progress_at = now
+            print(f"\r{line}", end="\n" if done else "", flush=True)
+        else:
+            bucket = int(ratio * 10)
+            if done or bucket > self._last_progress_bucket:
+                self._last_progress_bucket = bucket
+                print(line, flush=True)
 
     def _init_ocr(self):
         """初始化 OCR 引擎"""
@@ -369,7 +405,12 @@ class RoleLineExtractor:
         last_text = ""
         last_time = -1
 
-        for frame_idx in range(0, total_frames, self.ocr_interval):
+        frame_indices = range(0, total_frames, self.ocr_interval)
+        total_steps = max(1, len(frame_indices))
+
+        for step, frame_idx in enumerate(frame_indices):
+            self._report_progress("OCR", (step + 1) / total_steps,
+                                  f"已识别 {len(ocr_results)} 条")
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if not ret:
@@ -393,6 +434,7 @@ class RoleLineExtractor:
                 last_time = current_time
 
         cap.release()
+        self._report_progress("OCR", 1.0, f"已识别 {len(ocr_results)} 条")
         print(f"OCR 识别完成，得到 {len(ocr_results)} 条原始台词")
 
         # 合并相近时间的文本
@@ -448,7 +490,11 @@ class RoleLineExtractor:
                         beam_size=5,
                         word_timestamps=False
                     )
-                    
+
+                    # faster-whisper 的 segments 是生成器，可以边出边报进度。
+                    # info.duration 是音频总时长，拿它当分母。
+                    total_duration = float(getattr(info, "duration", 0) or 0)
+
                     segments_list = []
                     for seg in segments:
                         segments_list.append({
@@ -457,6 +503,14 @@ class RoleLineExtractor:
                             "end": seg.end,
                             "source": "voice"
                         })
+                        if total_duration > 0:
+                            self._report_progress(
+                                "语音识别",
+                                min(seg.end, total_duration) / total_duration,
+                                f"已转 {len(segments_list)} 段"
+                            )
+                    if total_duration > 0:
+                        self._report_progress("语音识别", 1.0, f"已转 {len(segments_list)} 段")
                 except Exception as e:
                     print(f"faster-whisper 识别失败：{e}，尝试使用 openai-whisper")
                     segments_list = self._transcribe_with_openai_whisper(audio_path)
@@ -479,6 +533,21 @@ class RoleLineExtractor:
         
         print(f"加载 openai-whisper 模型：{self.whisper_model_name} on {self.device}")
         model = whisper.load_model(self.whisper_model_name, device=self.device)
+
+        # openai-whisper 的 transcribe() 是一次性返回的，拿不到逐段进度。
+        # 至少把音频时长说清楚，让用户知道要等多久（而不是以为卡死）。
+        duration = 0.0
+        try:
+            import wave
+            with wave.open(audio_path, "rb") as wf:
+                duration = wf.getnframes() / float(wf.getframerate() or 1)
+        except Exception:
+            pass
+        if duration:
+            print(f"正在识别（音频时长约 {duration:.0f} 秒）。"
+                  f"openai-whisper 不支持实时进度，请耐心等待...")
+        else:
+            print("正在识别。openai-whisper 不支持实时进度，请耐心等待...")
         
         result = model.transcribe(
             audio_path,
@@ -500,17 +569,22 @@ class RoleLineExtractor:
             })
         return segments
 
-    def merge_and_deduplicate(self, ocr_lines: List[Dict[str, Any]], 
-                              voice_lines: List[Dict[str, Any]]) -> List[str]:
-        """合并 OCR 和语音识别结果，去重"""
+    def merge_timeline(self, ocr_lines: List[Dict[str, Any]], 
+                       voice_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """合并 OCR 与语音识别结果，按时间排序并合并相邻片段。
+
+        与原实现的区别：**保留 start/end 时间轴**。原实现最后只抽出纯文本，
+        时间信息被丢掉，导致无法输出 SRT。这里返回结构化条目，
+        纯文本由 _dedup_texts() 另行提取（行为与原来一致）。
+        """
         all_lines = ocr_lines + voice_lines
         all_lines.sort(key=lambda x: x['start'])
 
-        # 合并相近时间的文本
+        # 合并相近时间的文本（用 dict() 拷贝，避免改动调用方传入的对象）
         merged = []
         for line in all_lines:
             if not merged:
-                merged.append(line)
+                merged.append(dict(line))
             else:
                 last = merged[-1]
                 if line['start'] - last['end'] <= 1.0:
@@ -518,11 +592,14 @@ class RoleLineExtractor:
                         last['text'] = last['text'] + " " + line['text']
                     last['end'] = max(last['end'], line['end'])
                 else:
-                    merged.append(line)
+                    merged.append(dict(line))
 
-        # 提取纯文本并去重
-        texts = [line['text'] for line in merged if line['text']]
-        
+        return merged
+
+    def _dedup_texts(self, entries: List[Dict[str, Any]]) -> List[str]:
+        """从带时间轴的条目里提取去重后的纯文本（供喂给微调流水线）。"""
+        texts = [e['text'] for e in entries if e.get('text')]
+
         # 智能去重（保留顺序，合并相似文本）
         seen = set()
         unique_texts = []
@@ -535,8 +612,69 @@ class RoleLineExtractor:
 
         return unique_texts
 
-    def run(self, output_path: str = None):
-        """执行台词提取"""
+    def merge_and_deduplicate(self, ocr_lines: List[Dict[str, Any]], 
+                              voice_lines: List[Dict[str, Any]]) -> List[str]:
+        """（兼容保留）合并后返回去重纯文本。"""
+        return self._dedup_texts(self.merge_timeline(ocr_lines, voice_lines))
+
+    @staticmethod
+    def _format_srt_time(seconds: float) -> str:
+        """把秒数格式化成 SRT 的 HH:MM:SS,mmm"""
+        ms_total = int(round(max(0.0, float(seconds)) * 1000))
+        hours, rem = divmod(ms_total, 3600 * 1000)
+        minutes, rem = divmod(rem, 60 * 1000)
+        secs, ms = divmod(rem, 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
+
+    def to_srt(self, entries: List[Dict[str, Any]],
+               min_duration: float = 1.2) -> str:
+        """把带时间轴的条目转成 SRT 字幕文本。
+
+        OCR 条目的时间戳是"命中某一帧"，start == end。这里补一个最小持续时间，
+        并把结束时间夹在"下一条的开始"之前，避免字幕互相重叠。
+        """
+        cleaned = []
+        for e in entries:
+            text = re.sub(r'\s+', ' ', str(e.get('text', ''))).strip()
+            if not text:
+                continue
+            start = max(0.0, float(e.get('start', 0.0) or 0.0))
+            end = float(e.get('end', start) or start)
+            cleaned.append({'text': text, 'start': start, 'end': end})
+
+        blocks = []
+        for i, e in enumerate(cleaned):
+            start, end = e['start'], e['end']
+            if end <= start:
+                end = start + min_duration
+            if i + 1 < len(cleaned):
+                nxt = cleaned[i + 1]['start']
+                if nxt > start:
+                    end = min(end, nxt)
+            if end - start < 0.2:
+                end = start + 0.2
+            blocks.append(
+                f"{i + 1}\n"
+                f"{self._format_srt_time(start)} --> {self._format_srt_time(end)}\n"
+                f"{e['text']}\n"
+            )
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _srt_path(output_path: str = None) -> str:
+        """由 txt 输出路径推导 srt 路径（同目录同名，只换扩展名）。"""
+        if not output_path:
+            return "role_lines.srt"
+        base, _ = os.path.splitext(output_path)
+        return base + ".srt"
+
+    def run(self, output_path: str = None, fmt: str = "txt") -> List[Dict[str, Any]]:
+        """执行台词提取。
+
+        :param output_path: 输出路径（txt 用；srt 由它推导出同名 .srt）
+        :param fmt: "txt" / "srt" / "both"，默认 txt（保持原有行为）
+        :return: 带时间轴的条目列表（text/start/end/source）
+        """
         ocr_lines = []
         voice_lines = []
 
@@ -549,19 +687,28 @@ class RoleLineExtractor:
             if self.enable_voice:
                 voice_lines = self.extract_audio_transcription()
 
-            # 合并输出
-            unique_texts = self.merge_and_deduplicate(ocr_lines, voice_lines)
+            # 合并（保留时间轴）
+            entries = self.merge_timeline(ocr_lines, voice_lines)
 
-            # 输出结果
-            if output_path:
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    f.write("\n".join(unique_texts))
-                print(f"台词结果已保存到：{output_path}")
-            else:
-                for text in unique_texts:
-                    print(text)
+            # 纯文本输出：去重后的台词，用于喂给微调流水线
+            if fmt in ("txt", "both"):
+                unique_texts = self._dedup_texts(entries)
+                if output_path:
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        f.write("\n".join(unique_texts))
+                    print(f"台词结果已保存到：{output_path}")
+                else:
+                    for text in unique_texts:
+                        print(text)
 
-            return unique_texts
+            # SRT 输出：保留时间轴的字幕
+            if fmt in ("srt", "both"):
+                srt_path = self._srt_path(output_path)
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    f.write(self.to_srt(entries))
+                print(f"SRT 字幕已保存到：{srt_path}")
+
+            return entries
         finally:
             # 无论成功失败都释放视频句柄
             self.close()
@@ -571,6 +718,9 @@ def main():
     parser = argparse.ArgumentParser(description="视频台词识别工具（增强版，支持 OCR+ 语音识别）")
     parser.add_argument("--video", required=True, help="视频文件路径")
     parser.add_argument("--output", default="role_lines.txt", help="输出台词文件路径")
+    parser.add_argument("--format", default="txt", choices=["txt", "srt", "both"],
+                        help="输出格式：txt=去重纯文本（默认，喂给微调流水线）、"
+                             "srt=带时间轴字幕（.srt 由 --output 推导）、both=两者都出")
     parser.add_argument("--whisper_model", default="base", 
                         choices=["tiny", "base", "small", "medium", "large"],
                         help="Whisper 模型大小（越大越准确，但越慢）")
@@ -656,7 +806,7 @@ def main():
         enable_voice=not args.disable_voice,
         interactive_ocr=args.interactive_ocr
     )
-    extractor.run(output_path=args.output)
+    extractor.run(output_path=args.output, fmt=args.format)
 
 
 if __name__ == "__main__":

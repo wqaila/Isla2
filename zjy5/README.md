@@ -4,8 +4,8 @@
 
 | 子目录 | 做什么 | 关系 |
 |--------|--------|------|
-| [`bilibili_downloader/`](bilibili_downloader/) | 从 B 站**下载**视频 / 音频 / 字幕 | 产出素材 |
-| [`chibtaici/`](chibtaici/) | 从视频里**识别台词**，输出纯文本 | 消费素材 |
+| [`bilibili_downloader/`](bilibili_downloader/) | 从 B 站**下载**视频 / 音频 / 字幕（含 SRT） | 产出素材 |
+| [`chibtaici/`](chibtaici/) | 从视频里**识别台词**，输出去重纯文本或 SRT 字幕 | 消费素材 |
 
 两者**没有代码依赖**，可以单独使用。放在一起只是因为它们常配合使用：
 下载番剧 → 抽出台词 → 喂给 `zjy7` 做 LoRA 训练语料。
