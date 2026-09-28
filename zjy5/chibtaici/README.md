@@ -58,6 +58,58 @@ pip install -r requirements.txt
 
 ---
 
+## GPU 环境（RTX 50 系必看）
+
+**RTX 50 系是 Blackwell（`sm_120`），对 CUDA 版本有硬要求**，踩过两次坑，记在这里：
+
+| 坑 | 现象 | 解法 |
+|----|------|------|
+| **paddle 太老** | `paddlepaddle-gpu 2.6.2`（PyPI 上 Windows 最新）没有 sm_120 内核，装了也只能跑 CPU | 从官方源装 `3.4.0`（cu129），见下 |
+| **wheel 不带 CUDA 运行时** | 装完报 `cublas64_12.dll is not configured correctly (error code 126)` | 把 cuBLAS/cuDNN 等 DLL 放进 `paddle/libs/`，见下 |
+
+### 安装步骤
+
+```bash
+# 1. 从官方源装 GPU 版（PyPI 上没有 Windows 的 3.x）
+#    ⚠️ 这个索引 URL 被百度 WAF 拦，curl 拿不到，但 pip 能跟到真实 CDN，正常用
+pip install paddlepaddle-gpu==3.4.0 \
+    --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
+
+# 2. 补 CUDA 运行时 DLL（wheel 里没打包）
+#    如果本机别的环境装过 CUDA 版 torch，直接从它的 torch/lib 复制最省事
+#    （torch 的 wheel 是自带完整 CUDA 运行时的）
+```
+
+第 2 步要放进 `paddle/libs/` 的文件：
+
+```
+cublas64_12.dll   cublasLt64_12.dll   cudart64_12.dll
+cudnn64_9.dll     cudnn_adv64_9.dll   cudnn_cnn64_9.dll
+cudnn_ops64_9.dll cudnn_graph64_9.dll cudnn_heuristic64_9.dll
+cudnn_engines_precompiled64_9.dll     cudnn_engines_runtime_compiled64_9.dll
+cufft64_11.dll    curand64_10.dll     cusolver64_11.dll
+cusparse64_12.dll nvrtc64_120_0.dll   nvJitLink_120_0.dll
+```
+
+> 更规范的做法是 `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 …` 再复制，
+> 但要多下 1 GB 多；从已有的 torch 里复制零下载，效果一样。
+
+### 怎么确认真的在用 GPU
+
+```bash
+python -c "from paddlex.utils.device import get_default_device; print(get_default_device())"
+# 输出 gpu:0 才是真的在用 GPU
+```
+
+> **别只看 `paddle.device.is_compiled_with_cuda()`** —— 它返回 `True` 只说明
+> 「编译时带了 CUDA」，不代表运行时能找到 CUDA 库、更不代表能真跑。
+> 必须**实际跑一次运算**（或看 `get_default_device()`）。
+>
+> PaddleOCR 3.x 会自己调 `get_default_device()` 选设备，所以只要上面输出
+> `gpu:0`，OCR 就自动走 GPU，代码不用改。
+
+---
+
 ## 用法
 
 ```bash

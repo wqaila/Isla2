@@ -11,14 +11,28 @@ imageio[ffmpeg]==2.31.1
 torch==2.1.0+cu118
 torchvision==0.16.0+cu118
 
-# OCR (PaddleOCR GPU)
-# 降级到 2.6.2 以解决 PIR 模式兼容性问题
-paddlepaddle-gpu==2.6.2
-# 降级到 2.7.0 以兼容 PaddlePaddle 2.6.2
-# 注：代码同时兼容 paddleocr 2.x 与 3.x（见 README 与 _extract_texts_from_ocr_result）。
-#     这里钉 2.7.0 是因为它配套 mobile 模型、更轻；
-#     实际装成 3.x 也能正常跑，只是会拉 PP-OCRv5 server 系列模型，CPU 上明显更慢。
-paddleocr==2.7.0
+# OCR (PaddleOCR)
+#
+# ⚠️ 显卡是 RTX 50 系（Blackwell / sm_120）的话，**必须**用 CUDA 12.8+ 的 paddle：
+#    老的 paddlepaddle-gpu 2.6.2 没有 sm_120 内核，装了也只能跑 CPU。
+#    PyPI 上 Windows 版 paddlepaddle-gpu 最新只到 2.6.2，更新的要去官方源：
+#
+#      pip install paddlepaddle-gpu==3.4.0 \
+#          --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
+#
+#    ⚠️ 这个 wheel **不打包 CUDA 运行时**（cuBLAS / cuDNN 等），装完还得把
+#       cublas64_12.dll、cublasLt64_12.dll、cudnn*_9.dll、cudart64_12.dll …
+#       放进 `<venv>/Lib/site-packages/paddle/libs/`，否则一跑就报
+#       "cublas64_12.dll is not configured correctly (error code 126)"。
+#       详见 README 的「GPU 环境」一节。
+#
+#    （实测：RTX 5070 + paddlepaddle-gpu 3.4.0 + cu129 → GPU OCR 正常，
+#      单帧约 0.7s，PaddleOCR 会自动选 gpu:0）
+paddlepaddle-gpu==3.4.0
+
+# 代码同时兼容 paddleocr 2.x 与 3.x（见 README 与 _extract_texts_from_ocr_result）。
+# 注意 3.x 默认拉的是 PP-OCRv5 **server** 系列模型，比 2.x 的 mobile 重不少。
+paddleocr==3.4.0
 
 # 简繁体转换（确保输出简体字）
 opencc-python-reimplemented
