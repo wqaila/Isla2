@@ -23,6 +23,7 @@ SUITE = [
     ("test_stream_truncation.py", "流式截断逻辑", False),
     ("test_lifespan_smoke.py", "启动与优雅关闭", False),
     ("test_data_retention.py", "数据保留（临时库）", False),
+    ("test_tts.py", "语音合成（抽象层 / 降级 / API）", False),
     ("test_reliability.py", "就绪探针 / 并发闸门 / WS 鉴权", True),
     ("test_chat_e2e.py", "端到端对话（真实模型）", True),
 ]

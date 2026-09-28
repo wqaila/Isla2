@@ -29,7 +29,7 @@ from config import (
     MODEL_SOURCE, CLOUD_USE_FEWSHOT,
     API_TOKEN, RATE_LIMIT_PER_MINUTE, CHAT_RATE_LIMIT_PER_MINUTE,
     REQUEST_TIMEOUT, CORS_ORIGINS, ensure_directories, runtime,
-    OLLAMA_SUMMARY_MODEL,
+    OLLAMA_SUMMARY_MODEL, BASE_DIR,
 )
 from ollama_client import ollama_client, GENERATION_OPTIONS, MAX_OUTPUT_CHARS
 from cloud_client import cloud_client, CLOUD_PROVIDERS
@@ -37,6 +37,7 @@ from memory import memory_manager, VALID_COLLECTIONS
 import characters
 from connection_manager import connection_manager
 from logger_service import logger
+from tts import get_controller as get_tts_controller
 from config_persistence import load_config, save_config
 from user_learning import learning_engine
 from emotion_engine import get_emotion_engine, get_mood_tracker, analyze_generated_response, check_response_consistency
@@ -663,6 +664,9 @@ async def update_runtime_config(updates: dict):
         "memory_summary_step", "memory_summary_model",
         # 角色卡
         "active_character",
+        # 语音合成
+        "tts_enabled", "tts_engine", "tts_voice", "tts_speed",
+        "tts_auto_play", "tts_cache_max_mb",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
     if not filtered:
@@ -671,6 +675,101 @@ async def update_runtime_config(updates: dict):
     save_config(filtered)
     logger.info("config", f"运行时配置已更新: {list(filtered.keys())}")
     return {"status": "ok", "updated": list(filtered.keys())}
+
+
+# ===== 语音合成（TTS）=====
+#
+# 上层只跟 tts.TTSController 打交道；具体引擎（edge-tts / SAPI / 将来的
+# GPT-SoVITS）由 Controller 按优先级挑，失败自动降级并把「实际是谁干的」
+# 如实返回（engine 字段），不会让用户以为听到的是 A 其实是 B。
+#
+# 音频落在 data/tts_cache/，通过 /tts_cache/ 静态挂载直接播放。
+
+def _tts_config() -> dict:
+    """读 TTS 相关配置。走 runtime() 以支持热更新（改完立即生效，不用重启）。"""
+    return {
+        "enabled": bool(runtime("tts_enabled", False)),
+        "engine": str(runtime("tts_engine", "auto") or "auto"),
+        "voice": str(runtime("tts_voice", "") or ""),
+        "speed": float(runtime("tts_speed", 1.0) or 1.0),
+        "auto_play": bool(runtime("tts_auto_play", False)),
+        "cache_max_mb": int(runtime("tts_cache_max_mb", 200) or 200),
+    }
+
+
+@app.get("/api/tts/engines")
+async def tts_engines():
+    """可用引擎 + 各自音色 + 当前配置（面板渲染下拉用）。"""
+    ctrl = get_tts_controller()
+    engines = ctrl.available()
+    voices: dict = {}
+    for e in engines:
+        if e["available"]:
+            voices[e["name"]] = await ctrl.list_voices(e["name"])
+    return {
+        "engines": engines,
+        "default_engine": ctrl.default_engine(),
+        "voices": voices,
+        "config": _tts_config(),
+    }
+
+
+@app.post("/api/tts")
+async def tts_synthesize(payload: dict):
+    """把文本合成为语音，返回可直接播放的 URL。"""
+    cfg = _tts_config()
+    if not cfg["enabled"]:
+        raise HTTPException(status_code=403,
+                            detail="语音功能未启用（把配置项 tts_enabled 设为 true）")
+
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text 不能为空")
+
+    engine = str(payload.get("engine") or cfg["engine"])
+    raw_voice = payload.get("voice")
+    voice = cfg["voice"] if raw_voice is None else str(raw_voice)
+    raw_speed = payload.get("speed")
+    try:
+        speed = cfg["speed"] if raw_speed is None else float(raw_speed)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="speed 必须是数字")
+
+    ctrl = get_tts_controller()
+    try:
+        result = await ctrl.synthesize(text, engine=engine, voice=voice,
+                                       speed=speed,
+                                       cache_max_mb=cfg["cache_max_mb"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"未知引擎：{e}")
+    except Exception as e:
+        logger.warning("tts", f"合成失败：{e}")
+        raise HTTPException(status_code=503, detail=f"语音合成失败：{e}")
+
+    return {
+        "status": "ok",
+        "url": f"/tts_cache/{result.path.name}",
+        "engine": result.engine,
+        "mime": result.mime,
+        "duration_ms": result.duration_ms,
+        "cached": result.cached,
+    }
+
+
+@app.get("/api/tts/cache")
+async def tts_cache_stats():
+    """语音缓存占用情况。"""
+    return get_tts_controller().stats()
+
+
+@app.post("/api/tts/cache/clear")
+async def tts_cache_clear():
+    """清空语音缓存。"""
+    removed = get_tts_controller().clear_cache()
+    logger.info("tts", f"已清空语音缓存：{removed} 个文件")
+    return {"status": "ok", "removed": removed}
 
 
 # ===== 记忆自动清理 =====
@@ -2012,6 +2111,12 @@ async def get_current_prompt():
 
 # ===== 挂载静态文件 =====
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# 语音缓存：合成的音频交给静态文件服务，客户端拿 URL 就能直接播。
+# ⚠️ 目录必须先建好，否则 StaticFiles 挂载会直接抛错导致服务起不来。
+_TTS_CACHE_DIR = BASE_DIR / "data" / "tts_cache"
+_TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/tts_cache", StaticFiles(directory=str(_TTS_CACHE_DIR)), name="tts_cache")
 
 # ===== 监控面板页面 =====
 

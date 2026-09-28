@@ -19,6 +19,10 @@ zjy9/                               # 实际路径：D:\xiangmudaima\zjy9\
 │   ├── config_persistence.py       # 运行时配置持久化（JSON 文件）
 │   ├── connection_manager.py       # WebSocket 连接管理器
 │   ├── logger_service.py           # 统一日志服务（控制台 + 数据库 + WebSocket）
+│   ├── tts/                        # 语音合成（Controller + Adapter，引擎可插拔）
+│   │   ├── base.py                 #   引擎接口 TTSEngine / AudioResult
+│   │   ├── controller.py           #   选引擎 · 失败降级 · 音频缓存
+│   │   └── adapters/               #   各引擎实现（edge-tts / Windows SAPI）
 │   ├── requirements.txt            # Python 依赖
 │   ├── start.bat                   # Windows 一键启动脚本
 │   ├── start_tunnel.bat            # Cloudflare Tunnel 公网隧道启动脚本
@@ -563,6 +567,67 @@ curl http://localhost:8080/api/status
 
 > 💡 分布式部署 + `MODEL_SOURCE=auto` 可以实现：优先用独显电脑的 Ollama，如果独显电脑离线则自动切换到云端 API，保证服务永不中断。
 
+## 语音合成（TTS）
+
+让 AI 的回复**能出声**。默认**关闭**，需要显式打开 —— 突然出声很打扰。
+
+### 架构：Controller + Adapter
+
+上层只跟 `tts.TTSController` 打交道，具体引擎由它按优先级挑、
+**失败自动降级**，并把「实际是谁干的」如实返回（响应里的 `engine` 字段）——
+不会让你以为听到的是 A、其实是 B 在念。
+
+```text
+API / 面板
+    ↓
+TTSController（选引擎 · 失败降级 · 音频缓存）
+    ↓
+┌────────────┬──────────────┬─────────────────┐
+│  edge-tts  │  Windows     │  GPT-SoVITS     │
+│ 在线 / 首选 │  SAPI / 兜底  │ 将来（zjy10）    │
+└────────────┴──────────────┴─────────────────┘
+```
+
+| 引擎 | 联网 | 定位 |
+|------|------|------|
+| `edge` | 需要 | 微软 Edge 公开语音服务（**不需要 API Key**），中文女声自然 —— 默认首选 |
+| `sapi` | 不需要 | Windows 系统自带，**零依赖**，音色机械 —— 兜底 |
+
+> **这不是「爱莉希雅的声音」。** 那是 zjy10 / GPT-SoVITS 的目标。
+> 这里给的是「能说话、且不难听」。将来接 GPT-SoVITS 时只需再加一个 Adapter
+> 并加进优先级列表，上层不用改。
+
+### 音频缓存
+
+按 `sha256(文本 + 引擎 + 音色 + 语速)` 落盘到 `data/tts_cache/`，
+同一句话反复播放只合成一次。超出 `tts_cache_max_mb` 按「最久未使用」清理。
+
+音频通过 `/tts_cache/` 静态挂载直接提供，客户端拿到 URL 就能播。
+
+### 相关端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/tts/engines` | 可用引擎 + 各自音色 + 当前配置 |
+| POST | `/api/tts` | 合成语音，返回 `{url, engine, mime, duration_ms, cached}` |
+| GET | `/api/tts/cache` | 缓存占用统计 |
+| POST | `/api/tts/cache/clear` | 清空缓存 |
+
+```bash
+# 打开语音
+curl -X PUT http://localhost:8080/api/config \
+  -H 'Content-Type: application/json' \
+  -d '{"tts_enabled": true, "tts_engine": "auto"}'
+
+# 合成
+curl -X POST http://localhost:8080/api/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "你好呀"}'
+# -> {"url": "/tts_cache/xxxx.mp3", "engine": "edge", "mime": "audio/mpeg", ...}
+```
+
+---
+
 ## API 端点
 
 ### 聊天与会话
@@ -1034,7 +1099,7 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
 
 ## 运行时配置项完整参考
 
-全部 **34 个键**都可以通过 `PUT /api/config` 设置并**立即生效**（需重启的单独标注）：
+全部 **40 个键**都可以通过 `PUT /api/config` 设置并**立即生效**（需重启的单独标注）：
 
 ```json
 {
@@ -1060,7 +1125,13 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
   "memory_summary_trigger_messages": 30,
   "memory_summary_step": 20,
   "memory_summary_model": "qwen3.8-27b:latest",
-  "active_character": "elysia"
+  "active_character": "elysia",
+  "tts_enabled": false,
+  "tts_engine": "auto",
+  "tts_voice": "",
+  "tts_speed": 1.0,
+  "tts_auto_play": false,
+  "tts_cache_max_mb": 200
 }
 ```
 
@@ -1128,6 +1199,17 @@ curl -H "Authorization: Bearer <your-token>" http://localhost:8080/api/status
 |----|------|------|
 | `active_character` | `"elysia"` | 当前角色卡 id；下一轮对话生效 |
 
+### 语音合成
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `tts_enabled` | `false` | 是否启用语音合成。**默认关**（突然出声很打扰） |
+| `tts_engine` | `"auto"` | `auto`（按优先级挑，edge 优先，失败落 SAPI）/ `edge` / `sapi` |
+| `tts_voice` | `""` | 音色标识；空表示用引擎默认 |
+| `tts_speed` | `1.0` | 语速倍率 |
+| `tts_auto_play` | `false` | 聊天回复是否自动朗读 |
+| `tts_cache_max_mb` | `200` | 音频缓存上限（MB），超出按「最久未使用」清理 |
+
 > `memory_backend` 是唯一需要重启才能切换的项（后端在进程启动时实例化）。
 
 ## 测试
@@ -1145,13 +1227,16 @@ cd server
 | `tests/test_stream_truncation.py` | 14 项 流式截断逻辑 | 否 |
 | `tests/test_lifespan_smoke.py` | 7 项 启动与优雅关闭 | 否 |
 | `tests/test_data_retention.py` | 14 项 数据保留（**在临时库上跑**） | 否 |
+| `tests/test_tts.py` | 44 项 语音合成（缓存键 / SAPI 真实合成 / 失败降级 / API 端点 / 静态挂载） | 否 |
 | `tests/test_reliability.py` | 28 项 就绪探针 / 并发闸门 / WS 鉴权 | 部分 |
 | `tests/test_chat_e2e.py` | 12 项 端到端对话（真实模型） | 是 |
 
 说明：
 
 - 需要 Ollama 的用例在 Ollama 未运行时**自动跳过，不判失败**。
-- 所有脚本都会自行清理测试数据（会话、记忆库条目），可重复运行。
+- `test_tts.py` 里 **edge-tts 的用例需要网络**，连不上会 **SKIP 而不是失败**；
+  真实合成用 Windows 自带的 SAPI，离线也能验证「真的能出声」。
+- 所有脚本都会自行清理测试数据（会话、记忆库条目、TTS 缓存），可重复运行。
 - `test_data_retention.py` 必须在**临时数据库**上跑 —— 它会裁剪消息表，
   在真实库上跑会把所有会话一起裁掉。
 

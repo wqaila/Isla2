@@ -46,6 +46,21 @@ _DEFAULT_CONFIG = {
     "learning_context_max_chars": 600,
     # 单次请求携带的历史消息条数上限
     "max_history_messages": 20,
+
+    # ===== 语音合成（TTS）=====
+    # 默认**关闭**：语音是可选功能，而且要先确认本机引擎可用（见 /api/tts/engines）
+    "tts_enabled": False,
+    # auto = 按优先级挑（edge-tts 优先，失败自动落到 SAPI）；也可显式指定 "edge" / "sapi"
+    "tts_engine": "auto",
+    # 音色标识；空字符串表示用引擎默认音色
+    "tts_voice": "",
+    # 语速倍率，1.0 为正常
+    "tts_speed": 1.0,
+    # 聊天回复是否自动朗读。默认关 —— 突然出声很打扰
+    "tts_auto_play": False,
+    # 音频缓存上限（MB）。超出按「最久未使用」清理。
+    # 缓存是必要的：同一句话反复播放不该反复合成
+    "tts_cache_max_mb": 200,
 }
 
 _cached_config: dict | None = None
