@@ -15,6 +15,9 @@ torchvision==0.16.0+cu118
 # 降级到 2.6.2 以解决 PIR 模式兼容性问题
 paddlepaddle-gpu==2.6.2
 # 降级到 2.7.0 以兼容 PaddlePaddle 2.6.2
+# 注：代码同时兼容 paddleocr 2.x 与 3.x（见 README 与 _extract_texts_from_ocr_result）。
+#     这里钉 2.7.0 是因为它配套 mobile 模型、更轻；
+#     实际装成 3.x 也能正常跑，只是会拉 PP-OCRv5 server 系列模型，CPU 上明显更慢。
 paddleocr==2.7.0
 
 # 简繁体转换（确保输出简体字）

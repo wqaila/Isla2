@@ -129,6 +129,9 @@ class RoleLineExtractor:
         # 进度显示状态：tty 下用 \r 原地刷新并节流；重定向到文件时按 10% 分桶打印
         self._last_progress_at = 0.0
         self._last_progress_bucket = -1
+        # OCR 调用失败计数。不静默吞掉：失败多了要在结束时汇总报出来
+        self._ocr_failures = 0
+        self._ocr_frames = 0
 
         # 设备设置
         if device == "auto":
@@ -257,6 +260,13 @@ class RoleLineExtractor:
         except Exception as e:
             print(f"GPU 检测失败：{e}，将使用 CPU")
 
+        # 记录版本：2.x 与 3.x 的返回结构完全不同，排查问题时先看这一行
+        try:
+            import paddleocr as _paddleocr_mod
+            print(f"PaddleOCR 版本：{getattr(_paddleocr_mod, '__version__', '未知')}")
+        except Exception:
+            pass
+
         # 使用轻量版 OCR 模型（ch_PP-OCRv4_mobile）
         # 注意：新版 PaddleOCR 通过环境变量控制 GPU
         self.paddle_ocr = PaddleOCR(
@@ -360,6 +370,51 @@ class RoleLineExtractor:
         
         return text
 
+    @staticmethod
+    def _extract_texts_from_ocr_result(result) -> List[str]:
+        """把不同版本 PaddleOCR 的返回结果统一成「文本列表」。
+
+        这是必要的兼容层 —— 两个大版本的返回结构**完全不同**：
+
+        - **2.x**：``[[ [box, (text, score)], ... ]]``
+          外层是「每张图一个列表」，内层是「每行一个 [框, (文本, 置信度)]」
+        - **3.x**：``[OCRResult, ...]``
+          OCRResult 是 dict 风格的（PaddleX 定义），文本在 ``["rec_texts"]`` 里；
+          且 ``ocr()`` 已被标记 deprecated，推荐 ``predict()``
+
+        没有这层兼容，在 3.x 环境里按 2.x 解析会抛异常 → 被上层吞掉 →
+        **OCR 静默返回空**（表现为「跑完了但一句台词都没有」）。
+        """
+        if not result:
+            return []
+
+        texts: List[str] = []
+
+        # ---- 3.x：dict 风格，取 rec_texts ----
+        for item in result:
+            if isinstance(item, (list, tuple)):
+                continue          # 这是 2.x 的结构，交给下面处理
+            try:
+                rec = item["rec_texts"]
+            except Exception:
+                continue
+            if isinstance(rec, (list, tuple)):
+                texts.extend(str(t) for t in rec if t)
+        if texts:
+            return texts
+
+        # ---- 2.x：[[ [box, (text, score)], ... ]] ----
+        first = result[0]
+        if isinstance(first, (list, tuple)):
+            for line in first:
+                if not isinstance(line, (list, tuple)) or len(line) < 2:
+                    continue
+                info = line[1]
+                if isinstance(info, (list, tuple)) and info:
+                    texts.append(str(info[0]))
+
+        return [t for t in texts if t]
+
     def _ocr_from_frame(self, frame: "np.ndarray") -> str:
         """从单帧提取 OCR 文字"""
         h, w = frame.shape[:2]
@@ -376,20 +431,30 @@ class RoleLineExtractor:
         if roi.size == 0:
             return ""
 
+        self._ocr_frames += 1
         try:
-            result = self.paddle_ocr.ocr(roi)
-            if result and result[0]:
-                texts = [line[1][0] for line in result[0] if line and len(line) > 1]
-                combined_text = " ".join(texts).strip()
-                # 转换为简体字
-                if self.cc_converter:
-                    combined_text = self.cc_converter.convert(combined_text)
-                # 过滤无意义文本
-                filtered_text = self._filter_text(combined_text)
-                return filtered_text
+            # 2.x 只有 ocr()；3.x 推荐 predict()（ocr() 仍可用但已 deprecated）
+            run = getattr(self.paddle_ocr, "predict", None) or self.paddle_ocr.ocr
+            result = run(roi)
         except Exception as e:
-            print(f"OCR 识别失败：{e}")
-        return ""
+            self._ocr_failures += 1
+            # 只前 3 次逐条打印，避免上千帧把日志刷爆；结束时统一汇总
+            if self._ocr_failures <= 3:
+                print(f"OCR 调用失败（第 {self._ocr_failures} 次）：{type(e).__name__}: {e}")
+            elif self._ocr_failures == 4:
+                print("  （后续同类失败不再逐条打印，结束时汇总）")
+            return ""
+
+        texts = self._extract_texts_from_ocr_result(result)
+        if not texts:
+            return ""
+
+        combined_text = " ".join(texts).strip()
+        # 转换为简体字
+        if self.cc_converter:
+            combined_text = self.cc_converter.convert(combined_text)
+        # 过滤无意义文本
+        return self._filter_text(combined_text)
 
     def extract_ocr_lines(self) -> List[Dict[str, Any]]:
         """从视频画面提取 OCR 台词"""
@@ -436,6 +501,15 @@ class RoleLineExtractor:
         cap.release()
         self._report_progress("OCR", 1.0, f"已识别 {len(ocr_results)} 条")
         print(f"OCR 识别完成，得到 {len(ocr_results)} 条原始台词")
+
+        # 不静默失败：把调用失败汇总出来。全部失败通常意味着
+        # PaddleOCR 版本与解析方式不匹配 —— 历史上真出过，而且完全无声。
+        if self._ocr_failures:
+            print(f"⚠️ OCR 调用失败 {self._ocr_failures}/{self._ocr_frames} 帧 —— "
+                  f"若全部失败，多半是 PaddleOCR 版本不兼容（见 README「已知限制」）")
+            if self._ocr_failures >= self._ocr_frames and not ocr_results:
+                print("   提示：一行台词都没识别到。先看上面的失败原因，"
+                      "不要误以为视频里没有字幕。")
 
         # 合并相近时间的文本
         merged = []
