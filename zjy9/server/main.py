@@ -6,6 +6,8 @@ import sys
 import json
 import uuid
 import hmac
+import hashlib
+import mimetypes
 import asyncio
 import socket
 import time
@@ -15,7 +17,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from collections import defaultdict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -69,14 +71,22 @@ def _check_api_token(path: str, auth_header: str | None) -> bool:
     if not token_expected:
         return True
 
-    # 免认证路径：只保留「静态资源 / WebSocket / 健康探测 / 面板页面」。
+    # 免认证路径：只保留「静态资源 / WebSocket / 健康探测 / 面板页面 / 签名音频」。
     # ⚠️ 之前把 /api/config、/api/memory、/api/learning、/api/emotion、
     #    /api/logs、/api/model 都列进了白名单，等于这些管理接口
     #    （改配置、清空记忆、重置画像）对整个局域网敞开，认证形同虚设。
     #    另外 "/api/session" 会前缀匹配到 "/api/sessions"，也一并去掉。
+    #
+    # ⚠️ /tts_cache 在这里放行是**有意为之**，但**不是免认证**：
+    #    - 原生播放器（ExoPlayer / MediaPlayer）只吃 URL，塞不进 Authorization 头，
+    #      中间件强制校验会让 Android 端永远播不出声；
+    #    - 所以改为 **路由内校验签名**（见 tts_cache_file / _tts_sign），
+    #      中间件放行只是把校验责任交给路由，安全性由签名承担。
+    #    - 未设 api_token 时路由也不校验，行为与从前一致。
     public_prefixes = (
         "/static",
         "/ws",
+        "/tts_cache",
     )
     public_paths = {"/", "/health", "/ready", "/dashboard", "/docs", "/openapi.json", "/redoc"}
     if path in public_paths or path.startswith(public_prefixes):
@@ -754,7 +764,7 @@ async def tts_synthesize(payload: dict):
 
     return {
         "status": "ok",
-        "url": f"/tts_cache/{result.path.name}",
+        "url": _tts_signed_url(result.path.name),
         "engine": result.engine,
         "mime": result.mime,
         "duration_ms": result.duration_ms,
@@ -2116,11 +2126,61 @@ async def get_current_prompt():
 # ===== 挂载静态文件 =====
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# 语音缓存：合成的音频交给静态文件服务，客户端拿 URL 就能直接播。
-# ⚠️ 目录必须先建好，否则 StaticFiles 挂载会直接抛错导致服务起不来。
+# ===== 语音缓存：带签名的音频服务 =====
+#
+# ⚠️ 这里**不能用 StaticFiles 直接挂载**：那会绕过 `_check_api_token`，
+# 于是在设了 api_token 的机器上音频对整个局域网敞开（任何人猜到文件名就能下载）。
+# 反过来，改成强制带 `Authorization` 头也不行 —— **原生播放器（ExoPlayer /
+# MediaPlayer）只吃一个 URL，没有地方塞请求头**，Android 端会直接播不出来。
+#
+# 所以走「签名 URL」：链接本身携带短期凭证，服务端校验签名与过期时间。
+#   /tts_cache/<文件>?exp=<unix>&sig=<hmac>
+# 签名覆盖「文件名 + 过期时间」，**不包含 api_token 本身**（避免令牌随链接泄漏）。
+# 未设 api_token 时（本机默认）不做校验，行为与以前一致。
 _TTS_CACHE_DIR = BASE_DIR / "data" / "tts_cache"
 _TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/tts_cache", StaticFiles(directory=str(_TTS_CACHE_DIR)), name="tts_cache")
+TTS_URL_TTL_SEC = 3600  # 音频链接有效期：1 小时（够听完一轮对话）
+
+
+def _tts_sign(filename: str, exp: int) -> str:
+    """给音频文件名与过期时间签名。密钥 = api_token（未设时用固定串，等同不校验）。"""
+    secret = _current_api_token() or "no-token-configured"
+    payload = f"{filename}:{exp}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def _tts_signed_url(filename: str) -> str:
+    """生成可直接播放的相对 URL（带签名）。"""
+    if not _current_api_token():
+        return f"/tts_cache/{filename}"
+    exp = int(time.time()) + TTS_URL_TTL_SEC
+    return f"/tts_cache/{filename}?exp={exp}&sig={_tts_sign(filename, exp)}"
+
+
+@app.get("/tts_cache/{filename}")
+async def tts_cache_file(filename: str, exp: int | None = None, sig: str | None = None):
+    """按签名提供音频文件。签名不通过则拒绝。"""
+    # 防目录穿越：只允许纯文件名（拼接后必须仍在缓存目录内）
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    target = _TTS_CACHE_DIR / filename
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="音频不存在（缓存可能已被清理）")
+
+    if _current_api_token():
+        if exp is None or sig is None:
+            raise HTTPException(status_code=401, detail="缺少音频访问签名")
+        if exp < int(time.time()):
+            raise HTTPException(status_code=401,
+                                detail="音频链接已过期，请重新合成")
+        expected = _tts_sign(filename, exp)
+        # 常量时间比较，避免时序侧信道
+        if not hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=401, detail="音频访问签名无效")
+
+    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=mime)
+
 
 # ===== 监控面板页面 =====
 
