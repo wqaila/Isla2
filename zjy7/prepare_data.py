@@ -183,6 +183,89 @@ def mk(user, assistant):
         {"role": "assistant", "content": assistant}
     ]}
 
+# ============ 长度红线（对齐角色卡）============
+#
+# 角色卡（zjy9 线上实际用的那份）写死了长度约束：
+#   普通问候/简单问题 15-30 字 / 日常聊天 30-60 字 / 复杂问题最多 120 字
+#   **绝对禁止超过 200 字**
+#
+# 训练集里若有远超上限的样本，等于在教模型「写长」——和角色卡直接打架。
+# 更糟的是超过 `max_seq_length`（1024 token）的样本会在训练时被**截断**，
+# 相当于教它「话说一半就停」。
+#
+# 实测：downloads/ 里存在 7541 字的「一行」（OCR 把整屏文字连成一行），
+# 被 MONO_RULES 匹配后原样变成一条训练样本。这类必须在生成阶段切开。
+MAX_ASSISTANT_LEN = 200
+
+# 句末标点（中英文都收）——切长句时在这些位置断开
+_SENT_END = "。！？!?…；;"
+
+
+def split_long_text(text, limit=None, min_piece=4):
+    """把过长文本按句末标点切分，返回若干不超过 limit 的片段（**已去重**）。
+
+    - 不超限的**原样返回单元素列表**（不改变既有行为）
+    - 单句本身就超长的**直接丢弃**（不做硬切，见下）
+    - 过短碎片（< min_piece）丢弃 —— 长度红线的下限同样要守
+
+    :param limit: 长度上限；``None`` 表示用当前的 :data:`MAX_ASSISTANT_LEN`
+                  （该值可由 train_config.json 的 ``data.max_assistant_len`` 覆盖，
+                  所以这里在**调用时**读取，而不是在定义时绑成默认参数）。
+
+    ⚠️ **为什么要在这里去重**：这类超长 blob 基本是 OCR 把整屏文字连成一行
+    的产物，而且**含大量重复**。实测本项目最长的一条（7541 字）里，
+    139 句只有 36 句是唯一的，最高频的一句重复了 17 次。
+    如果只切不去重，就会把「同一个问题」放大上百倍，
+    等于亲手制造提问坍缩（本来就是要修的问题）。
+
+    设计取舍：**宁可切碎、也不丢整条**。切出来的片段各自成样本，
+    上下文（user 侧）沿用同一份，信息不浪费；实在切不动才丢。
+    """
+    if limit is None:
+        limit = MAX_ASSISTANT_LEN
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text] if len(text) >= min_piece else []
+
+    # 1) 先按句末标点切
+    pieces, buf = [], ""
+    for ch in text:
+        buf += ch
+        if ch in _SENT_END:
+            pieces.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        pieces.append(buf.strip())
+
+    # 2) 单句本身就超长的：**直接丢弃**，不做硬切。
+    #
+    #    为什么不像原来那样按长度硬切：硬切产生的是「半句话」样本
+    #    （实测切出来的是 `…和温顺的一面, 嗯,那肯定是因为,你还没` 这种），
+    #    等于教模型「话说到一半停住」—— 和长度红线的初衷正好相反。
+    #    而且真实台词里不存在 200 字不带标点的句子，这类基本就是
+    #    OCR 把整屏文字连成一行的产物，丢掉比切碎更干净。
+    dropped = 0
+    kept = []
+    for p in pieces:
+        if len(p) > limit:
+            dropped += 1
+            continue
+        kept.append(p)
+    if dropped:
+        logging.debug(f"丢弃 {dropped} 段超长单句（>{limit} 字，无标点可切）")
+
+    # 3) 丢碎片 + 段内去重（保持原顺序）
+    seen, uniq = set(), []
+    for p in kept:
+        if len(p) < min_piece or p in seen:
+            continue
+        seen.add(p)
+        uniq.append(p)
+    return uniq
+
+
 def parse_dialogue(fp):
     lines = Path(fp).read_text(encoding="utf-8").splitlines()
     ds = []
@@ -195,7 +278,6 @@ def parse_dialogue(fp):
         elif len(line) > 3 and not line.startswith('---'):
             ds.append({"role": "旁白", "content": line})
     return ds
-
 def dialogue_samples(ds, target="爱莉希雅"):
     merged = []
     for d in ds:
@@ -212,7 +294,10 @@ def dialogue_samples(ds, target="爱莉希雅"):
             if merged[j]["role"] != "旁白":
                 ctx.append(f"{merged[j]['role']}：{merged[j]['content']}")
         user = "\n".join(ctx) if ctx else "（继续对话）"
-        samples.append(mk(user, merged[i]["content"]))
+        # ⚠️ 合并相邻同角色行之后可能变得极长（实测有 7541 字的），
+        # 必须切开再生成样本，否则就是「教模型写连行 + 被 max_seq_length 截断」。
+        for piece in split_long_text(merged[i]["content"]):
+            samples.append(mk(user, piece))
     return samples
 
 # ============ 改进的台词匹配：加权打分系统 ============
@@ -247,25 +332,34 @@ MONO_RULES = [
     (["害怕", "恐惧", "怕"], 6, "你害怕什么？"),
 ]
 
+def _question_for(text):
+    """给一句台词挑一个合适的 user 侧问题（加权打分）；挑不出返回 None。"""
+    best_score = 0
+    best_question = None
+    for keywords, weight, question in MONO_RULES:
+        if any(w in text for w in keywords):
+            if weight > best_score:
+                best_score = weight
+                best_question = question
+    if best_question is None:
+        # 兜底：检查是否提到其他角色
+        mentioned = [c for c in OTHER_CHARS if c in text]
+        if mentioned:
+            best_question = f"说说{random.choice(mentioned)}吧"
+    return best_question
+
+
 def mono_samples(sentences):
     samples = []
-    for s in sentences:
-        # 加权打分：找出得分最高的规则
-        best_score = 0
-        best_question = None
-        for keywords, weight, question in MONO_RULES:
-            if any(w in s for w in keywords):
-                if weight > best_score:
-                    best_score = weight
-                    best_question = question
-        if best_question is None:
-            # 兜底：检查是否提到其他角色
-            mentioned = [c for c in OTHER_CHARS if c in s]
-            if mentioned:
-                best_question = f"说说{random.choice(mentioned)}吧"
-            else:
+    for raw in sentences:
+        # ⚠️ 先切超长再配问题：OCR 会把整屏文字连成一行（实测有 7541 字的），
+        # 那种长度既违反角色卡上限、又会被 max_seq_length 截断。
+        # 问题按**片段自身**重新匹配 —— 否则切开后可能问不对题。
+        for s in split_long_text(raw):
+            q = _question_for(s)
+            if q is None:
                 continue  # 无匹配的台词跳过
-        samples.append(mk(best_question, s))
+            samples.append(mk(q, s))
     return samples
 
 # ============ 数据质量校验 ============
@@ -295,12 +389,58 @@ def validate_samples(samples):
         seen.add(key)
     return issues
 
+# ============ 长度分布报告 ============
+
+# 分桶对齐角色卡的长度约束，便于一眼看出分布是否合规
+_LEN_BUCKETS = [
+    (0, 5, "  碎片(<5)"),
+    (5, 15, "  偏短(5-14)"),
+    (15, 31, "  合规·简单(15-30)"),
+    (31, 61, "  合规·日常(31-60)"),
+    (61, 121, "  合规·复杂(61-120)"),
+    (121, 201, "  边缘(121-200)"),
+    (201, 10 ** 9, "  ⚠️ 违规(>200)"),
+]
+
+
+def _report_lengths(samples):
+    """打印 assistant 侧长度分布。
+
+    为什么要专门打这个：角色卡写死了「绝对禁止超过 200 字」，
+    而训练集里的长度分布才是模型实际学到的东西 ——
+    两者不一致时，模型会按训练集的习惯写，把角色卡的规则架空。
+    """
+    lens = [len(s["messages"][2]["content"]) for s in samples]
+    if not lens:
+        return
+    total = len(lens)
+    logging.info("assistant 长度分布（角色卡上限 %d 字）：" % MAX_ASSISTANT_LEN)
+    for lo, hi, name in _LEN_BUCKETS:
+        n = sum(1 for x in lens if lo <= x < hi)
+        if n:
+            logging.info(f"{name:<18} {n:5} 条 ({n / total * 100:5.1f}%)")
+    over = [x for x in lens if x > MAX_ASSISTANT_LEN]
+    logging.info(f"  最长 {max(lens)} 字 / 中位 {sorted(lens)[total // 2]} 字"
+                 + (f"  ⚠️ 仍有 {len(over)} 条超上限" if over else "  ✅ 无超限样本"))
+
+
 def main():
     # 统一随机种子，保证数据打乱顺序可复现（必须在任何 random 调用之前设置）
     random.seed(42)
     cfg = load_config()
     raw_dir = resolve_path(cfg["data"]["raw_data_dir"])
     out_path = resolve_path(cfg["data"]["data_path"])
+
+    # 长度上限可由配置覆盖。
+    # 角色卡里有两个数：**软上限 120**（「复杂问题/讲故事最多120字」）
+    # 与**硬上限 200**（「绝对禁止超过200字」）。
+    # 默认取硬上限 200 —— 对齐角色卡的绝对规则；
+    # 想更严（把软上限也守住）就在 train_config.json 里设
+    # `"data": { "max_assistant_len": 120 }`。
+    global MAX_ASSISTANT_LEN
+    MAX_ASSISTANT_LEN = int(cfg["data"].get("max_assistant_len", MAX_ASSISTANT_LEN))
+    logging.info(f"assistant 长度上限: {MAX_ASSISTANT_LEN} 字"
+                 f"（train_config.json 的 data.max_assistant_len）")
 
     # 人设来自哪里必须留痕：训练数据一旦生成，就分不清用的是哪份人设了
     logging.info(f"人设来源: {SYSTEM_SOURCE}")
@@ -368,6 +508,9 @@ def main():
             logging.warning(f"  {issue}")
         if len(issues) > 10:
             logging.warning(f"  ... 还有 {len(issues) - 10} 个")
+
+    # 长度分布报告 —— 角色卡的长度约束就是靠这里肉眼核对的
+    _report_lengths(all_samples)
 
     # 打乱并保存
     random.shuffle(all_samples)
