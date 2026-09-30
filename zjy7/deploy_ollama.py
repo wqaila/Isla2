@@ -73,7 +73,14 @@ def generate_modelfile(gguf_path, output_path='Modelfile', temp=0.7, top_p=0.9, 
     lines.append('')
     lines.append('TEMPLATE """' + template_str + '"""')
     lines.append('')
-    lines.append('SYSTEM """' + SYSTEM_PROMPT + '"""')
+    # ⚠️ 闭合的 """ 前必须换行，不能直接拼在人设后面。
+    #
+    # 人设的结尾正好是一个引号（`…舰长开心就好！🎀"`），直接拼会得到
+    # **四个连续引号** `""""`。这对 Modelfile 解析器是歧义的 ——
+    # 它会把前三个当成结束符，剩下的一个变成游离 token（可能报错，
+    # 也可能静默丢掉人设的最后一个字符）。
+    # 顺带也让 check_persona.py 抠 SYSTEM 的正则能正确匹配。
+    lines.append('SYSTEM """' + SYSTEM_PROMPT + chr(10) + '"""')
 
     content = chr(10).join(lines)
     Path(output_path).write_text(content, encoding='utf-8')

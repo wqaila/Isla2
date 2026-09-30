@@ -53,7 +53,7 @@ zjy9/server/characters/elysia.json   →  system_prompt
 > |------|------|---------|---------|
 > | `prepare_data.py` | 训练 | 0 处 | 第二位（最初的第一位） |
 > | `deploy_ollama.py` | 部署 Modelfile | — | 与训练一致 |
-> | `zjy9/.../elysia.json` | **线上实际用的** | 14 处 | 第一位，编号Ⅰ |
+> | `zjy9/.../elysia.json` | **线上实际用的** | 14 处 | 第一位，编号Ⅰ（**2026-09-30 已修正**为第二位 / 编号Ⅱ） |
 >
 > 线上推理时客户端发的 system 消息会顶掉 Modelfile 里那份，
 > 所以实际是「**学着一套、用着另一套**」—— 模型性格怪，但说不清哪里怪。

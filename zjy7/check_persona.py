@@ -69,6 +69,32 @@ def _modelfile_system(path):
     return match.group(1).strip() if match else None
 
 
+def _quote_delimiter_hazard(path):
+    """检测「四个连续引号」，返回所在行号；没有则返回 None。
+
+    ⚠️ 为什么单独查这个：Modelfile 的写法是 `SYSTEM \"\"\"<内容>\"\"\"`。
+    如果**人设本身以引号结尾**（本项目的角色卡结尾就是 `…舰长开心就好！🎀"`），
+    拼接后会得到 4 个连续引号 —— 这对解析器是歧义的：
+    它会把前三个当结束符，剩下一个变成游离 token。
+
+    症状很有迷惑性：`deploy_ollama.py` 明明跑成功了、Modelfile 时间戳也更新了，
+    但这里永远显示「过期」。因为本函数上面那条**非贪婪**正则也只能取到前三个引号，
+    于是抠出来的内容总是少最后一个字符。
+
+    正确写法：闭合的 `\"\"\"` 另起一行（deploy_ollama.py 已改）。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return None
+    text = p.read_text(encoding="utf-8", errors="ignore")
+    if '""""' not in text:
+        return None
+    for i, line in enumerate(text.splitlines(), 1):
+        if '""""' in line:
+            return i
+    return 0
+
+
 def _train_data_stats(system_text):
     """统计已生成的训练数据里，有多少条用的是当前人设。"""
     out_path = resolve_path("train_data.json")
@@ -187,6 +213,16 @@ def main():
             print(f"  – 不存在   {name}")
         else:
             print(f"  {'✓ 一致' if status == '一致' else '⚠ 过期':<10} {name}")
+    # 过期时先排除「四个连续引号」这个有迷惑性的原因 —— 否则会一直重跑
+    # deploy_ollama.py 却毫无变化，白费时间。
+    hazard_line = _quote_delimiter_hazard(PROJECT_ROOT / "Modelfile")
+    if hazard_line and any(s == "过期" for s in artifact_status.values()):
+        print()
+        print(f"  ⚠️ Modelfile 第 {hazard_line} 行出现 **4 个连续引号**（\"\"\"\"）。")
+        print("     人设以引号结尾时，`SYSTEM \"\"\"<内容>\"\"\"` 会产生歧义 ——")
+        print("     解析器会把前三个当结束符，抠出来的内容因此少一个字符，")
+        print("     于是这里**永远报过期**，重跑 deploy_ollama.py 也没用。")
+        print("     修法：闭合的 \"\"\" 另起一行（deploy_ollama.py 已改）。")
     print()
 
     keywords = report["keyword_hits"]

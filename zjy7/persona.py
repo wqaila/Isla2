@@ -11,6 +11,7 @@
 | `prepare_data.py` → `SYSTEM` | 训练 | 0 处 | 第二位（最初的第一位） |
 | `deploy_ollama.py` → `SYSTEM_PROMPT` | 部署 Modelfile | — | 与训练逐字一致 |
 | `zjy9/server/characters/elysia.json` | **线上服务实际用的** | 12 处 | 第一位，编号Ⅰ |
+| | | | ↑ 位次与设定不符，**2026-09-30 已修正**为第二位 / 编号Ⅱ |
 
 线上推理时客户端发的 system 消息会顶掉 Modelfile 里的那份，
 所以实际效果是：**模型学着一套人设，上线后套的是另一套**。
