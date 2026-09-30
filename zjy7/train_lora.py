@@ -62,10 +62,28 @@ def load_data(path, tokenizer, max_len):
     skipped = 0
     for idx, item in enumerate(raw):
         msgs = item["messages"]
+
+        # ⚠️ 只把「最后一条 assistant 之前」的内容当 prompt。
+        #
+        # 不能写成 [m for m in msgs if m["role"] != "assistant"] —— 那会把
+        # **中间轮次**的 assistant 也删掉，prompt 就不再是 full 的前缀了。
+        # 而下面按 len(prompt) 掩码前缀，位置一错，中间回复就会在**错误位置**
+        # 被当成训练目标（等于拿错位的标签训模型）。
+        #
+        # 三轮样本（system/user/assistant）碰巧是对的（本来就只有一条 assistant），
+        # 所以这个 bug 只在加了多轮样本之后才暴露 —— 属于「补多轮数据前必须先修」。
+        last_asst = max((i for i, m in enumerate(msgs) if m["role"] == "assistant"),
+                        default=None)
+        if last_asst is None:
+            logging.warning(f"样本 {idx} 没有 assistant 消息，跳过")
+            skipped += 1
+            continue
+
         try:
             full = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
-            prompt_msgs = [m for m in msgs if m["role"] != "assistant"]
-            prompt = tokenizer.apply_chat_template(prompt_msgs, tokenize=False, add_generation_prompt=True)
+            # msgs[:last_asst] + 生成提示 = full 的严格前缀（Qwen 模板下成立）
+            prompt = tokenizer.apply_chat_template(msgs[:last_asst], tokenize=False,
+                                                   add_generation_prompt=True)
         except Exception as e:
             logging.warning(f"样本 {idx} apply_chat_template 失败: {e}")
             skipped += 1
