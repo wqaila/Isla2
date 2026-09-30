@@ -12,7 +12,7 @@
 import json, re, random, logging
 from pathlib import Path
 
-from config_utils import load_config, resolve_path
+from config_utils import load_config, resolve_path, PROJECT_ROOT
 from persona import resolve_system_prompt
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -333,7 +333,11 @@ MONO_RULES = [
 ]
 
 def _question_for(text):
-    """给一句台词挑一个合适的 user 侧问题（加权打分）；挑不出返回 None。"""
+    """给一句台词挑一个合适的 user 侧问题（加权打分）；挑不出返回 None。
+
+    ⚠️ 这是**兜底**路径。只有约 40 个模板问句，是「提问坍缩」的根源 ——
+    正常应当由 `gen_questions.py` 生成的多样化问法覆盖（见 load_question_cache）。
+    """
     best_score = 0
     best_question = None
     for keywords, weight, question in MONO_RULES:
@@ -349,16 +353,64 @@ def _question_for(text):
     return best_question
 
 
+# ============ 生成的多样化提问（可选，但强烈建议）============
+#
+# `gen_questions.py` 用本地 LLM 给每条台词生成 3 个**不同**的用户提问，
+# 落在 `question_cache.json`。有缓存就用它，一条台词出 3 个样本。
+#
+# 【为什么这是治本】模板问句总共只有约 40 种（MONO_RULES 27 + 「说说X吧」13），
+# 实测 **80% 的训练样本都挤在这 40 个问句里** —— 模型对这几个问法特别顺，
+# 换个说法就发懵。「削峰」（删掉高频问句的样本）只是治标：模型少见了同一个
+# 问法，但**依然没见过其他问法**。生成式问法把种类从 40 涨到几千。
+#
+# 缓存缺失时自动退回模板问句 —— 不强制依赖，保证 prepare_data 单独也能跑。
+_QUESTION_CACHE = None
+
+# mono 路线的命中统计（按文件累积，最后汇总打印，避免刷屏）
+_MONO_HIT = 0
+_MONO_MISS = 0
+
+
+def load_question_cache():
+    """读 question_cache.json（只读一次，缓存在模块级）。"""
+    global _QUESTION_CACHE
+    if _QUESTION_CACHE is None:
+        path = PROJECT_ROOT / "question_cache.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            _QUESTION_CACHE = data.get("lines", {}) or {}
+            logging.info(f"生成提问缓存：{len(_QUESTION_CACHE)} 句可用"
+                         f"（模型 {data.get('meta', {}).get('model', '?')}）")
+        except FileNotFoundError:
+            _QUESTION_CACHE = {}
+            logging.warning("没有 question_cache.json —— 将退回约 40 个模板问句，"
+                            "提问会严重坍缩。建议先跑：python gen_questions.py")
+        except Exception as e:
+            _QUESTION_CACHE = {}
+            logging.warning(f"question_cache.json 读取失败（{e}），退回模板问句")
+    return _QUESTION_CACHE
+
+
 def mono_samples(sentences):
+    cache = load_question_cache()
     samples = []
+    global _MONO_HIT, _MONO_MISS
     for raw in sentences:
         # ⚠️ 先切超长再配问题：OCR 会把整屏文字连成一行（实测有 7541 字的），
         # 那种长度既违反角色卡上限、又会被 max_seq_length 截断。
         # 问题按**片段自身**重新匹配 —— 否则切开后可能问不对题。
         for s in split_long_text(raw):
+            questions = cache.get(s)
+            if questions:
+                _MONO_HIT += 1
+                for q in questions:
+                    samples.append(mk(q, s))
+                continue
+            # 回退：模板问句
             q = _question_for(s)
             if q is None:
-                continue  # 无匹配的台词跳过
+                continue
+            _MONO_MISS += 1
             samples.append(mk(q, s))
     return samples
 
@@ -499,6 +551,8 @@ def main():
             s = mono_samples(sentences)
         logging.info(f"  {fp.name}: {len(s)} 样本")
         all_samples.extend(s)
+
+    logging.info(f"mono 路线：{_MONO_HIT} 句用生成问法、{_MONO_MISS} 句用模板问句")
 
     # 质量校验
     issues = validate_samples(all_samples)

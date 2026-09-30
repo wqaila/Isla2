@@ -14,24 +14,28 @@ python check_persona.py
 # 3. 收集语料（可选：把 zjy5 抽出的台词并进来）
 python collect_corpus.py
 
-# 4. 生成训练数据
+# 4. 生成多样化的用户提问（强烈建议 —— 见下方「gen_questions.py」）
+python gen_questions.py
+
+# 5. 生成训练数据
 python prepare_data.py
 
-# 5. 训练 LoRA
+# 6. 训练 LoRA
 python train_lora.py
 
-# 6. 合并 + GGUF转换 + 量化 + 测试
+# 7. 合并 + GGUF转换 + 量化 + 测试
 python post_train.py --quant Q8_0
 
-# 7. 部署到 Ollama（可选）
+# 8. 部署到 Ollama（可选）
 python deploy_ollama.py
 ```
 
 或者一条命令跑完：
 
 ```bash
-python run_all.py                  # 失败即停；默认跳过 collect
-python run_all.py --with-collect   # 连语料收集一起跑
+python run_all.py                     # 失败即停；默认跳过 collect 与 questions
+python run_all.py --with-collect      # 连语料收集一起跑
+python run_all.py --with-questions    # 连提问生成一起跑（需本地 Ollama）
 ```
 
 ---
@@ -127,6 +131,7 @@ python collect_corpus.py --dry-run
 ├── persona.py           # 人设（System Prompt）单一来源 —— 读 zjy9 角色卡
 ├── check_persona.py     # 人设一致性自检（训练/部署/线上/已生成数据是否同一份）
 ├── collect_corpus.py    # 收集 zjy5 的台词产物（zjy5 → zjy7 直通）
+├── gen_questions.py     # 用本地 LLM 给每条台词生成多样化的用户提问
 ├── prepare_data.py      # 数据预处理
 ├── run_all.py           # 流水线编排（失败即停）
 ├── train_lora.py        # LoRA 训练（支持断点续训）
@@ -252,6 +257,41 @@ python collect_corpus.py --dry-run
 - 来源信息写在 `.meta.json`，不污染正文
 
 详见上文「与 zjy5 的衔接」。
+
+### gen_questions.py — 生成多样化的用户提问
+
+**这是对模型效果影响最大的一步。**
+
+训练样本是 `user → assistant` 配对，而台词只给了**右半边**。
+原来 user 侧靠 `MONO_RULES` 关键词映射到固定问句，总共只有约 40 种
+（27 条规则 + 13 个「说说X吧」）—— 实测 **80% 的训练样本都挤在这 40 个问句里**，
+模型对这几个问法特别顺，换个说法就发懵。
+
+本脚本用本地 LLM 给每条台词生成 3 个**不同**的问法，落 `question_cache.json`：
+
+```bash
+python gen_questions.py --limit 30   # 先小批量看质量
+python gen_questions.py              # 全量（约 1716 句，实测约 15 分钟）
+python gen_questions.py --dry-run    # 只看还差多少
+```
+
+- **断点续跑**：每批存一次盘，中断后重跑只补缺的
+- **缓存缺失自动回退**：`prepare_data.py` 找不到缓存就退回模板问句，不强制依赖
+- 缓存按**台词原文**做 key（可读、可人工修正）
+
+> ⚠️ **三个坑（都是实测踩出来的）**
+>
+> 1. **输出格式用「序号|问法|问法」的行格式，不要 JSON** ——
+>    中文内容的 JSON 经常非法（转义/全角标点/少逗号都炸），
+>    30 句试跑只成功 2 句；换成行格式后 30/30。
+> 2. **prompt 必须说清「台词是回答，你要倒推用户问了什么」** ——
+>    否则模型会把台词**改写成问句**（生成的是角色说的话，不是用户问的话）。
+> 3. **必须按序号校验** —— 实测模型会多返回一项（给 10 句返回 11 项），
+>    不校验就会把别的台词的问题错配过来，那比没有问法更糟。
+>
+> ⚠️ 模型要传 **`think: false`**（Qwen3.5 默认开思考模式，token 全花在
+> `Thinking Process:` 上；prompt 里加 `/no_think` 无效）。
+> 默认用 `qwen3.5:9b-gguf`（5.7 GB，100% 进显存，96 tok/s）。
 
 ### prepare_data.py — 数据预处理
 
