@@ -1,9 +1,14 @@
 # 视频台词识别工具（chibtaici）
 
-从视频里把**台词**抽出来，输出**去重纯文本**（喂给语料流程）或 **SRT 字幕**（保留时间轴）。
+从视频里把**台词**抽出来，输出 **去重纯文本**（喂给语料流程）、**SRT 字幕**（保留时间轴），
+或 **jsonl**（逐句带溯源：BV 号 + 时间点 + 通道 + 置信度）。
 
 它是 `zjy5` 下的第二个工具，和 [`bilibili_downloader`](../bilibili_downloader/)
 是**两件独立的事** —— 那个负责下载，这个负责识别。
+
+> **先走字幕那条路**：如果视频本身带 CC / AI 字幕，
+> 用 `bilibili_downloader --harvest` 直接抄文本，又快又准，根本不用跑这里的 OCR / 语音识别。
+> 这个工具负责**兜底**「没字幕」的视频。
 
 ---
 
@@ -16,7 +21,8 @@
 | **OCR** | PaddleOCR，读画面下方字幕区域 | 视频**自带硬字幕** |
 | **语音识别** | whisper / faster-whisper | 视频**没有字幕**，或字幕不完整 |
 
-两条路的结果会**合并去重**（按时间邻近 + 文本相似），最后输出一份台词文本。
+两条路的结果会**按时间合并**：判为「同一条台词」的并起来（文本取更长的那份），
+文本不同的**各自成条、不再拼接**（详见下方「合并策略」）。
 
 ---
 
@@ -29,14 +35,27 @@ cd zjy5/chibtaici
 pip install -r requirements.txt
 ```
 
-`requirements.txt` 里几个**刻意降级**的版本不是随手写的，改动前请先看注释：
+`requirements.txt` 里几个**刻意钉住的版本**不是随手写的，改动前请先看注释：
 
 | 包 | 版本 | 为什么钉住 |
 |----|------|-----------|
-| `opencv-python` | 4.6.0.66 | 兼容 PaddleOCR 2.7.0 |
-| `paddlepaddle-gpu` | 2.6.2 | 解决 PIR 模式兼容性问题 |
-| `paddleocr` | 2.7.0 | 兼容 PaddlePaddle 2.6.2 |
-| `torch` / `torchvision` | 2.1.0+cu118 | 走 `--extra-index-url` 装 CUDA 11.8 版 |
+| `opencv-python` | 4.6.0.66 | 老版本，与 `numpy==1.24.3` 配套。**注意**：这个理由原本写的是「兼容 PaddleOCR 2.7.0」，paddleocr 升到 3.4.0 后没再复测，属于保守保留 —— 想升级请先跑 `tests/smoke_ocr.py` |
+| `paddlepaddle-gpu` | 3.4.0 | RTX 50 系（`sm_120`）**必须** CUDA 12.8+ 的 paddle，2.6.2 装了也只能跑 CPU，见下「GPU 环境」 |
+| `paddleocr` | 3.4.0 | 与 paddle 3.4.0 配套。代码同时兼容 2.x / 3.x 的返回结构，所以两边都能装 |
+| `torch` / `torchvision` | 2.1.0+cu118 | 走 `--extra-index-url` 装 CUDA 11.8 版。**它没有 sm_120 内核**，但在 RTX 50 系上**仍能跑通**（靠 PTX JIT 兜底，见下） |
+
+> ⚠️ **torch 2.1.0+cu118 在 RTX 5070 上的实测结论（2026-09-30）**：
+> 导入时会警告 `sm_120 is not compatible with the current PyTorch installation`，
+> 但 **Linear / Conv1d / LayerNorm / Softmax / fp16 矩阵乘全部实测通过** ——
+> 因为该构建内嵌了 `compute_37` 的 PTX，驱动会 JIT 到 sm_120。
+> 也就是说**能用，但走的是兜底路径**（无原生内核，性能不是最优）。
+> 判断这类问题一律**真跑一次运算**，不要只看 `torch.cuda.is_available()`
+> （它返回 `True` 只说明驱动认到卡，不代表内核存在）。
+>
+> 另外 `faster-whisper` 走的是 **CTranslate2，不依赖 torch** ——
+> 所以在 RTX 50 系上它比 openai-whisper 更稳也更快。两个后端都装时
+> 默认会挑 openai-whisper（尊重原有默认），想强制走 faster-whisper 加
+> `--use_faster_whisper`。
 
 > **代码同时兼容 PaddleOCR 2.x 和 3.x**（2026-09-28 修复）。
 > 两者的返回结构**完全不同**：2.x 是 `[[ [框, (文本, 置信度)], ... ]]`，
@@ -138,26 +157,59 @@ a = p.ones([1024, 1024]); print('matmul sum:', float(p.matmul(a, a).sum()))
 ## 用法
 
 ```bash
+# 最常用：完整跑一遍，输出去重纯文本
 python main.py --video 你的视频.mp4
+
+# 建议加上：掐掉开头结尾各 90 秒（OP/ED、广告），标注来源
+python main.py --video 番剧.mp4 --skip-head 90 --skip-tail 90 --video-id BV1xx411c7mD
+
+# 想要能回溯的产物
+python main.py --video 番剧.mp4 --format all   # txt + srt + jsonl
 ```
 
-输出默认写到 `role_lines.txt`。
+输出默认写到 `role_lines.txt`（`.srt` / `.jsonl` 由它推导同名文件）。
 
 ### 参数
+
+**识别相关**
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `--video` | **必填** | 视频文件路径 |
-| `--output` | `role_lines.txt` | 输出文件（`.srt` 由它推导出同名文件） |
-| `--format` | `txt` | `txt`=去重纯文本（喂给微调流水线）、`srt`=带时间轴字幕、`both`=两者都出 |
-| `--whisper_model` | `base` | `tiny`/`base`/`small`/`medium`/`large`，越大越准也越慢 |
+| `--output` | `role_lines.txt` | 输出文件（`.srt` / `.jsonl` 由它推导） |
+| `--format` | `txt` | `txt`=去重纯文本、`srt`=带时间轴字幕、`jsonl`=句级结构化、`both`=txt+srt、`all`=三者都要 |
+| `--whisper_model` | `large-v3` | 见下方「模型选型」。`tiny`/`base`/`small`/`medium`/`large`/`large-v2`/`large-v3`/`distil-large-v3` |
 | `--device` | `auto` | `auto`/`cpu`/`cuda`，`auto` 会优先用 CUDA |
+| `--hotwords` | 角色相关专有名词 | 注入 whisper 的 `initial_prompt`，**明显提升人名准确率**；传空字符串关闭 |
+| `--no-vad` | 关（即 VAD 默认开） | VAD 切句只在 faster-whisper 上生效 |
 | `--ocr_region` | `0,0.7,1,0.95` | OCR 区域，见下 |
 | `--ocr_interval` | `5` | 每多少帧做一次 OCR（越大越快，但可能漏字） |
-| `--use_faster_whisper` | 关 | **强制**用 faster-whisper；不传则自动挑已安装的后端（见下） |
+| `--no-ocr-skip` | 关（即跳帧默认开） | 关闭「字幕没变化就跳过 OCR」 |
+| `--use_faster_whisper` | 关 | **强制**用 faster-whisper；不传则自动挑已安装的后端 |
 | `--disable_ocr` | 关 | 只用语音识别 |
 | `--disable_voice` | 关 | 只用 OCR |
-| `--interactive_ocr` | 关 | 交互式设置 OCR 区域（命令行输入） |
+| `--interactive_ocr` | 关 | 交互式设置 OCR 区域 |
+
+**采集质量**（见下方「采集质量红线」）
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--video-id` | 从文件名推断 BV 号 | 写进 jsonl 的溯源字段 |
+| `--no-clean` | 关（即清洗默认开） | 关闭规范化与质量过滤，保留原始的合并结果 |
+| `--min-len` / `--max-len` | `4` / `100` | 台词长度红线（字数），超长的按标点切开 |
+| `--require-complete` | 关 | 要求标点收尾；**默认关**：ASR 输出常整段没有句末标点，开了会一次损失大量语料 |
+| `--skip-head` / `--skip-tail` | `0` / `0` | 掐掉开头/结尾多少秒，用来躲 OP/ED 与广告；可以填 `90` |
+
+**说话人过滤**（见下方「语气打标」）
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--speaker-filter` | 关 | 启用本地 LLM 语气打标，低分剔除 |
+| `--speaker-role` | `爱莉希雅` | 判定的目标角色 |
+| `--speaker-model` | `qwen3:8b` | Ollama 模型名 |
+| `--speaker-threshold` | `3` | 低于这个分剔除（1-5） |
+| `--speaker-batch` | `20` | 一次请求打标多少句 |
+| `--ollama-url` | `http://127.0.0.1:11434` | 本地 Ollama 地址 |
 
 ### 只走一条路的例子
 
@@ -165,11 +217,11 @@ python main.py --video 你的视频.mp4
 # 视频有硬字幕，不需要语音识别（快很多）
 python main.py --video 番剧.mp4 --disable_voice
 
-# 视频没字幕，只做语音识别
-python main.py --video 录屏.mp4 --disable_ocr --whisper_model small
+# 视频没字幕，只做语音识别（默认就是 large-v3 + VAD）
+python main.py --video 录屏.mp4 --disable_ocr
 
-# 想更准一点
-python main.py --video 番剧.mp4 --whisper_model medium --ocr_interval 3
+# CPU 上跑：默认的 large-v3 会非常慢，退回 medium
+python main.py --video 录屏.mp4 --disable_ocr --device cpu --whisper_model medium
 ```
 
 ---
@@ -196,6 +248,29 @@ python main.py --video 番剧.mp4 --whisper_model medium --ocr_interval 3
 
 ---
 
+## 模型选型：别再用 base 了
+
+默认模型在 2026-09-28 从 `base` 换成了 **`large-v3`**。
+
+原因很直接：`base` 的中文错误率很高，跑出来的台词经常是「人名错、用词错」，
+而这类错误**下游没法修** —— 语料错了，训练出来的模型就跟着错。
+GPU 现在能正常跑（RTX 5070 + cu128），继续用 base 属于纯粹的白吃亏。
+
+配套开了两件事：
+
+| 开关 | 作用 |
+|------|------|
+| **VAD 切句**（faster-whisper，默认开） | silero VAD 先切出有人声的片段再识别，减少「静音段幻觉」和整段沉默；用 `--no-vad` 关 |
+| **`--hotwords` 专有名词**（默认给了一组角色相关词） | 注入 whisper 的 `initial_prompt`。人名是最容易错的一类，把「爱莉希雅、芽衣、朔愿、律者、往世乐土」这类词提前告诉它，命中率会明显上去 |
+
+> `openai-whisper` **不支持 VAD 参数**，这条只在 faster-whisper 上生效；
+> 但 `initial_prompt` 两个后端都支持。
+
+> ⚠️ **CPU 上跑 large-v3 会非常慢**。命令行加了 `--device cpu` 时程序会提示；
+> 真要在 CPU 上跑，退回 `--whisper_model medium`。
+
+---
+
 ## OCR 区域怎么设
 
 `--ocr_region` 是 `x1,y1,x2,y2`，**同时支持相对坐标和绝对坐标**：
@@ -219,6 +294,46 @@ python main.py --video 番剧.mp4 --whisper_model medium --ocr_interval 3
 
 ---
 
+## OCR 跳帧（默认开）
+
+字幕**静止**的时间在视频里占大头，而静止意味着像素没变 —— 那就没必要每帧都调一次 OCR。
+
+做法：把 OCR 区域缩成 32×8 的灰度缩略图算指纹，指纹和上一帧相同就**沿用上一帧的文字**，
+不调用 OCR。用缩略图而不是原图，是为了让压缩噪点、轻微抖动不影响判断。
+
+实测（合成视频，字幕静止约 4 秒）：
+
+```text
+跳帧生效：42/48 帧（88%）因字幕未变化而跳过 OCR 调用
+```
+
+顺带一个副作用是好的：条目现在有**真实的持续时间**了。
+旧实现里 OCR 条目只有「命中某一帧」的时间点（`start == end`），SRT 只能靠补 1.2 秒蒙一个时长。
+
+用 `--no-ocr-skip` 关掉它。
+
+---
+
+## 合并策略：相同文本才合并
+
+`merge_timeline`（OCR 与语音两路结果合并）在 2026-09-28 改了规则：
+
+| 情况 | 现在怎么做 | 旧做法 |
+|------|-----------|--------|
+| 文本相同 / 相似度 ≥ 0.85 / 互为包含 | 判为**同一条**，合并时间，文本取更长的那份，通道标 `voice+ocr` | 拼接 → 「同一句话 同一句话」 |
+| 文本不同 | **各自成条** | 1.0s 内一律拼接 → 「上一句 下一句」黏成一条连行 |
+
+旧规则会产生两类脏数据，都属于采集质量红线里明确要避免的：
+
+1. **连行**：两条不同台词黏成一条，会教模型「一句话可以说很长」
+2. **重复**：OCR 与 ASR 各识别一遍同一句，拼出「悲剧并非终结。 悲剧并非终结。」
+
+> 这个改动会**改变 txt 的内容**（以前被合并的条目，现在会分成两条）。
+> 如果你要的是旧行为，用 `--no-clean` 只能关掉文本过滤、关不掉合并规则 ——
+> 合并规则是刻意改的，不再提供开关。
+
+---
+
 ## 输出
 
 ### `--format txt`（默认）：纯文本，一行一句
@@ -230,6 +345,9 @@ python main.py --video 番剧.mp4 --whisper_model medium --ocr_interval 3
 ```
 
 **不含时间戳，且会去重**——适合直接喂给后续的语料处理流程（比如 `zjy7` 的 LoRA 训练数据）。
+
+> 写文件之前会先做**规范化与质量过滤**（见「采集质量红线」）。
+> 要未处理的原始结果，加 `--no-clean`（注意那也关掉了繁简/全半角统一）。
 
 ### `--format srt`：带时间轴的字幕
 
@@ -250,8 +368,92 @@ python main.py --video 番剧.mp4 --whisper_model medium --ocr_interval 3
 > 两条路的取舍：`txt` 是**语料**（要的是去重后的句子集合），`srt` 是**字幕**
 > （要的是时间对齐）。所以两者的去重策略不同，不是同一个文件换个扩展名。
 >
-> OCR 命中的是"某一帧"，本身只有时间点没有持续时间；转 SRT 时会补一个
-> 最小持续时间（1.2 秒），并把结束时间夹在下一条开始之前，避免字幕重叠。
+> OCR 条目现在有真实持续时间（靠跳帧知道字幕停留了多久）；万一仍是
+> `start == end`，转 SRT 时会补一个最小持续时间（1.2 秒），并把结束时间夹在
+> 下一条开始之前。两条字幕**开始时间相同**时，后一条会顺延到前一条之后 ——
+> 字幕时间必须严格递增，否则播放器会闪烁。
+
+### `--format jsonl`：句级结构化（下游最该拿的产物）
+
+```json
+{"text": "悲剧并非终结，而是希望的起始。", "video": "BV1xx411c7mD", "start": 123.4, "end": 126.8, "channel": "voice+ocr", "confidence": 0.93, "source": "voice"}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `text` | 规范化后的台词 |
+| `video` | BV 号（`--video-id`，默认从文件名推断） |
+| `start` / `end` | 时间点（秒，保留 3 位） |
+| `channel` | `subtitle` / `voice` / `ocr` / `voice+ocr`（两路都识别到同一句） |
+| `confidence` | 置信度：ASR 是 `exp(avg_logprob)`，OCR 是该帧各行的平均分；**拿不到就写 `null`**，不编数字 |
+| `source` | 原始通道（与 `channel` 区分：`channel` 可能被合并成 `voice+ocr`） |
+| `speaker_score` | 语气打标分（只有开了 `--speaker-filter` 才有） |
+
+**为什么要有 jsonl**：纯 txt 是**不可逆**的 —— 时间轴丢了、来源丢了，
+之后想过滤、想按置信度加权、想回溯到出问题的那一帧，都做不了。
+jsonl 相当于采集端的「责任交接单」，下游（比如 `zjy7` 的 `collect_corpus`）
+直接吃它就行。
+
+> txt 的去重**不丢信息**：重复次数会在终端打印出来（高频台词往往是口头禅，
+> 是应该加权采样的信号，不是噪声）。要精确频次就用 jsonl 自己统计 ——
+> `text_clean.text_frequencies()` 已经写好了一个。
+
+---
+
+## 采集质量红线
+
+采集端的四条硬要求，实现在 `text_clean.py`（**只依赖标准库**，所以能单独测）。
+
+| 维度 | 要求 | 怎么做的 |
+|------|------|---------|
+| **说话人** | 只要角色本人台词 | `--speaker-filter` 本地 LLM 语气打标（见下） |
+| **长度** | 4~100 字 | `< --min-len` 丢弃；`> --max-len` **按标点切开**（连行会教模型「一句话可以说很长」） |
+| **完整性** | 标点收尾的完整句 | `--require-complete` 可选；**默认关**，因为 ASR 输出常整段没标点，默认丢弃会一次损失大量语料 |
+| **重复** | 跨视频去重但记频次 | txt 去重 + 打印频次 Top；jsonl 逐句保留，频次可随时算回来 |
+| **规范化** | 繁→简、全半角统一、去表情残留 | 自动：OpenCC 繁→简、全角→半角、去零宽/emoji/音符记号、压缩重复标点（`……` 保留两个） |
+| **噪声源** | OP/ED 歌词、广告、误识别的 BGM | `--skip-head` / `--skip-tail` 掐头去尾；`（BGM）` 这类标注会被去掉 |
+| **溯源** | BV 号 + 时间点 + 通道 + 置信度 | jsonl 的字段，句级 |
+
+运行时会打印一份**体检报告**，丢了多少、为什么丢，一眼可见：
+
+```text
+文本质量过滤：
+  保留 812 条 / 检查 903 条
+  丢弃 46 条：过短（< 下限）
+  丢弃 45 条：规范化后为空
+```
+
+> 台词只是「她说什么」。训练一个角色模型还需要人设、user 侧提问、知识库、负样本、
+> 通用数据、多轮样本 —— 完整清单和**采集端能贡献哪几项**见
+> [`../台词之外还需要什么.md`](../台词之外还需要什么.md)。
+
+> `--skip-head / --skip-tail` **默认是 0**，也就是不主动丢内容。
+> 把它们做成默认 90 秒会静默丢掉片头片尾的台词，而且一旦落盘就找不回来；
+> 需要时显式加上更稳妥：`--skip-head 90 --skip-tail 90`。
+
+---
+
+## 语气打标（轻量「说话人分离」）
+
+现在分不出哪句是角色本人说的 —— 其他角色、旁白、歌词全混在一起，
+**这是语料纯度最大的缺口**（人设污染比数据少更糟）。
+
+重型方案（pyannote 那类说话人日志聚类）准但重，先不上。轻量方案是：
+让本地 LLM 批量判断「这句话像不像角色本人的语气」，1~5 分，低分剔除。
+
+```bash
+python main.py --video 番剧.mp4 --format jsonl \
+    --speaker-filter --speaker-role 爱莉希雅 --speaker-threshold 3
+```
+
+- 默认走本地 Ollama（`--ollama-url`，默认 `http://127.0.0.1:11434`），模型 `--speaker-model`（默认 `qwen3:8b`）
+- 几千句也就十几分钟（按 `--speaker-batch` 20 句一批）
+- **Ollama 没开 / 模型回复解析不了 / 请求失败时，程序不会丢数据**：
+  提示一句、跳过打分、句子全部保留。宁可多留几条，也不静默删数据
+- 分数会写进 jsonl 的 `speaker_score`，判错了还能事后调阈值重筛
+
+> ⚠️ 访问本机 Ollama **必须绕开系统代理**，否则代理会把 `127.0.0.1` 的请求也接走，
+> 表现为莫名其妙的 502。代码里已经用空 `ProxyHandler` 处理了。
 
 ---
 
@@ -275,7 +477,7 @@ OCR 逐帧、语音识别逐段都是长任务，现在都会打印进度：
 
 ## ⚠️ 已知限制
 
-**说话人分离（多人声识别）尚未实现。**
+**重型说话人分离（pyannote 那类）仍未实现。**
 
 `RoleLineExtractor` 的构造参数里有 `speaker_diarization`，但它**只是个空壳** ——
 传 `True` 只会打印一条警告，不会有任何效果，依赖里也没有任何声纹/分离库。
@@ -283,8 +485,9 @@ OCR 逐帧、语音识别逐段都是长任务，现在都会打印进度：
 > 本项目早期的模块 docstring 曾声称"支持说话人分离、多人声识别"，
 > 与实现不符，**已于 2026-09-24 更正**。别按那个说法规划用途。
 
-也就是说：**当前输出不区分说话人**，所有台词混在一起。
-如果视频里有多人对话，需要自己按上下文判断。
+能用的替代方案是**轻量语气打标**（`--speaker-filter`，见上文）：
+它判断的是「这句像不像角色本人」，而不是「这段音频里是谁在说」。
+对「洗干净语料」这个目的足够，对「给每个角色各自建一份语料」还不够。
 
 ---
 
@@ -313,9 +516,43 @@ OCR 逐帧、语音识别逐段都是长任务，现在都会打印进度：
 **Q：太慢了。**
 按性价比排序：
 1. `--disable_voice`（有硬字幕时直接砍掉整条 ASR 路径，最有效）
-2. 调大 `--ocr_interval`（默认 5，可以试 10）
-3. `--use_faster_whisper`
-4. 换小一点的 `--whisper_model`
+2. 确认跳帧开着（默认开）——字幕静止的时间本来就不该重跑 OCR
+3. 调大 `--ocr_interval`（默认 5，可以试 10）
+4. `--use_faster_whisper`
+5. 换小一点的 `--whisper_model`（但别回到 base，宁可 medium）
 
 **Q：输出里有繁体字？**
 已用 `opencc` 统一转简体。如果仍有残留，检查 `_filter_text()` 的处理链路。
+
+**Q：以前能跑出 100 句，现在只有 80 句了？**
+看终端里那份「文本质量过滤」报告 —— 大概率是长度红线丢掉的（过短/过长）。
+调 `--min-len` / `--max-len`；完全要原始结果就 `--no-clean`。
+
+**Q：条目数比以前多了？**
+这是刻意的：合并策略改成「相同文本才合并」之后，
+以前被拼成一条连行的相邻台词，现在会各自成条。带 `--format jsonl` 跑，
+能直接看出每条是哪个通道、什么时间来的。
+
+**Q：`--speaker-filter` 报连不上 Ollama？**
+打标会**自动跳过、数据不丢**。想用就先起 Ollama 并拉个模型：
+`ollama pull qwen3:8b`。打分失败的句子会保留，只是没有 `speaker_score`。
+
+---
+
+## 测试
+
+`tests/` 下三个脚本**全部离线**（不联网、不需要 GPU），直接跑：
+
+```bash
+cd zjy5
+./.venv/Scripts/python.exe tests/run_tests.py
+```
+
+| 脚本 | 覆盖 |
+|------|------|
+| `test_text_clean.py` | 规范化、长度红线、长句切分、去重记频次、jsonl 读写、打标解析 |
+| `test_merge_and_srt.py` | 合并策略（不拼连行 / 同句合并不重复）、SRT 不变量、质量过滤、三格式输出 |
+| `test_harvest.py` | 批量收割：URL/清单解析、探测、断点续跑、jsonl 落盘 |
+
+另外 `tests/smoke_ocr.py` 是**集成冒烟测试**（需要 paddleocr，会真跑一次 OCR）：
+它临时合成一段带字幕的小视频，验证「识别准确 + 跳帧生效 + 相同文本会合并」。

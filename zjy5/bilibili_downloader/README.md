@@ -9,6 +9,7 @@
 - 📺 **频道爬取**: 获取频道最新/最热视频列表并下载
 - 🔍 **搜索下载**: 搜索关键词并下载相关视频
 - 📝 **AI 字幕**: 提取 Bilibili AI 生成的字幕
+- 🧺 **批量字幕收割**: 给一个 UP 空间或 urls.txt，自动逐个探测并抄下 CC/AI 字幕（**不下载视频、不做 OCR**）
 - 🔄 **批量下载**: 支持批量下载多个视频
 - 🍪 **Cookie 管理**: 支持自动和手动获取 Cookie
 - 📊 **实时进度**: 下载时原地刷新显示百分比、速度与剩余时间
@@ -78,6 +79,38 @@ python -m bilibili_downloader "https://www.bilibili.com/video/BV1xx411c7mD" --su
 python -m bilibili_downloader "https://www.bilibili.com/video/BV1xx411c7mD" --subtitle-only --format srt
 ```
 
+#### 批量字幕收割（采集语料最快的一条路）
+
+`--subtitle-only` 一次只能喂一个 URL，手动贴几百个链接不现实 ——
+`--harvest` 把它接上批处理：给一个 UP 主空间 URL 或一份 `urls.txt`，
+自动枚举视频、逐个探测字幕，命中的直接把文本抄下来。
+**不下载视频、不做 OCR、不做语音识别。**
+
+```bash
+# 先探一把：这个 UP 有多少视频带字幕？（不落盘，只给命中率）
+python -m bilibili_downloader --harvest "https://space.bilibili.com/123456" --probe-only
+
+# 真的收割：默认汇总到一个 jsonl（句级溯源）
+python -m bilibili_downloader --harvest "https://space.bilibili.com/123456" --max-count 50
+
+# 从清单文件收割（一行一个 URL 或裸 BV 号，# 开头是注释）
+python -m bilibili_downloader --harvest urls.txt
+
+# 想按视频各存一个 txt
+python -m bilibili_downloader --harvest "https://space.bilibili.com/123456" --harvest-format txt
+```
+
+**断点续跑**：状态写在 `<输出目录>/harvest_state.json`（按 BV 号记录结果）。
+中途 Ctrl-C 之后重跑会自动跳过已完成的；「无字幕」也会记下来，
+不会每次都白探一遍。失败项要重试就加 `--retry-failed`。
+
+> **探测不吃掉断点**：`--probe-only` 命中的视频记的是「probed（有字幕，正文未取）」，
+> 不是「已完成」—— 接着跑正式收割时，它们照样会被重新取一次正文。
+> （否则「先探测再收割」这条推荐用法会直接失效：探测完一看，全被跳过了。）
+
+**先探测再决定**：字幕那一路又快又准，所以**先问有没有**。
+命中率低于三成的话，剩下没字幕的视频再走 `chibtaici` 的 OCR / 语音识别兜底。
+
 #### 交互式模式
 
 ```bash
@@ -99,6 +132,14 @@ python -m bilibili_downloader --interactive
 | `--channel` | | 频道/UP 主空间 URL |
 | `--search` | | 搜索关键词 |
 | `--max` | | 频道/搜索最多下载数量（默认：10） |
+| `--max-count` | | 收割/播放列表最多处理多少个（0=不限；不给则沿用 `--max`） |
+| `--harvest` | | 批量字幕收割：UP 空间 URL、视频 URL 或 urls.txt 清单 |
+| `--urls-file` | | 配合 `--harvest`：一行一个 URL 的清单文件 |
+| `--state` | | 收割断点状态文件（默认 `<输出目录>/harvest_state.json`） |
+| `--harvest-format` | | `jsonl`（默认，汇总成一个文件）或 `txt`（一个视频一个文件） |
+| `--rate-limit` | | 收割时每个命中视频之间的间隔秒数（默认 1.0） |
+| `--probe-only` | | 只探测有没有字幕，不取正文、不落盘 |
+| `--retry-failed` | | 重试上次失败的条目（「无字幕」默认不重试） |
 | `--order` | | 排序方式（pubdate/hot/view/totalrank/click/stow） |
 | `--interactive` | | 进入交互式模式 |
 | `--cookie` | | Bilibili Cookie |
@@ -120,7 +161,9 @@ python -m bilibili_downloader --interactive
 ### Python API 使用
 
 ```python
-from bilibili_downloader import BilibiliDownloader, ChannelDownloader, SearchDownloader, SubtitleExtractor
+from bilibili_downloader import (BilibiliDownloader, ChannelDownloader,
+                                 SearchDownloader, SubtitleExtractor,
+                                 SubtitleHarvester)
 
 # 下载单个视频
 downloader = BilibiliDownloader(output_dir="downloads")
@@ -140,7 +183,27 @@ search_downloader.download_search_results("Python 教程", max_videos=5)
 # 提取字幕
 extractor = SubtitleExtractor()
 extractor.extract_subtitle("https://www.bilibili.com/video/BV1xx411c7mD")
+
+# 只探测有没有字幕（一个请求，不落盘）
+info = SubtitleExtractor().probe_subtitle("https://www.bilibili.com/video/BV1xx411c7mD")
+print(info["has_subtitle"], info["lang"])
+
+# 批量收割
+harvester = SubtitleHarvester(output_dir="downloads", state_path="downloads/harvest_state.json")
+harvester.run(target="https://space.bilibili.com/123456", max_count=100)
 ```
+
+### 收割产物：jsonl 长什么样
+
+```json
+{"text": "悲剧并非终结，而是希望的起始。", "video": "BV1xx411c7mD", "start": 123.4, "end": 126.8, "channel": "subtitle", "confidence": null, "lang": "zh-CN", "ai_type": 1}
+```
+
+`confidence` 对字幕通道**永远是 `null`** —— B 站字幕接口不提供置信度，
+这里如实写 null，不去编一个看起来很像的数字。
+
+> 这个 jsonl 与 `chibtaici --format jsonl` 的字段是对齐的，
+> 下游可以混着吃（字幕通道 + OCR 通道 + 语音通道一起）。
 
 ## 下载进度
 
@@ -224,12 +287,40 @@ A: AI 字幕需要登录状态，请确保：
 2. 账号已登录
 3. 视频确实有 AI 字幕
 
+### Q: 收割跑完了，命中率是 0？
+
+A: 说明这个 UP 的视频里确实没有 CC / AI 字幕（AI 字幕要 UP 主开了「字幕」或
+平台自动生成才有）。这时才轮到 `chibtaici` 的 OCR / 语音识别兜底。
+先换几个 UP 用 `--probe-only` 探一下，比一上来就跑 OCR 划算得多。
+
+### Q: 收割中断了怎么办？
+
+A: 直接重跑同一条命令。状态在 `harvest_state.json` 里，已完成的会跳过，
+只补没做的部分。想连失败项一起重试就加 `--retry-failed`。
+
+### Q: 合集一次只下 10 个？
+
+A: 老默认值确实偏小。用 `--max-count 50` 覆盖（`--max-count 0` 在收割里表示不限）。
+
 ### Q: 如何更新 yt-dlp？
 
 A: 运行以下命令：
 ```bash
 pip install -U yt-dlp
 ```
+
+---
+
+## 测试
+
+```bash
+cd zjy5
+./.venv/Scripts/python.exe tests/test_harvest.py
+```
+
+`test_harvest.py` 用假的提取器/爬虫注入，**全程不联网**，
+覆盖 URL 与清单解析、探测命中、断点续跑（含「跳过时不该再发请求」）、
+失败项重试、probe-only 不落盘、jsonl 与 txt 两种产物。
 
 ## 许可证
 

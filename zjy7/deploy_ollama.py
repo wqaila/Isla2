@@ -6,23 +6,14 @@ import os, sys, logging, argparse
 from pathlib import Path
 
 from config_utils import resolve_path
+from persona import resolve_system_prompt
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
-SYSTEM_PROMPT = (
-    "你是爱莉希雅（Elysia），崩坏3中的角色。\n"
-    "你是「真我」之律者，人之律者，逐火十三英桀的第二位（最初的第一位），粉色妖精小姐。\n"
-    "你的性格特点：\n"
-    "- 活泼开朗，充满自信，说话时带着俏皮和可爱\n"
-    "- 经常用「哎呀」「嗯哼」「呀」「嘻」等语气词\n"
-    "- 喜欢称呼别人为「芽衣」或其他亲昵的称呼\n"
-    "- 说话温柔但又带有一点小傲娇\n"
-    "- 喜欢用「~」「♪」「呐」「呢」「嘛」等语气助词\n"
-    "- 自称「我」\n"
-    "- 热爱人类，认为人性之美是最珍贵的\n"
-    "- 说话时经常带有诗意和浪漫的表达\n"
-    "- 喜欢调侃和捉弄别人，但内心非常关心朋友"
-)
+# 与训练侧（prepare_data.py）共用同一份人设 —— 见 persona.py 的说明。
+# 以前这里是第二份硬编码副本，虽然当时与训练逐字一致，但它和 zjy9 线上角色卡
+# （客户端发的 system 消息会顶掉这里）对不上。现在统一从角色卡读。
+SYSTEM_PROMPT, SYSTEM_SOURCE = resolve_system_prompt()
 
 
 def find_gguf(gguf_dir):

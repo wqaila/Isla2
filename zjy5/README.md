@@ -4,11 +4,31 @@
 
 | 子目录 | 做什么 | 关系 |
 |--------|--------|------|
-| [`bilibili_downloader/`](bilibili_downloader/) | 从 B 站**下载**视频 / 音频 / 字幕（含 SRT） | 产出素材 |
-| [`chibtaici/`](chibtaici/) | 从视频里**识别台词**，输出去重纯文本或 SRT 字幕 | 消费素材 |
+| [`bilibili_downloader/`](bilibili_downloader/) | 从 B 站**下载**视频 / 音频 / 字幕（含 SRT），以及**批量字幕收割** | 产出素材 |
+| [`chibtaici/`](chibtaici/) | 从视频里**识别台词**，输出去重纯文本、SRT 字幕或 **jsonl** | 消费素材 |
+| [`tests/`](tests/) | 两个工具的离线测试（不需要网络 / GPU） | 验证 |
 
 两者**没有代码依赖**，可以单独使用。放在一起只是因为它们常配合使用：
 下载番剧 → 抽出台词 → 喂给 `zjy7` 做 LoRA 训练语料。
+
+---
+
+## 采集语料的最短路径
+
+**先问有没有字幕，再决定要不要跑识别。** 顺序错了会白烧几十小时 GPU：
+
+```bash
+# ① 先探测：这个 UP 有多少视频带 CC / AI 字幕？（不下载视频、不做 OCR）
+cd bilibili_downloader
+python -m bilibili_downloader --harvest "https://space.bilibili.com/123456" --probe-only
+
+# ② 命中率还行就直接收割成 jsonl（带 BV 号 / 时间点 / 通道 / 置信度）
+python -m bilibili_downloader --harvest "https://space.bilibili.com/123456" --max-count 100
+
+# ③ 只有「没字幕」的那几个视频，才轮到 OCR / 语音识别兜底
+cd ../chibtaici
+python main.py --video ../downloads/xxx.mp4 --format jsonl --skip-head 90 --skip-tail 90
+```
 
 ---
 
@@ -23,6 +43,15 @@ python -m bilibili_downloader "视频链接" --subtitle
 # ② 识别台词（视频没有字幕时）
 cd ../chibtaici
 python main.py --video ../downloads/xxx.mp4 --disable_voice
+```
+
+---
+
+## 跑测试
+
+```bash
+cd zjy5
+./.venv/Scripts/python.exe tests/run_tests.py     # 三个离线脚本，不联网、不需要 GPU
 ```
 
 ---
@@ -42,6 +71,38 @@ python main.py --video ../downloads/xxx.mp4 --disable_voice
 
 - 下载器：[`bilibili_downloader/README.md`](bilibili_downloader/README.md)
 - 台词识别：[`chibtaici/README.md`](chibtaici/README.md)
+- **下游要什么**：[`台词之外还需要什么.md`](台词之外还需要什么.md)
+  —— 训一个角色模型除台词还缺什么（人设 / 提问 / 知识库 / 负样本 / 通用数据 / 多轮 / 长度），
+  带实测量化与建议顺序，以及**采集端能贡献哪几项**
+
+---
+
+## 2026-09-28 改动记录
+
+按「采集工具改进方向」的优先级做了前四项 + 第五项的轻量版：
+
+| 项 | 落地 |
+|----|------|
+| **批量字幕收割** | 新增 `bilibili_downloader/harvest.py`：UP 空间 / urls.txt → 翻页枚举 → 逐个探测字幕 → 命中直接抄文本（不下载、不 OCR）。`--probe-only` 看命中率、`harvest_state.json` 断点续跑 |
+| **分页 + `--max-count`** | `ChannelCrawler.get_all_channel_videos()`；播放列表「默认只下 10 个」也接上了这个参数 |
+| **jsonl 结构化** | `--format jsonl/all`：`text/video/start/end/channel/confidence`，收割端与识别端**字段对齐** |
+| **whisper 升级** | 默认 `base` → `large-v3`；faster-whisper 开 VAD；`--hotwords` 注入专有名词 |
+| **OCR 跳帧** | 区域缩略图指纹比对，实测跳过 **88%** 的 OCR 调用；顺带让 OCR 条目有了真实持续时间 |
+| **合并策略** | 改为「相同 / 相似 / 包含才算同一条」，不再拼连行、不再拼重复 |
+| **质量红线** | 新增 `chibtaici/text_clean.py`：繁→简、全半角、去表情、4~100 字、超长按标点切、掐头去尾、去重记频次 |
+| **语气打标** | 新增 `chibtaici/speaker_filter.py`：本地 Ollama 打 1-5 分，低分剔除；Ollama 不可用时**不丢数据** |
+| **测试** | 新增 `tests/`：三个离线脚本（17 个测试函数）+ 一个 OCR 集成冒烟 |
+
+**两处刻意保留默认值的决定**：
+
+- `--require-complete` 默认关 —— ASR 输出常整段没标点，默认按「标点收尾」过滤会一次损失大量语料
+- `--skip-head/--skip-tail` 默认 0 —— 默认掐头去尾会静默丢内容、落盘找不回；
+  推荐值（`90`）写在文档里，由你显式加
+
+**行为变化**：合并策略改掉之后，txt 的条目数会比以前多（以前被拼成连行的相邻台词现在各自成条）。
+这是刻意的，想要可回溯产物就加 `--format all`。
+
+> 完整背景见 [`台词之外还需要什么.md`](台词之外还需要什么.md) 的附录。
 
 ---
 

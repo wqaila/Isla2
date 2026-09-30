@@ -1,5 +1,7 @@
 # 通用
-# 降级到 4.6.0.66 以兼容 PaddleOCR 2.7.0
+# opencv 钉在 4.6.0.66（与 numpy 1.24.3 配套）。
+# ⚠️ 原本的理由是「兼容 PaddleOCR 2.7.0」，但 paddleocr 现在是 3.4.0，
+#    这条理由已过期、只是保守保留；想升级先跑 tests/smoke_ocr.py 验证。
 opencv-python==4.6.0.66
 numpy==1.24.3
 moviepy==1.0.3
@@ -7,6 +9,9 @@ faster-whisper
 imageio[ffmpeg]==2.31.1
 
 # PyTorch (CUDA 11.8)
+# ⚠️ 这个构建**没有 sm_120 内核**（RTX 50 系）。实测仍能跑 ——
+#    它内嵌 compute_37 PTX，驱动会 JIT 到 sm_120，但属兜底路径、非最优。
+#    注意 faster-whisper 用 CTranslate2、不依赖 torch，所以语音那条路不受影响。
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch==2.1.0+cu118
 torchvision==0.16.0+cu118

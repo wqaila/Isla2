@@ -163,6 +163,48 @@ class ChannelCrawler:
             print(f"  请求失败：{e}")
             return []
     
+    def get_all_channel_videos(self, channel_id: str, max_count: int = 0,
+                               order: str = "pubdate", page_size: int = 30,
+                               page_delay: float = 0.8,
+                               progress_cb=None) -> List[Dict]:
+        """翻页拉取 UP 主空间**全部**（或前 max_count 个）视频。
+
+        `get_channel_videos()` 只取一页（默认 30 条）——批量收割字幕时不够用，
+        一个合集动辄几十上百个视频，所以这里把翻页逻辑补上。
+
+        :param max_count: 最多取多少个，0 表示不限（一直翻到空页）
+        :param page_delay: 每页之间的间隔秒数，避免请求过密
+        :param progress_cb: 可选回调 (page, got_total, cumulative_list)
+        """
+        videos: List[Dict] = []
+        page = 1
+        # 保护性上限：正常 UP 主不会有这么多页，出现只可能是接口行为变了
+        max_pages = 200
+
+        while page <= max_pages:
+            batch = self.get_channel_videos(
+                channel_id, page=page, page_size=page_size, order=order
+            )
+            if not batch:
+                break
+
+            videos.extend(batch)
+            if progress_cb:
+                progress_cb(page, len(batch), videos)
+
+            if max_count and len(videos) >= max_count:
+                videos = videos[:max_count]
+                break
+
+            # 不足一页说明已经到底了
+            if len(batch) < page_size:
+                break
+
+            page += 1
+            time.sleep(page_delay if page_delay and page_delay > 0 else 0)
+
+        return videos
+
     def get_channel_info(self, channel_id: str) -> Optional[Dict]:
         """获取频道信息"""
         api_url = "https://api.bilibili.com/x/space/wbi/acc/info"
@@ -239,7 +281,7 @@ class ChannelDownloader:
         print(f"频道：{channel_name}")
         
         # 获取视频列表
-        print(f"正在获取最新视频...")
+        print("正在获取最新视频...")
         videos = self.crawler.get_channel_videos(channel_id, order=order)
         
         if not videos:

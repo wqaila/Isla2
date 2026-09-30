@@ -13,7 +13,7 @@ import time
 import urllib.request
 import urllib.parse
 import ssl
-from typing import Optional, List, Dict, Tuple
+from typing import Any, Optional, List, Dict, Tuple
 from datetime import datetime
 
 try:
@@ -105,6 +105,209 @@ class SubtitleExtractor:
         except Exception as e:
             print(f"  获取视频信息失败：{e}")
             return None, None
+
+    def _http_get_json(self, url: str, referer: str = "https://www.bilibili.com") -> Any:
+        """带 Cookie/UA 的 GET，返回解析后的 JSON。失败时抛异常。"""
+        req = urllib.request.Request(
+            url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': referer,
+            }
+        )
+        if self.cookies:
+            cookie_str = '; '.join(f"{k}={v}" for k, v in self.cookies.items())
+            req.add_header('Cookie', cookie_str)
+
+        with urllib.request.urlopen(req, timeout=30, context=self.ssl_context) as response:
+            return json.loads(response.read().decode('utf-8'))
+
+    @staticmethod
+    def _pick_best_subtitle(subtitles: List[Dict]) -> Optional[Dict]:
+        """从字幕列表里挑一条最合适的。
+
+        一个视频可能同时挂着多种语言（`lan` 字段），优先要中文 ——
+        尤其是 AI 中文（`ai-zh`），它是本轮采集最想要的来源。
+        """
+        if not subtitles:
+            return None
+
+        priority = ["ai-zh", "zh-CN", "zh-Hans", "zh", "zh-Hant", "ai-en", "en"]
+
+        def rank(item: Dict) -> int:
+            lang = str(item.get("lan") or item.get("lang") or "")
+            try:
+                return priority.index(lang)
+            except ValueError:
+                return len(priority)
+
+        return sorted(subtitles, key=rank)[0]
+
+    def _get_player_subtitles(self, video_id: str) -> Dict[str, Any]:
+        """查询播放器接口里的字幕列表。
+
+        :return: {"aid":.., "cid":.., "subtitles":[...], "error":..}
+        """
+        result: Dict[str, Any] = {"aid": None, "cid": None, "subtitles": [], "error": None}
+
+        aid, cid = self._get_video_info(video_id)
+        result["aid"], result["cid"] = aid, cid
+        if not cid:
+            result["error"] = "无法获取视频 cid"
+            return result
+
+        try:
+            query = build_signed_query(
+                {"cid": cid, "aid": aid or 0, "bvid": video_id},
+                ssl_context=self.ssl_context,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://www.bilibili.com',
+                }
+            )
+        except Exception as e:
+            result["error"] = f"WBI 签名失败：{e}"
+            return result
+
+        try:
+            data = self._http_get_json(
+                f"https://api.bilibili.com/x/player/wbi/v2?{query}"
+            )
+        except Exception as e:
+            result["error"] = f"字幕接口请求失败：{e}"
+            return result
+
+        if data.get("code") != 0:
+            result["error"] = data.get("message", "未知错误")
+            return result
+
+        subtitle = data.get("data", {}).get("subtitle", {}) or {}
+        result["subtitles"] = subtitle.get("list", []) or []
+        return result
+
+    def probe_subtitle(self, video_url: str, quiet: bool = True) -> Dict[str, Any]:
+        """**只探测**视频有没有字幕，不下载视频、不落盘。
+
+        这是批量收割的第一步：先花一个请求问清楚「有没有」，命中的才值得取正文。
+        """
+        info: Dict[str, Any] = {
+            "bvid": None, "aid": None, "cid": None,
+            "has_subtitle": False, "subtitle_count": 0,
+            "lang": None, "ai_type": None, "lan_doc": None,
+            "subtitle_url": None, "error": None,
+        }
+
+        video_id = self._get_video_id(video_url)
+        info["bvid"] = video_id
+        if not video_id:
+            info["error"] = "无法从 URL 提取视频 ID"
+            return info
+
+        player = self._get_player_subtitles(video_id)
+        info["aid"], info["cid"] = player["aid"], player["cid"]
+        info["error"] = player["error"]
+
+        subs = player["subtitles"]
+        info["subtitle_count"] = len(subs)
+        best = self._pick_best_subtitle(subs)
+        if best:
+            info.update(
+                has_subtitle=True,
+                lang=best.get("lan"),
+                ai_type=best.get("ai_type"),
+                lan_doc=best.get("lan_doc"),
+                subtitle_url=best.get("subtitle_url"),
+            )
+        elif not quiet and not info["error"]:
+            info["error"] = None
+
+        return info
+
+    def _fetch_subtitle_body(self, subtitle_url: str) -> List[Dict]:
+        """拉取字幕正文（B 站的 json 字幕，body 里是逐句 from/to/content）。"""
+        data = self._http_get_json(subtitle_url)
+        if isinstance(data, dict):
+            return data.get("body", []) or []
+        return []
+
+    def fetch_subtitle_entries(self, video_url: str = None, subtitle_url: str = None,
+                               info: Dict[str, Any] = None) -> Tuple[List[Dict], Dict[str, Any]]:
+        """取回一个字幕的全部句子（结构化，保留时间轴）。
+
+        :return: (entries, meta) —— entries 每项 ``{"text","start","end"}``；
+                 meta 与 probe_subtitle() 的返回同构，失败时 meta["error"] 有原因。
+        """
+        meta: Dict[str, Any] = dict(info or {})
+
+        if not subtitle_url:
+            if not video_url:
+                raise ValueError("video_url 与 subtitle_url 至少要给一个")
+            meta = self.probe_subtitle(video_url)
+            subtitle_url = meta.get("subtitle_url")
+
+        if not subtitle_url:
+            meta.setdefault("has_subtitle", False)
+            return [], meta
+
+        try:
+            body = self._fetch_subtitle_body(subtitle_url)
+        except Exception as e:
+            meta["error"] = f"字幕正文下载失败：{e}"
+            meta["has_subtitle"] = False
+            return [], meta
+
+        entries: List[Dict] = []
+        for line in body:
+            text = (line.get("content") or "").strip()
+            if not text:
+                continue
+            entries.append({
+                "text": text,
+                "start": float(line.get("from") or 0.0),
+                "end": float(line.get("to") or 0.0),
+            })
+
+        meta["has_subtitle"] = bool(entries)
+        return entries, meta
+
+    @staticmethod
+    def write_entries_jsonl(entries: List[Dict], output_path: str,
+                            video: str = None, channel: str = "subtitle",
+                            confidence: float = None, lang: str = None,
+                            ai_type: Any = None, append: bool = True) -> int:
+        """把句子写成 jsonl（每行一句，带溯源字段）。
+
+        字段与 chibtaici 的 ``--format jsonl`` 对齐，下游可以混着吃：
+        ``text / video / start / end / channel / confidence``。
+
+        ⚠️ 与 chibtaici 各自的 jsonl 写入是**刻意分开实现**的 ——
+        两个目录是互相独立的工具，不引入跨目录依赖。
+        """
+        directory = os.path.dirname(output_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        written = 0
+        mode = "a" if append else "w"
+        with open(output_path, mode, encoding="utf-8") as f:
+            for e in entries:
+                text = (e.get("text") or "").strip()
+                if not text:
+                    continue
+                record = {
+                    "text": text,
+                    "video": video,
+                    "start": round(float(e.get("start") or 0.0), 3),
+                    "end": round(float(e.get("end") or 0.0), 3),
+                    "channel": channel,
+                    "confidence": confidence,
+                    "lang": lang,
+                }
+                if ai_type is not None:
+                    record["ai_type"] = ai_type
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                written += 1
+        return written
     
     def _get_subtitle_url_via_api(self, video_url: str) -> Optional[str]:
         """通过 API 获取字幕 URL"""
@@ -433,7 +636,7 @@ class SubtitleExtractor:
                                         browser.close()
                                         return output_path
                                     else:
-                                        print(f"  字幕数据格式错误：缺少 'body' 字段")
+                                        print("  字幕数据格式错误：缺少 'body' 字段")
                                         print(f"  响应内容：{resp[:200]}...")
                                 except json.JSONDecodeError as e:
                                     print(f"  JSON 解析失败：{e}")

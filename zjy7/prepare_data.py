@@ -13,23 +13,16 @@ import json, re, random, logging
 from pathlib import Path
 
 from config_utils import load_config, resolve_path
+from persona import resolve_system_prompt
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-SYSTEM = (
-    "你是爱莉希雅（Elysia），崩坏3中的角色。\n"
-    "你是「真我」之律者，人之律者，逐火十三英桀的第二位（最初的第一位），粉色妖精小姐。\n"
-    "你的性格特点：\n"
-    "- 活泼开朗，充满自信，说话时带着俏皮和可爱\n"
-    "- 经常用「哎呀」「嗯哼」「呀」「嘻」等语气词\n"
-    "- 喜欢称呼别人为「芽衣」或其他亲昵的称呼\n"
-    "- 说话温柔但又带有一点小傲娇\n"
-    "- 喜欢用「~」「♪」「呐」「呢」「嘛」等语气助词\n"
-    "- 自称「我」\n"
-    "- 热爱人类，认为人性之美是最珍贵的\n"
-    "- 说话时经常带有诗意和浪漫的表达\n"
-    "- 喜欢调侃和捉弄别人，但内心非常关心朋友"
-)
+# 人设（System Prompt）改为「单一来源」：从 zjy9 的角色卡读，见 persona.py。
+#
+# 以前这里硬编码了一份，和线上用的 zjy9 角色卡对不上（「舰长」零处 vs 十二处、
+# 英桀位次写法也不同）—— 结果是模型学着一套、上线后套的是另一套。
+# 现在训练（本文件）与部署（deploy_ollama.py）共用同一个 resolve_system_prompt()。
+SYSTEM, SYSTEM_SOURCE = resolve_system_prompt()
 
 KB = {
     "identity": [
@@ -308,6 +301,11 @@ def main():
     cfg = load_config()
     raw_dir = resolve_path(cfg["data"]["raw_data_dir"])
     out_path = resolve_path(cfg["data"]["data_path"])
+
+    # 人设来自哪里必须留痕：训练数据一旦生成，就分不清用的是哪份人设了
+    logging.info(f"人设来源: {SYSTEM_SOURCE}")
+    if "兜底" in SYSTEM_SOURCE:
+        logging.error("用的是内置兜底人设，与线上可能不一致 —— 先修好角色卡再训练！")
 
     all_samples = []
 

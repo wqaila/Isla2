@@ -8,25 +8,127 @@
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 生成训练数据
+# 2. 人设自检（换了角色卡 / 改了人设之后，先跑这个）
+python check_persona.py
+
+# 3. 收集语料（可选：把 zjy5 抽出的台词并进来）
+python collect_corpus.py
+
+# 4. 生成训练数据
 python prepare_data.py
 
-# 3. 训练 LoRA
+# 5. 训练 LoRA
 python train_lora.py
 
-# 4. 合并 + GGUF转换 + 量化 + 测试
+# 6. 合并 + GGUF转换 + 量化 + 测试
 python post_train.py --quant Q8_0
 
-# 5. 部署到 Ollama（可选）
+# 7. 部署到 Ollama（可选）
 python deploy_ollama.py
 ```
+
+或者一条命令跑完：
+
+```bash
+python run_all.py                  # 失败即停；默认跳过 collect
+python run_all.py --with-collect   # 连语料收集一起跑
+```
+
+---
+
+## 人设（System Prompt）是单一来源
+
+人设**只有一份**，在 zjy9 的角色卡里：
+
+```
+zjy9/server/characters/elysia.json   →  system_prompt
+```
+
+`prepare_data.py`（训练）与 `deploy_ollama.py`（部署）都通过
+`persona.resolve_system_prompt()` 读它，**不再各写一份**。
+
+> **为什么要改**：以前人设硬编码在三处，而且互相不一致 ——
+>
+> | 位置 | 用途 | 「舰长」 | 英桀位次 |
+> |------|------|---------|---------|
+> | `prepare_data.py` | 训练 | 0 处 | 第二位（最初的第一位） |
+> | `deploy_ollama.py` | 部署 Modelfile | — | 与训练一致 |
+> | `zjy9/.../elysia.json` | **线上实际用的** | 14 处 | 第一位，编号Ⅰ |
+>
+> 线上推理时客户端发的 system 消息会顶掉 Modelfile 里那份，
+> 所以实际是「**学着一套、用着另一套**」—— 模型性格怪，但说不清哪里怪。
+
+改人设就改角色卡，然后跑一次自检：
+
+```bash
+python check_persona.py            # 人可读
+python check_persona.py --json     # 机器可读
+```
+
+它会检查四处是否一致，并区分两类问题（**修法完全不同**）：
+
+| 类别 | 检查对象 | 不一致时怎么办 |
+|------|---------|---------------|
+| 人设来源（exit 1） | 角色卡 / `prepare_data.py` / `deploy_ollama.py` | 改人设本身 |
+| 生成产物（exit 2） | `Modelfile` / `train_data.json` | 重跑 `deploy_ollama.py` / `prepare_data.py` |
+
+> ⚠️ **`train_data.json` 是快照，换了人设不会自动更新。**
+> 自检会告诉你「N/M 条与当前人设一致」—— 只要不是全部一致，就重跑 `prepare_data.py`。
+
+找不到角色卡时会退到 `persona.py` 里的 `FALLBACK_SYSTEM`，并**明确警告**
+（那意味着你可能在用一份和线上不一致的人设训练）。
+想指定别的卡：`ELYSIA_CARD=路径/xxx.json python prepare_data.py`。
+
+## 与 zjy5 的衔接（语料直通）
+
+两个项目都有 `downloads/`，但**含义不同**：
+
+| 目录 | 内容 | 用途 |
+|------|------|------|
+| `zjy5/downloads/` | 原始视频（`.mp4`） | 喂给 chibtaici 抽台词 |
+| `zjy7/downloads/` | 纯文本台词（`.txt`） | 喂给 `prepare_data.py` 生成训练样本 |
+
+`collect_corpus.py` 负责把前一环的产物搬到后一环：
+
+```bash
+# 自动在 zjy5 下查找 role_lines.txt
+python collect_corpus.py
+
+# 显式指定（chibtaici 的 --output 产物）
+python collect_corpus.py --src ../zjy5/downloads/role_lines.txt
+
+# 与已有语料并存（不覆盖）
+python collect_corpus.py --name elysia_ep01.txt
+
+# 只检查不写入
+python collect_corpus.py --dry-run
+```
+
+**它会做体检，拦住几种会一路传到训练集的问题**：
+
+| 检查 | 为什么重要 |
+|------|-----------|
+| 源文件为空 | ⚠️ 最关键。`prepare_data.py` **不会**因为少一个文件而报错，只会静默少生成一批样本，最后表现为「模型效果莫名变差」。空文件多半是上游 OCR 静默失败了 |
+| 行过短 / 过长 | 过短是 OCR 噪声，过长是多句被连成一行 |
+| 含「角色：」结构 | 会被 `parse_dialogue` 当对话解析，走另一条样本生成分支 |
+
+> 这些检查**只报警告、不删数据** —— 误删好数据的代价比留着坏数据大。
+> 语义处理（去重、改写）统一交给 `prepare_data.py`，
+> 两边都动数据会导致出问题时无法定位责任方。
+
+来源信息写在**同名的 `.meta.json`** 里，不写进正文
+（`prepare_data.py` 会把每一行非空文本都当台词）。
 
 ## 项目结构
 
 ```
 ├── train_config.json    # 训练配置（所有路径和参数集中管理，相对路径基于项目根目录）
 ├── config_utils.py      # 公共工具：配置加载 / 路径解析 / 随机种子
+├── persona.py           # 人设（System Prompt）单一来源 —— 读 zjy9 角色卡
+├── check_persona.py     # 人设一致性自检（训练/部署/线上/已生成数据是否同一份）
+├── collect_corpus.py    # 收集 zjy5 的台词产物（zjy5 → zjy7 直通）
 ├── prepare_data.py      # 数据预处理
+├── run_all.py           # 流水线编排（失败即停）
 ├── train_lora.py        # LoRA 训练（支持断点续训）
 ├── post_train.py        # 合并 → GGUF → 量化 → 测试
 ├── deploy_ollama.py     # Ollama Modelfile 自动生成
@@ -101,6 +203,23 @@ python deploy_ollama.py
 | llama_cli | models/llama-b9222-bin-win-cpu-x64/llama-cli.exe | llama.cpp 推理工具路径 |
 
 ## 各脚本说明
+
+### check_persona.py — 人设一致性自检（2026-09-28 新增）
+
+- 比对四处人设是否逐字一致：角色卡 / `prepare_data.py` / `deploy_ollama.py` / 已生成的 `Modelfile`
+- 顺带统计 `train_data.json` 里有多少条用的是**当前**人设（换了人设它是不会自己变的）
+- 打印角色卡的关键词命中（舰长 / 位次）与规定的称呼，方便核对设定
+- 退出码：`0` 全一致 / `1` 人设来源不一致（改代码）/ `2` 产物过期（重跑脚本）
+
+### collect_corpus.py — 语料收集（zjy5 → zjy7）
+
+- 把 zjy5 抽出的台词搬到 `downloads/`，省去手动拷贝
+- **默认不覆盖**同名文件（语料一旦混进去就分不清来源）
+- 空文件直接报错拒绝 —— 拦住「上游 OCR 静默失败」这类问题
+- 过短/过长行、含「角色：」结构会给出警告，但**不删数据**
+- 来源信息写在 `.meta.json`，不污染正文
+
+详见上文「与 zjy5 的衔接」。
 
 ### prepare_data.py — 数据预处理
 

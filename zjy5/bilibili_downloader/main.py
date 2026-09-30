@@ -19,12 +19,14 @@ try:
     from .search_crawler import SearchCrawler, SearchDownloader
     from .channel_crawler import ChannelDownloader
     from .subtitle_extractor import SubtitleExtractor
+    from .harvest import SubtitleHarvester
 except ImportError:
     from downloader import BilibiliDownloader
     from cookie_manager import CookieManager
     from search_crawler import SearchCrawler, SearchDownloader
     from channel_crawler import ChannelDownloader
     from subtitle_extractor import SubtitleExtractor
+    from harvest import SubtitleHarvester
 
 try:
     from . import __version__
@@ -55,13 +57,14 @@ def print_menu():
     print("4. 下载频道/空间视频")
     print("5. 仅下载字幕")
     print("6. 配置设置")
-    print("7. 退出")
+    print("7. 批量字幕收割（UP 空间 / urls.txt 清单）")
+    print("8. 退出")
     print("=" * 50)
 
 
 def get_user_choice() -> str:
     """获取用户选择"""
-    return input("\n请输入选项 (1-7): ").strip()
+    return input("\n请输入选项 (1-8): ").strip()
 
 
 def download_single_video():
@@ -283,6 +286,36 @@ def extract_subtitle():
         print(f"\n提取出错：{e}")
 
 
+def harvest_subtitles_interactive():
+    """交互式：批量字幕收割"""
+    print("\n批量字幕收割：只取 B 站自带（CC / AI）字幕，不下载视频、不做 OCR")
+    target = input("请输入 UP 主空间 URL、视频 URL，或 urls.txt 清单路径：").strip()
+    if not target:
+        print("错误：不能为空")
+        return
+
+    cookie_manager = CookieManager()
+    cookie_path = cookie_manager.cookie_path if cookie_manager.is_logged_in() else None
+
+    output_dir = input("请输入输出目录 (直接回车使用默认 'downloads'): ").strip() or "downloads"
+
+    max_str = input("最多处理多少个视频 (直接回车=不限): ").strip()
+    max_count = int(max_str) if max_str.isdigit() else 0
+
+    probe_only = input("只探测命中率、不落盘？(y/n, 默认 n): ").strip().lower() == 'y'
+
+    harvester = SubtitleHarvester(
+        output_dir=output_dir,
+        cookie_path=cookie_path,
+        state_path=os.path.join(output_dir, "harvest_state.json"),
+        out_format="jsonl",
+    )
+    try:
+        harvester.run(target=target, max_count=max_count, probe_only=probe_only)
+    except Exception as e:
+        print(f"\n收割出错：{e}")
+
+
 def configure_settings():
     """配置设置"""
     print("\n配置选项:")
@@ -337,13 +370,15 @@ def main():
         elif choice == "6":
             configure_settings()
         elif choice == "7":
+            harvest_subtitles_interactive()
+        elif choice == "8":
             print("\n感谢使用，再见!")
             break
         else:
             print("\n无效的选项，请重新选择")
         
         # 询问是否继续
-        if choice != "7":
+        if choice != "8":
             cont = input("\n按回车继续，输入 q 退出：").strip().lower()
             if cont == "q":
                 print("\n感谢使用，再见!")
@@ -425,6 +460,58 @@ def main_cli(args: Optional[list] = None):
         default=10,
         help="频道/搜索最多下载数量 (默认：10)"
     )
+
+    parser.add_argument(
+        "--max-count",
+        type=int,
+        default=0,
+        help="收割/播放列表最多处理多少个视频 (0=不限；不给则沿用 --max)"
+    )
+
+    parser.add_argument(
+        "--harvest",
+        metavar="URL|文件",
+        help="批量字幕收割：UP 主空间 URL、视频 URL，或一份 urls.txt 清单。"
+             "只取 B 站自带字幕，不下载视频、不做 OCR"
+    )
+
+    parser.add_argument(
+        "--urls-file",
+        metavar="文件",
+        help="配合 --harvest：一行一个 URL 的清单文件（# 开头为注释）"
+    )
+
+    parser.add_argument(
+        "--state",
+        default=None,
+        help="收割断点状态文件 (默认：<输出目录>/harvest_state.json)"
+    )
+
+    parser.add_argument(
+        "--harvest-format",
+        choices=["jsonl", "txt"],
+        default="jsonl",
+        help="收割输出格式：jsonl=汇总成一句一行的结构化文件（默认）；txt=一个视频一个文本文件"
+    )
+
+    parser.add_argument(
+        "--rate-limit",
+        type=float,
+        default=1.0,
+        help="收割时每个命中视频之间的间隔秒数 (默认：1.0)"
+    )
+
+    parser.add_argument(
+        "--probe-only",
+        action="store_true",
+        help="只探测有没有字幕（不取正文、不落盘），用来评估命中率"
+    )
+
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="收割时重试上次失败的条目（「无字幕」默认不重试）"
+    )
     
     parser.add_argument(
         "--order",
@@ -471,7 +558,10 @@ def main_cli(args: Optional[list] = None):
         cookie_manager.set_cookie(parsed_args.cookie)
     
     # 显式交互模式，或未提供任何任务参数时进入交互模式
-    if parsed_args.interactive or not (parsed_args.url or parsed_args.channel or parsed_args.search):
+    if parsed_args.interactive or not (
+        parsed_args.url or parsed_args.channel or parsed_args.search
+        or parsed_args.harvest or parsed_args.urls_file
+    ):
         main()
         return
     
@@ -482,6 +572,29 @@ def main_cli(args: Optional[list] = None):
     extractor = SubtitleExtractor(cookie_path=cookie_path, verify_ssl=verify_ssl)
     
     try:
+        # 批量字幕收割（最优先：它既不下载视频也不做识别，成本最低）
+        if parsed_args.harvest or parsed_args.urls_file:
+            state_path = parsed_args.state or os.path.join(
+                parsed_args.output, "harvest_state.json"
+            )
+            harvester = SubtitleHarvester(
+                output_dir=parsed_args.output,
+                cookie_path=cookie_path,
+                verify_ssl=verify_ssl,
+                state_path=state_path,
+                rate_limit=parsed_args.rate_limit,
+                out_format=parsed_args.harvest_format,
+            )
+            harvester.run(
+                target=parsed_args.harvest,
+                urls_file=parsed_args.urls_file,
+                max_count=parsed_args.max_count,
+                order=parsed_args.order,
+                probe_only=parsed_args.probe_only,
+                retry_failed=parsed_args.retry_failed,
+            )
+            return
+
         # 频道/UP 主空间下载
         if parsed_args.channel:
             channel_downloader = ChannelDownloader(
@@ -490,7 +603,7 @@ def main_cli(args: Optional[list] = None):
             )
             results = channel_downloader.download_by_url(
                 parsed_args.channel,
-                max_videos=parsed_args.max,
+                max_videos=parsed_args.max_count or parsed_args.max,
                 audio_only=parsed_args.audio_only,
                 order=parsed_args.order
             )
@@ -530,7 +643,10 @@ def main_cli(args: Optional[list] = None):
         if parsed_args.playlist:
             results = downloader.download_playlist(
                 parsed_args.url,
-                output_dir=parsed_args.output
+                output_dir=parsed_args.output,
+                # 合集动辄几十上百个视频，默认只下 10 个明显不够：
+                # 用 --max-count 50 之类的值覆盖它（0 或不给则沿用 --max）
+                max_videos=parsed_args.max_count or parsed_args.max
             )
             print(f"下载完成！共下载 {len(results)} 个视频")
         elif parsed_args.audio_only:
