@@ -17,25 +17,29 @@ python collect_corpus.py
 # 4. 生成多样化的用户提问（强烈建议 —— 见下方「gen_questions.py」）
 python gen_questions.py
 
-# 5. 生成训练数据
+# 5. 生成通用指令数据（防灾难性遗忘 —— 见下方「gen_general.py」）
+python gen_general.py
+
+# 6. 生成训练数据
 python prepare_data.py
 
-# 6. 训练 LoRA
+# 7. 训练 LoRA
 python train_lora.py
 
-# 7. 合并 + GGUF转换 + 量化 + 测试
+# 8. 合并 + GGUF转换 + 量化 + 测试
 python post_train.py --quant Q8_0
 
-# 8. 部署到 Ollama（可选）
+# 9. 部署到 Ollama（可选）
 python deploy_ollama.py
 ```
 
 或者一条命令跑完：
 
 ```bash
-python run_all.py                     # 失败即停；默认跳过 collect 与 questions
+python run_all.py                     # 失败即停；默认跳过 3 个可选步骤
 python run_all.py --with-collect      # 连语料收集一起跑
 python run_all.py --with-questions    # 连提问生成一起跑（需本地 Ollama）
+python run_all.py --with-general      # 连通用数据生成一起跑（需本地 Ollama）
 ```
 
 ---
@@ -132,6 +136,7 @@ python collect_corpus.py --dry-run
 ├── check_persona.py     # 人设一致性自检（训练/部署/线上/已生成数据是否同一份）
 ├── collect_corpus.py    # 收集 zjy5 的台词产物（zjy5 → zjy7 直通）
 ├── gen_questions.py     # 用本地 LLM 给每条台词生成多样化的用户提问
+├── gen_general.py       # 生成通用指令数据（防灾难性遗忘）
 ├── prepare_data.py      # 数据预处理
 ├── run_all.py           # 流水线编排（失败即停）
 ├── train_lora.py        # LoRA 训练（支持断点续训）
@@ -172,6 +177,7 @@ python collect_corpus.py --dry-run
 | data_path | train_data.json | 生成的训练数据文件（prepare_data.py 输出 / train_lora.py 输入） |
 | max_seq_length | 1024 | 最大序列长度（提升以支持多轮对话） |
 | max_assistant_len | 200 | **单条回复的字数上限**，超长台词会被按句切分（见下） |
+| general_data_ratio | 0.2 | **通用指令数据的混入比例**（防灾难性遗忘）；设 0 关闭 |
 
 > 配置中的相对路径统一以项目根目录（`config_utils.PROJECT_ROOT`）为基准解析，
 > 因此可在任意工作目录下运行脚本。
@@ -292,6 +298,38 @@ python gen_questions.py --dry-run    # 只看还差多少
 > ⚠️ 模型要传 **`think: false`**（Qwen3.5 默认开思考模式，token 全花在
 > `Thinking Process:` 上；prompt 里加 `/no_think` 无效）。
 > 默认用 `qwen3.5:9b-gguf`（5.7 GB，100% 进显存，96 tok/s）。
+
+### gen_general.py — 生成通用指令数据（防灾难性遗忘）
+
+训练集原本几乎全是角色数据。**纯角色数据微调 2 轮后，模型会「问啥都往角色上拐」**：
+常识问题、写作、讲道理全用角色语气糊过去，基础指令跟随能力退化。
+这就是灾难性遗忘。
+
+本脚本用本地 LLM 生成通用问答对，由 `prepare_data.py` 按比例混入：
+
+```bash
+python gen_general.py --count 200   # 先小批量看质量
+python gen_general.py               # 默认 1000 条（实测 1204 条用 10.6 分钟）
+python gen_general.py --dry-run     # 只看已有多少
+```
+
+- **8 个类别轮换**避免同质化：常识 / 概念解释 / 生活建议 / 写作辅助 /
+  学习工作 / 情感人际 / 推理计算 / 创意点子
+- 混入比例由 `train_config.json` 的 `data.general_data_ratio` 控制（默认 **0.2**）
+- 同样**断点续跑**（每批存盘）；`general_data.json` 缺失时只告警不报错
+
+> ⚠️ **关键设计决定：通用数据沿用同一个角色 system**，而不是换成
+> 「你是一个有用的助手」。理由 —— **线上推理时 system 永远是角色卡**，
+> 所以要治的是「在人设之下拿角色语气把常识问题糊过去」，
+> 而不是教它「换个身份时该怎么答」（那种场景根本不会出现）。
+
+> ⚠️ 通用答案也会过**长度红线**（`split_long_text`）—— 否则会出现
+> 超过 200 字的样本，和角色数据「绝对禁止超过 200 字」自相矛盾。
+
+> 💡 没用现成的 `alpaca-gpt4-data-zh`：它的 license 是 **CC BY-NC 4.0（仅非商用）**，
+> 且文件名不稳定。本地生成无授权问题、不依赖网络。
+> 更「忠实」的做法是回放**基座模型自己的输出**（用 `models/base_model` 的
+> Qwen2.5-7B 回答这些问题），需要额外加载 15GB 模型，暂未做。
 
 ### prepare_data.py — 数据预处理
 
