@@ -8,7 +8,7 @@
   "data": {
     "raw_data_dir": "downloads",
     "data_path": "train_data.json",
-    "max_seq_length": 1024,
+    "max_seq_length": 2048,
     "max_assistant_len": 200,
     "general_data_ratio": 0.2
   },

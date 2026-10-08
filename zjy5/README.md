@@ -112,3 +112,22 @@ cd zjy5
 |------|------|
 | `downloads/` | 下载缓存的视频/音频，**不入库** |
 | `.venv/` | 虚拟环境，**不入库** |
+
+## 语料后处理工具（2026-10-08 新增）
+
+源视频往往采集完就删了，所以「重跑一遍流水线」通常不现实。
+下面两个脚本专门给**已经落盘的 txt** 做补救：
+
+| 脚本 | 作用 |
+|------|------|
+| `tag_speakers.py` | 给现有语料打**角色相似度**分（哪句像角色本人说的），输出 `speaker_tags/*.jsonl`；可另存过滤后的 txt |
+| `chibtaici/term_fix.py` | **OCR 术语校正** —— 把识别错的角色名改回来（芽依→芽衣、独心术→读心术…）；同时能审计疑似错写 |
+
+```bash
+cd zjy5
+python tag_speakers.py --dry-run              # 先看要处理多少句
+python tag_speakers.py --filtered-dir out     # 全量打标 + 输出过滤后语料
+python -m chibtaici.term_fix                  # 审计 OCR 错写
+```
+
+详见 `chibtaici/README.md` 的「语气打标」与「OCR 术语校正」两节。

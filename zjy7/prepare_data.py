@@ -369,26 +369,80 @@ def parse_dialogue(fp):
         elif len(line) > 3 and not line.startswith('---'):
             ds.append({"role": "旁白", "content": line})
     return ds
-def dialogue_samples(ds, target="爱莉希雅"):
+# 多轮样本最多往回取几轮上下文。
+# 线上（zjy9）默认带 20 条历史；这里取 8 是为了在 max_seq_length=1024 下
+# 还能放下 system 人设 + 上下文（20 轮会逼近上限）。
+_MAX_CTX_TURNS = 8
+
+# 游戏 UI 伪台词（「（选项：…」「(继续)」等），不是角色说的话
+_UI_ARTIFACT = re.compile(r"^[（(]")
+
+
+def dialogue_samples(ds, target="爱莉希雅", max_ctx_turns=None):
+    """把对话型语料转成**真正的多轮**样本。
+
+    【为什么旧实现不行】
+    旧版把上下文**拍平成一个字符串**塞进 user 字段：
+        user = "爱莉希雅：…\\n芽衣：…\\n爱莉希雅：…"
+    模型学到的是「看到一段带角色名的文字就接话」。但线上（zjy9）喂的是
+    **真正的多轮 messages**（默认带 20 条历史）—— **训练/推理形态不匹配**，
+    这是长对话里人设崩的主因。
+
+    【新实现】按轮次切窗，组成标准的
+        system / user / assistant / user / … / assistant
+    结构，让模型训练时就见到和推理时一样的形状。
+
+    【为什么 user 侧不带「角色：」前缀】
+    线上 user 侧永远是玩家（舰长），所以把「对方说的话」统一映射成 user。
+    保留前缀的话，模型可能学着在自己的回复里也带前缀。
+    多说话人场景（`2.txt` 里有 7 个说话人）会把连续的 user 轮**合并**，
+    保证严格交替。
+
+    ⚠️ 依赖 `train_lora.py` 的 loss 掩码不变量（prompt 必须是 full 的严格前缀）——
+    这条已在 2026-09-30 修好（`msgs[:last_asst]`）。**先修掩码再加多轮数据**，
+    否则中间轮次的标签会错位。
+    """
+    if max_ctx_turns is None:
+        max_ctx_turns = _MAX_CTX_TURNS
+
+    # 1) 去掉旁白与游戏 UI 伪台词，然后合并相邻同角色行
     merged = []
     for d in ds:
-        if merged and merged[-1]["role"] == d["role"]:
+        role = d["role"]
+        if role == "旁白" or _UI_ARTIFACT.match(d["content"].strip()):
+            continue
+        if merged and merged[-1]["role"] == role:
             merged[-1]["content"] += " " + d["content"]
         else:
-            merged.append(d.copy())
+            merged.append({"role": role, "content": d["content"]})
+
     samples = []
-    for i in range(len(merged)):
-        if merged[i]["role"] != target or len(merged[i]["content"]) < 3: continue
-        # 多轮上下文样本（增加上下文窗口）
-        ctx = []
-        for j in range(max(0, i - 5), i):
-            if merged[j]["role"] != "旁白":
-                ctx.append(f"{merged[j]['role']}：{merged[j]['content']}")
-        user = "\n".join(ctx) if ctx else "（继续对话）"
-        # ⚠️ 合并相邻同角色行之后可能变得极长（实测有 7541 字的），
-        # 必须切开再生成样本，否则就是「教模型写连行 + 被 max_seq_length 截断」。
-        for piece in split_long_text(merged[i]["content"]):
-            samples.append(mk(user, piece))
+    for i, turn in enumerate(merged):
+        if turn["role"] != target:
+            continue
+
+        # 2) 往回找上下文窗口；起点若是 target 就后挪一轮，保证以 user 开头
+        start = max(0, i - max_ctx_turns)
+        if merged[start]["role"] == target:
+            start += 1
+        if start >= i:
+            continue          # 没有上下文 → 退化成单轮，交给 mono 路线
+
+        # 3) 组 messages；连续同角色合并，保证严格交替
+        msgs = [{"role": "system", "content": SYSTEM}]
+        for w in merged[start:i]:
+            role = "assistant" if w["role"] == target else "user"
+            if msgs[-1]["role"] == role:
+                msgs[-1]["content"] += "\n" + w["content"]
+            else:
+                msgs.append({"role": role, "content": w["content"]})
+
+        # 4) 目标台词按长度红线切开，每个片段各出一条样本
+        #    （浅拷贝前缀，避免多个样本共享同一批 dict）
+        for piece in split_long_text(turn["content"]):
+            prefix = [dict(m) for m in msgs]
+            samples.append({"messages": prefix + [
+                {"role": "assistant", "content": piece}]})
     return samples
 
 # ============ 改进的台词匹配：加权打分系统 ============
@@ -537,29 +591,56 @@ def mono_samples(sentences):
     return samples
 
 # ============ 数据质量校验 ============
+def _last_assistant(msgs):
+    """取最后一条 assistant 消息的内容（多轮样本的「要学的回复」）。"""
+    for m in reversed(msgs):
+        if m["role"] == "assistant":
+            return m["content"]
+    return ""
+
+
 def validate_samples(samples):
+    """自检样本结构。
+
+    ⚠️ 不能假设样本是固定的三轮 `system/user/assistant` ——
+    对话型语料会产出**真正的多轮**样本（`system/user/assistant/user/…/assistant`）。
+    旧版硬断言 `len(msgs) != 3` 并把长度检查写死成 `msgs[2]`，
+    加了多轮数据之后会把每一条都误报成「消息数不是3」+「回复过短」。
+    """
     issues = []
     seen = set()
     for i, s in enumerate(samples):
         msgs = s["messages"]
-        # 检查结构
-        if len(msgs) != 3:
-            issues.append(f"样本 {i}: 消息数不是3")
+        # 结构：system 开头，最后一条必须是 assistant，且 user/assistant 交替
+        if msgs[0]["role"] != "system":
+            issues.append(f"样本 {i}: 首条不是 system")
             continue
-        if msgs[0]["role"] != "system" or msgs[1]["role"] != "user" or msgs[2]["role"] != "assistant":
-            issues.append(f"样本 {i}: 角色顺序错误")
-        # 检查内容长度
-        if len(msgs[2]["content"]) < 2:
+        if msgs[-1]["role"] != "assistant":
+            issues.append(f"样本 {i}: 末条不是 assistant")
+            continue
+        body = msgs[1:]
+        expect = "user"
+        for m in body:
+            if m["role"] != expect:
+                issues.append(f"样本 {i}: 角色未交替（期望 {expect}，实际 {m['role']}）")
+                break
+            expect = "assistant" if expect == "user" else "user"
+
+        reply = _last_assistant(msgs)
+        if len(reply) < 2:
             issues.append(f"样本 {i}: assistant 回复过短")
-        if len(msgs[1]["content"]) < 1:
-            issues.append(f"样本 {i}: user 输入为空")
-        # 检查是否包含 system prompt
+        # 每个 user 轮都要有内容
+        if any(not m["content"].strip() for m in body if m["role"] == "user"):
+            issues.append(f"样本 {i}: 有空的 user 输入")
         if "爱莉希雅" not in msgs[0]["content"]:
             issues.append(f"样本 {i}: system 中缺少角色名")
-        # 检查重复
-        key = (msgs[1]["content"], msgs[2]["content"])
+
+        # 重复：按「最后一条 user + 最后一条 assistant」判重
+        last_user = next((m["content"] for m in reversed(body)
+                          if m["role"] == "user"), "")
+        key = (last_user, reply)
         if key in seen:
-            issues.append(f"样本 {i}: 重复样本 (user={msgs[1]['content'][:30]})")
+            issues.append(f"样本 {i}: 重复样本 (user={last_user[:30]})")
         seen.add(key)
     return issues
 
@@ -584,7 +665,9 @@ def _report_lengths(samples):
     而训练集里的长度分布才是模型实际学到的东西 ——
     两者不一致时，模型会按训练集的习惯写，把角色卡的规则架空。
     """
-    lens = [len(s["messages"][2]["content"]) for s in samples]
+    # ⚠️ 用**最后一条 assistant**，不能用写死的 messages[2] ——
+    #    多轮样本里 index 2 是 user 轮，会量出错误长度并误报超限。
+    lens = [len(_last_assistant(s["messages"])) for s in samples]
     if not lens:
         return
     total = len(lens)

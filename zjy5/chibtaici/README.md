@@ -446,7 +446,7 @@ python main.py --video 番剧.mp4 --format jsonl \
     --speaker-filter --speaker-role 爱莉希雅 --speaker-threshold 3
 ```
 
-- 默认走本地 Ollama（`--ollama-url`，默认 `http://127.0.0.1:11434`），模型 `--speaker-model`（默认 `qwen3:8b`）
+- 默认走本地 Ollama（`--ollama-url`，默认 `http://127.0.0.1:11434`），模型 `--speaker-model`（默认 `qwen3.5:9b-gguf`）
 - 几千句也就十几分钟（按 `--speaker-batch` 20 句一批）
 - **Ollama 没开 / 模型回复解析不了 / 请求失败时，程序不会丢数据**：
   提示一句、跳过打分、句子全部保留。宁可多留几条，也不静默删数据
@@ -454,6 +454,61 @@ python main.py --video 番剧.mp4 --format jsonl \
 
 > ⚠️ 访问本机 Ollama **必须绕开系统代理**，否则代理会把 `127.0.0.1` 的请求也接走，
 > 表现为莫名其妙的 502。代码里已经用空 `ProxyHandler` 处理了。
+
+> ⚠️⚠️ **默认模型必须指向本机确实装了的模型**。
+> 原来写的是 `qwen3:8b`，但本机从未安装 —— 而本模块的失败模式是
+> 「**静默跳过打分、不报错**」（设计如此），所以**跑完完全看不出问题**，
+> 只会发现结果里没有 `speaker_score`。已改成 `qwen3.5:9b-gguf`。
+> 换模型前先用 `check_available()` 探一下。
+
+> ⚠️ **必须传 `think: false`**（已加）。Qwen3.5 默认开思考模式，实测
+> 20 句一批要 **27 秒**（本该 2.9 秒），而且思考文本混进输出会让 JSON 解析失败。
+> **prompt 里加 `/no_think` 是无效的**，只有 API 参数管用。
+
+### 给**已落盘**的语料补打标：`tag_speakers.py`
+
+`main.py` 的打标是采集流水线内部的一步，需要重跑 OCR。
+但源视频往往已经删了 —— 这时用 `zjy5/tag_speakers.py` 直接给**现有的 txt** 补打标：
+
+```bash
+python tag_speakers.py --dry-run           # 只看要处理多少句
+python tag_speakers.py --limit 300         # 小批量验证
+python tag_speakers.py                     # 全量
+python tag_speakers.py --filtered-dir out  # 额外输出过滤后的 txt
+```
+
+- 输出 `speaker_tags/<原名>.jsonl`（每行 `{"text","speaker_score","file"}`）
+- 会先把超长行按标点切开再打分（否则「整屏连行 blob」会被当成一句打一个分，毫无意义）
+- 最后打印**分数分布**和「像 / 不像」的条数，一眼看出语料纯度
+
+---
+
+## OCR 术语校正（`term_fix.py`）
+
+实测 OCR 把角色名识别错得很厉害，而且**下游很难修**（下游只看到「芽依」，
+不知道正确的是「芽衣」，只能猜）。采集端有原图和时间点，才是修的地方。
+
+| 正确 | 次数 | 错写 | 次数 |
+|------|------|------|------|
+| 芽衣 | 771 | 芽依 | 43 |
+| 读心术 | 6 | **独心术** | **7** ← 错的多过对的 |
+| 千劫 | 77 | 千吉 / 千杰 | 20 / 48 |
+| 伊甸 | 103 | 依电 | 9 |
+| 梅比乌斯 | — | 美比乌斯 | 12 |
+
+```bash
+python -m chibtaici.term_fix            # 审计语料里的错写
+python -m chibtaici.term_fix <目录>      # 指定目录
+```
+
+- `fix_terms(text)` —— 按 `KNOWN_ERRORS` 做替换，**只改实测确认过的**
+- `find_suspicious(texts)` —— **只报告**疑似错写，供人工确认后加进表里
+- `audit_corpus(texts)` —— 打印已确认错写的次数 + 疑似清单
+
+> ⚠️ **刻意不做自动模糊纠正**（编辑距离 ≤1 就改）。实测那样会产生**大量误报**：
+> `或者→律者`、`成长/很长/擅长→舰长`、`千万→千劫`、`英雄/英杰→英桀`……
+> 分不清就会把**正确文本改坏**，那比不改更糟。
+> 所以流程是「**报告 → 人工确认 → 加进表**」，不是「自动猜」。
 
 ---
 

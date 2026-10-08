@@ -26,7 +26,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 __all__ = ["LlmSpeakerFilter", "DEFAULT_ROLE", "DEFAULT_MODEL", "build_prompt"]
 
 DEFAULT_ROLE = "爱莉希雅"
-DEFAULT_MODEL = "qwen3:8b"
+# ⚠️ 这个默认值必须指向**本机确实装了的**模型。
+# 原来写的是 `qwen3:8b`，但本机从未安装它 —— 而本模块的失败模式是
+# 「提示一句、跳过打分、句子全部保留」（设计如此：宁可不打分也不丢数据），
+# 所以**跑完不会报错**，只会发现结果里没有 `speaker_score`。
+# 本机装的是 `qwen3.5:9b-gguf`（5.7GB，100% 进显存，96 tok/s）。
+DEFAULT_MODEL = "qwen3.5:9b-gguf"
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 
 _PROMPT_TEMPLATE = """你是动漫台词筛选助手。下面是某段视频里识别出的台词，已编号。
@@ -107,7 +112,16 @@ class LlmSpeakerFilter:
             "model": self.model,
             "prompt": build_prompt(self.role, texts),
             "stream": False,
-            "options": {"temperature": 0},
+            # ⚠️ 必须显式关掉思考模式：Qwen3.5 默认会把 token 全花在
+            #    "Thinking Process:" 上 —— 实测 20 句一批要 27 秒（本该 2 秒），
+            #    而且思考文本混进输出会让 JSON 解析失败。
+            #    注意：prompt 里加 /no_think 是**无效**的，只有这个参数管用。
+            "think": False,
+            "options": {
+                "temperature": 0,
+                # 每句只要一个分数（约 8 token），留 3 倍余量足够
+                "num_predict": max(64, len(texts) * 24),
+            },
         }
         request = urllib.request.Request(
             f"{self.base_url}/api/generate",

@@ -81,13 +81,29 @@ def find_src(explicit: str | None) -> Path | None:
     return None
 
 
+def _load_term_fixer():
+    """尝试加载 zjy5 的 OCR 术语校正表；拿不到就返回 None（不阻断流程）。"""
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT.parent / "zjy5" / "chibtaici"))
+        from term_fix import KNOWN_ERRORS, fix_terms
+        return fix_terms, KNOWN_ERRORS
+    except Exception:
+        return None, None
+
+
 def read_lines(path: Path) -> tuple[list[str], list[str]]:
     """读取台词并做基础清理。
 
     返回 (有效行, 警告信息)。
 
-    ⚠️ 只做**无损**清理（去首尾空白、丢空行），不做去重、不改内容 ——
+    ⚠️ 基本只做**无损**清理（去首尾空白、丢空行），不做去重 ——
     那些属于 prepare_data.py 的职责。两处都动数据会让问题无法定位。
+
+    **例外：OCR 术语校正**。这是唯一一处会改内容的清理，理由是：
+    采集端的 OCR 会把角色名认错（实测「芽衣」被写成「芽依」43 次、
+    「读心术」被写成「独心术」7 次），而**下游拿不到原图，只能猜**。
+    错名字教给模型是纯负收益，所以在入库这一步就修掉。
+    校正表在 `zjy5/chibtaici/term_fix.py`，只含**实测确认过**的错写。
     """
     warnings: list[str] = []
     try:
@@ -99,6 +115,28 @@ def read_lines(path: Path) -> tuple[list[str], list[str]]:
 
     lines = [ln.strip() for ln in raw.splitlines()]
     kept = [ln for ln in lines if ln]
+
+    # ---- OCR 术语校正（会改内容，见 docstring 的说明）----
+    fix_terms, known_errors = _load_term_fixer()
+    if fix_terms is not None:
+        fixed_lines, n_fixed, detail = [], 0, {}
+        for ln in kept:
+            new = fix_terms(ln)
+            if new != ln:
+                n_fixed += 1
+                for wrong in known_errors:
+                    c = ln.count(wrong)
+                    if c:
+                        detail[wrong] = detail.get(wrong, 0) + c
+            fixed_lines.append(new)
+        if n_fixed:
+            desc = "、".join(f"{w}→{known_errors[w]}×{c}"
+                            for w, c in sorted(detail.items(), key=lambda kv: -kv[1]))
+            warnings.append(f"OCR 术语校正：修正 {n_fixed} 行（{desc}）")
+        kept = fixed_lines
+    else:
+        warnings.append("未找到 zjy5 的 term_fix，跳过 OCR 术语校正"
+                        "（角色名可能带 OCR 错字）")
 
     # ---- 质量体检（只报不删）----
     too_short = [ln for ln in kept if len(ln) < WARN_MIN_LEN]

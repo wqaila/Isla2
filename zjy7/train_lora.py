@@ -105,6 +105,24 @@ def load_data(path, tokenizer, max_len):
         masks.append(full_enc["attention_mask"])
         labels.append(lbl)
 
+    # ⚠️ 防呆：prompt 若已吃满 max_length，标签会**整条被掩码** ——
+    #    这条样本等于没学到任何东西，而且**完全静默**（loss 照常下降，
+    #    不报错、不警告）。实测踩过这个坑：
+    #        system 人设 999 token + max_seq_length=1024
+    #        → 留给对话只有 25 token
+    #        → 单轮 18% 的样本、多轮 100% 的样本全部无效
+    #    加多轮样本之前这个坑一直没暴露，因为三轮样本碰巧还能挤出几个 token。
+    empty_label = sum(1 for l in labels if l and all(t == -100 for t in l))
+    if empty_label:
+        ratio = empty_label / max(len(labels), 1) * 100
+        logging.warning(
+            f"⚠️ {empty_label}/{len(labels)} 条样本（{ratio:.0f}%）的标签被**完全掩码**，"
+            f"等于没学到东西！\n"
+            f"    最可能的原因：`max_seq_length`（{max_len}）太小 —— "
+            f"system 人设 + 上下文就把预算吃光了。\n"
+            f"    处理：调大 train_config.json 的 data.max_seq_length"
+            f"（实测 1024 → 2048 可让无效样本从 18% 降到 0%）")
+
     logging.info(f"有效样本: {len(ids)}, 跳过: {skipped}")
     return Dataset.from_dict({"input_ids": ids, "attention_mask": masks, "labels": labels})
 

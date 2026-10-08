@@ -213,6 +213,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只统计，不生成")
     ap.add_argument("--retry-failed", action="store_true",
                     help="把上次没生成成功的重跑一遍（默认自动包含）")
+    ap.add_argument("--prune", action="store_true",
+                    help="先清理缓存里「已不在语料」和「问法含 OCR 错写」的陈旧条目")
     args = ap.parse_args()
 
     batch_size = args.batch
@@ -220,6 +222,28 @@ def main():
     lines = collect_lines()
     cache = load_cache()
     cache["meta"]["model"] = args.model
+
+    # 清理陈旧缓存：语料改了（比如 OCR 术语校正）之后，旧 key 就再也命不中了，
+    # 留着只会让缓存无限膨胀；而且旧 key 的问法里可能带着已经修掉的错写。
+    if args.prune:
+        valid = set(lines)
+        stale = [k for k in cache["lines"] if k not in valid]
+        # 问法里带 OCR 错写的也一并清掉 —— 语料修了但缓存没修，
+        # 这些问法会把错名字教给模型（实测漏掉这条会残留「美比乌斯」）。
+        bad_q = []
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT.parent / "zjy5" / "chibtaici"))
+            from term_fix import KNOWN_ERRORS
+            for k, qs in cache["lines"].items():
+                if any(any(w in q for w in KNOWN_ERRORS) for q in qs):
+                    bad_q.append(k)
+        except Exception as e:
+            print(f"  （跳过问法错写检查：{e}）")
+        for k in set(stale) | set(bad_q):
+            del cache["lines"][k]
+        print(f"🧹 清理缓存: {len(stale)} 条陈旧 + {len(bad_q)} 条问法含错写")
+        save_cache(cache)
+
     todo = [ln for ln in lines if not cache["lines"].get(ln)]
     if args.limit:
         todo = todo[:args.limit]
