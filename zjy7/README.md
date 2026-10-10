@@ -178,6 +178,7 @@ python collect_corpus.py --dry-run
 | max_seq_length | 1024 | 最大序列长度（提升以支持多轮对话） |
 | max_assistant_len | 200 | **单条回复的字数上限**，超长台词会被按句切分（见下） |
 | general_data_ratio | 0.2 | **通用指令数据的混入比例**（防灾难性遗忘）；设 0 关闭 |
+| min_speaker_score | 3 | **语气打标阈值** —— 低于它的句子会被剔掉（去「人设污染」）；设 0 关闭 |
 
 > 配置中的相对路径统一以项目根目录（`config_utils.PROJECT_ROOT`）为基准解析，
 > 因此可在任意工作目录下运行脚本。

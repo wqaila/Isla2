@@ -288,6 +288,11 @@ def mk(user, assistant):
 # 被 MONO_RULES 匹配后原样变成一条训练样本。这类必须在生成阶段切开。
 MAX_ASSISTANT_LEN = 200
 
+# 语气打标的最低分（低于它就从训练数据里剔掉）。
+# 由 train_config.json 的 `data.min_speaker_score` 覆盖；设 0 关闭过滤。
+# 标签来自 `zjy5/tag_speakers.py`（1~5 分，3 = 不确定）。
+MIN_SPEAKER_SCORE = 3
+
 # 句末标点（中英文都收）——切长句时在这些位置断开
 _SENT_END = "。！？!?…；;"
 
@@ -405,16 +410,26 @@ def dialogue_samples(ds, target="爱莉希雅", max_ctx_turns=None):
     if max_ctx_turns is None:
         max_ctx_turns = _MAX_CTX_TURNS
 
+    # 语气打标过滤：剔掉「不像角色本人」的轮次。
+    # 放在合并之前 —— 合并会改内容，之后就对不上打标的 key 了。
+    drop = load_speaker_drop_set(MIN_SPEAKER_SCORE) if MIN_SPEAKER_SCORE > 0 else set()
+
     # 1) 去掉旁白与游戏 UI 伪台词，然后合并相邻同角色行
     merged = []
+    dropped = 0
     for d in ds:
         role = d["role"]
         if role == "旁白" or _UI_ARTIFACT.match(d["content"].strip()):
+            continue
+        if d["content"].strip() in drop:
+            dropped += 1
             continue
         if merged and merged[-1]["role"] == role:
             merged[-1]["content"] += " " + d["content"]
         else:
             merged.append({"role": role, "content": d["content"]})
+    if dropped:
+        logging.debug(f"对话路线：语气打标剔掉 {dropped} 轮")
 
     samples = []
     for i, turn in enumerate(merged):
@@ -514,6 +529,7 @@ _QUESTION_CACHE = None
 # mono 路线的命中统计（按文件累积，最后汇总打印，避免刷屏）
 _MONO_HIT = 0
 _MONO_MISS = 0
+_MONO_DROPPED = 0     # 被语气打标剔掉的片段数
 
 
 def load_question_cache():
@@ -567,15 +583,81 @@ def load_general_data():
     return out
 
 
+# ============ 语气打标过滤（剔掉「不像角色本人」的句子）============
+#
+# `zjy5/tag_speakers.py` 用本地 LLM 给每句打 1~5 分（像不像角色本人说的）。
+# 实测 6108 句里 **23.6% 判为「不像」** —— 那是其他角色的剧情台词、旁白、
+# 游戏 UI。留着就是**人设污染**：等于教模型「爱莉希雅会说这种话」，
+# 比数据少更糟。
+#
+# ⚠️ 两个要点：
+#   1. **按片段过滤，不按整行** —— 超长 blob 行里好句坏句混在一起，
+#      整行丢会把好的也丢掉。
+#   2. 标签文件在 `zjy5/speaker_tags/`（本地产物，**不入库**，含语料内容）。
+#      拿不到标签时**不过滤**，只告警 —— 不静默改变行为。
+_SPEAKER_DROP = None
+
+
+def load_speaker_drop_set(min_score=3):
+    """读 `zjy5/speaker_tags/*.jsonl`，返回「分数低于 min_score」的句子集合。
+
+    同时收录**原文**和**去掉「角色：」前缀后**的写法 ——
+    对话型语料在 `parse_dialogue` 里会被剥掉前缀，
+    两种形式都能命中才能两条路线都过滤到。
+    """
+    global _SPEAKER_DROP
+    if _SPEAKER_DROP is not None:
+        return _SPEAKER_DROP
+
+    tags_dir = PROJECT_ROOT.parent / "zjy5" / "speaker_tags"
+    drop = set()
+    n_total = n_drop = 0
+    try:
+        files = sorted(tags_dir.glob("*.jsonl"))
+        if not files:
+            raise FileNotFoundError(f"{tags_dir} 下没有 jsonl")
+        for fp in files:
+            for line in fp.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                text = (rec.get("text") or "").strip()
+                score = rec.get("speaker_score")
+                if not text or score is None:
+                    continue
+                n_total += 1
+                if score < min_score:
+                    n_drop += 1
+                    drop.add(text)
+                    # 剥掉「角色：」前缀后的形式也加进去
+                    m = re.match(r"^[^：:]{1,6}[：:]\s*(.+)$", text)
+                    if m and m.group(1).strip():
+                        drop.add(m.group(1).strip())
+        logging.info(f"语气打标：{n_total} 句，其中 {n_drop} 句低于 {min_score} 分"
+                     f"（{n_drop / max(n_total, 1) * 100:.1f}%）将被剔除")
+    except FileNotFoundError as e:
+        logging.warning(f"没有语气打标结果（{e}）—— **不做纯度过滤**。"
+                        f"要过滤先跑：cd zjy5 && python tag_speakers.py")
+    except Exception as e:
+        logging.warning(f"语气打标读取失败（{e}）—— 不做纯度过滤")
+
+    _SPEAKER_DROP = drop
+    return drop
+
+
 def mono_samples(sentences):
     cache = load_question_cache()
+    drop = load_speaker_drop_set(MIN_SPEAKER_SCORE) if MIN_SPEAKER_SCORE > 0 else set()
     samples = []
-    global _MONO_HIT, _MONO_MISS
+    global _MONO_HIT, _MONO_MISS, _MONO_DROPPED
     for raw in sentences:
         # ⚠️ 先切超长再配问题：OCR 会把整屏文字连成一行（实测有 7541 字的），
         # 那种长度既违反角色卡上限、又会被 max_seq_length 截断。
         # 问题按**片段自身**重新匹配 —— 否则切开后可能问不对题。
         for s in split_long_text(raw):
+            if s in drop:
+                _MONO_DROPPED += 1
+                continue
             questions = cache.get(s)
             if questions:
                 _MONO_HIT += 1
@@ -694,10 +776,14 @@ def main():
     # 默认取硬上限 200 —— 对齐角色卡的绝对规则；
     # 想更严（把软上限也守住）就在 train_config.json 里设
     # `"data": { "max_assistant_len": 120 }`。
-    global MAX_ASSISTANT_LEN
+    global MAX_ASSISTANT_LEN, MIN_SPEAKER_SCORE
     MAX_ASSISTANT_LEN = int(cfg["data"].get("max_assistant_len", MAX_ASSISTANT_LEN))
     logging.info(f"assistant 长度上限: {MAX_ASSISTANT_LEN} 字"
                  f"（train_config.json 的 data.max_assistant_len）")
+
+    MIN_SPEAKER_SCORE = int(cfg["data"].get("min_speaker_score", MIN_SPEAKER_SCORE))
+    logging.info(f"语气打标阈值: {MIN_SPEAKER_SCORE} 分"
+                 + ("（0 = 关闭纯度过滤）" if MIN_SPEAKER_SCORE <= 0 else ""))
 
     # 人设来自哪里必须留痕：训练数据一旦生成，就分不清用的是哪份人设了
     logging.info(f"人设来源: {SYSTEM_SOURCE}")
@@ -758,6 +844,9 @@ def main():
         all_samples.extend(s)
 
     logging.info(f"mono 路线：{_MONO_HIT} 句用生成问法、{_MONO_MISS} 句用模板问句")
+    if _MONO_DROPPED:
+        logging.info(f"语气打标：mono 路线剔掉 {_MONO_DROPPED} 句"
+                     f"「不像角色本人」的台词")
 
     # ---- 混入通用指令数据（防灾难性遗忘）----
     #
