@@ -529,6 +529,13 @@ def main_cli(args: Optional[list] = None):
         "--cookie",
         help="Bilibili Cookie"
     )
+
+    parser.add_argument(
+        "--check-cookie",
+        dest="check_cookie",
+        action="store_true",
+        help="联网检查 Cookie 是否还有效，然后退出（不下载任何东西）"
+    )
     
     parser.add_argument(
         "--no-check-certificate",
@@ -551,6 +558,21 @@ def main_cli(args: Optional[list] = None):
         return
     
     verify_ssl = not parsed_args.no_check_certificate
+    
+    # Cookie 有效性预检：联网问一次服务端，检查完即退出。
+    # ⚠️ 不能用 is_logged_in() 代替 —— 那只查文件里有没有 SESSDATA 字符串，
+    #    而 Cookie 过期后 B 站接口**不报错**，只会静默返回未登录结果。
+    if parsed_args.check_cookie:
+        cookie_manager = CookieManager()
+        ok_flag, message = cookie_manager.check_cookie_online()
+        print(f"{'✓' if ok_flag else '✗'} {message}")
+        if not ok_flag:
+            print("\n提示：Cookie 过期/无效时，B 站接口不会报错，只会静默返回未登录"
+                  "结果，")
+            print("      表现为「字幕全都探测不到」「视频信息取不到」—— 看起来像"
+                  "风控或接口改版。")
+            print("      重新获取：python -m bilibili_downloader --interactive")
+        return 0 if ok_flag else 1
     
     # 设置 Cookie
     if parsed_args.cookie:

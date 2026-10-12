@@ -6,9 +6,11 @@ Cookie 管理模块
 支持手动和自动获取 Bilibili Cookie
 """
 
+import json
 import os
 import time
-from typing import Dict, List
+import urllib.request
+from typing import Dict, List, Tuple
 
 
 class CookieManager:
@@ -146,6 +148,80 @@ class CookieManager:
                 print(f"读取 Cookie 失败：{e}")
         return cookies
     
+    @staticmethod
+    def _build_opener():
+        """绕开系统代理：本机请求 B 站不该走系统代理。
+
+        ⚠️ 同 `zjy9/server/ollama_client` 的教训（没关 `trust_env` 时
+        系统代理会把**本机**请求也劫持，报错完全看不出原因）：
+        `urllib` 默认会读 `http_proxy` 等环境变量，这里显式清空。
+        """
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def check_cookie_online(self, opener=None, timeout: int = 15) -> Tuple[bool, str]:
+        """联网检查 Cookie **是否还有效**（返回 ``(ok, 说明)``）。
+
+        【为什么需要它】
+        `is_logged_in()` 只做**本地**判断（文件里有没有 `SESSDATA` 这个字符串），
+        它**证明不了 Cookie 还有效**。而 Cookie 过期后 B 站接口**不报错**，
+        只是静默返回未登录结果 —— 表现为「字幕全都探测不到」，
+        看起来像风控或接口改版，很难联想到是 Cookie 过期。
+
+        【为什么要把「网络故障」和「Cookie 失效」分开】
+        两者都返回 `False`，但**提示完全不同**：
+        网络不通时让用户去重新登录是白费功夫，而且会掩盖真实问题。
+        所以网络异常的消息里**不出现「失效」字样**。
+
+        :param opener: 可注入（测试用），需提供 ``open(url, timeout=)``
+        :param timeout: 单次请求超时
+        """
+        if not os.path.exists(self.cookie_path):
+            return False, f"Cookie 文件不存在：{self.cookie_path}"
+
+        cookies = self.get_cookie_dict()
+        if "SESSDATA" not in cookies:
+            return False, ("Cookie 里没有 SESSDATA —— 这个文件多半只是"
+                           "游客标识，不是登录凭据")
+
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        req = urllib.request.Request(
+            "https://api.bilibili.com/x/web-interface/nav",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36",
+                "Referer": "https://www.bilibili.com",
+                "Cookie": cookie_str,
+            },
+        )
+
+        opener = opener or self._build_opener()
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            # ⚠️ 措辞刻意避开「失效」：这是网络问题，不是凭据问题
+            return False, f"网络/请求失败，无法确认 Cookie 状态：{e}"
+
+        code = data.get("code")
+        payload = data.get("data") or {}
+
+        if code == 0 and payload.get("isLogin"):
+            name = payload.get("uname") or "（未返回用户名）"
+            return True, f"Cookie 有效，当前登录：{name}"
+
+        # ⚠️ 只有这两种情况才算「Cookie 失效」：
+        #   ① 接口明确说未登录（-101）
+        #   ② code==0 但 isLogin 为假
+        # **不能**把「任何非 0 code 且 data 为空」都归为失效 ——
+        # 例如 -352 是**风控**，把风控说成「Cookie 过期」会让用户
+        # 白白去重新登录，而真实原因是请求被风控拦了。
+        if code == -101 or (code == 0 and not payload.get("isLogin")):
+            return False, ("Cookie 已失效 / 未登录（服务端这么说，"
+                           "文件里虽然有 SESSDATA 但已经过期了）")
+
+        return False, (f"接口返回错误：code={code} "
+                       f"{data.get('message') or ''}").strip()
+
     def clear_cookie(self):
         """清除 Cookie"""
         if os.path.exists(self.cookie_path):
