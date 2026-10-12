@@ -19,6 +19,7 @@ TEST_MODULES = [
     "test_text_clean.py",
     "test_merge_and_srt.py",
     "test_harvest.py",
+    "test_term_fix.py",
 ]
 
 
