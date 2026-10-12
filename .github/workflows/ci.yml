@@ -59,3 +59,13 @@ jobs:
             -not -path '*/lora_env/*' -not -path '*/llama.cpp/*' \
             -not -path '*/__pycache__/*' \
             -print0 | xargs -0 python -m py_compile
+
+      - name: zjy5 采集工具 · 离线测试
+        # 纯标准库，不需要 torch / paddle / cv2 / 网络。
+        # 用系统 python 而非 zjy5/.venv —— venv 不入库，CI 上不存在。
+        working-directory: zjy5
+        run: python tests/run_tests.py
+
+      - name: zjy7 数据流水线 · 离线测试
+        working-directory: zjy7
+        run: python tests/run_tests.py
