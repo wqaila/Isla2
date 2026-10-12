@@ -99,11 +99,14 @@ python check_persona.py --json     # 机器可读
 `collect_corpus.py` 负责把前一环的产物搬到后一环：
 
 ```bash
-# 自动在 zjy5 下查找 role_lines.txt
+# 自动在 zjy5 下查找 role_lines.txt 或 downloads/subtitles/
 python collect_corpus.py
 
 # 显式指定（chibtaici 的 --output 产物）
 python collect_corpus.py --src ../zjy5/downloads/role_lines.txt
+
+# 目录模式：吃 harvest 的批量产物（一视频一 txt），自动合并
+python collect_corpus.py --src ../zjy5/downloads/subtitles/
 
 # 与已有语料并存（不覆盖）
 python collect_corpus.py --name elysia_ep01.txt
@@ -112,6 +115,18 @@ python collect_corpus.py --name elysia_ep01.txt
 python collect_corpus.py --dry-run
 ```
 
+**两种源形态**（2026-10-12 加目录模式）：
+
+| 形态 | 来源 | 行为 |
+|------|------|------|
+| 单文件 | `chibtaici --output` 的产物 | 直接搬 |
+| **目录** | `bilibili_downloader --harvest` 的 `downloads/subtitles/` | 合并所有**顶层** `.txt`，**按文件名排序**（保证可复现），每个文件的贡献记进 `.meta.json` |
+
+> ⚠️ 目录模式**只读顶层 `.txt`，不下钻子目录** —— 否则会把备份目录、
+> `speaker_filtered/` 之类的产物一起吞进来。
+> 加这个模式的原因是：harvest 与 collect_corpus 原先**各自能跑但拼不成流水线**
+> （前者输出一视频一文件，后者只认单个 `role_lines.txt`）。
+
 **它会做体检，拦住几种会一路传到训练集的问题**：
 
 | 检查 | 为什么重要 |
@@ -119,6 +134,7 @@ python collect_corpus.py --dry-run
 | 源文件为空 | ⚠️ 最关键。`prepare_data.py` **不会**因为少一个文件而报错，只会静默少生成一批样本，最后表现为「模型效果莫名变差」。空文件多半是上游 OCR 静默失败了 |
 | 行过短 / 过长 | 过短是 OCR 噪声，过长是多句被连成一行 |
 | 含「角色：」结构 | 会被 `parse_dialogue` 当对话解析，走另一条样本生成分支 |
+| **OCR 术语校正** | 唯一一处会**改内容**的清理。采集端 OCR 会把角色名认错（「芽衣」被写成「芽依」43 次、**「牙医」43 次**、「烛火」77 次…），而下游拿不到原图只能猜。校正表在 `zjy5/chibtaici/term_fix.py`，只含实测确认过的错写 |
 
 > 这些检查**只报警告、不删数据** —— 误删好数据的代价比留着坏数据大。
 > 语义处理（去重、改写）统一交给 `prepare_data.py`，
@@ -145,6 +161,7 @@ python collect_corpus.py --dry-run
 ├── data_stats.py        # 训练数据统计分析
 ├── evaluate.py          # 模型评估工具（perplexity + 角色一致性 + 多轮对话 + 脱角色检测）
 ├── requirements.txt     # 依赖清单
+├── tests/               # 离线测试（纯标准库，不需要 GPU / 大模型）
 ├── train_data.json      # 生成的训练数据
 ├── eval_data.json       # 独立评估集（与训练集隔离，用于 perplexity）
 ├── Modelfile            # Ollama 部署文件（由 deploy_ollama.py 生成）

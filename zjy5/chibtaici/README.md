@@ -206,7 +206,7 @@ python main.py --video 番剧.mp4 --format all   # txt + srt + jsonl
 |------|------|------|
 | `--speaker-filter` | 关 | 启用本地 LLM 语气打标，低分剔除 |
 | `--speaker-role` | `爱莉希雅` | 判定的目标角色 |
-| `--speaker-model` | `qwen3:8b` | Ollama 模型名 |
+| `--speaker-model` | `qwen3.5:9b-gguf` | Ollama 模型名（引用 `speaker_filter.DEFAULT_MODEL`） |
 | `--speaker-threshold` | `3` | 低于这个分剔除（1-5） |
 | `--speaker-batch` | `20` | 一次请求打标多少句 |
 | `--ollama-url` | `http://127.0.0.1:11434` | 本地 Ollama 地址 |
@@ -668,7 +668,14 @@ OCR 逐帧、语音识别逐段都是长任务，现在都会打印进度：
 
 **Q：`--speaker-filter` 报连不上 Ollama？**
 打标会**自动跳过、数据不丢**。想用就先起 Ollama 并拉个模型：
-`ollama pull qwen3:8b`。打分失败的句子会保留，只是没有 `speaker_score`。
+`ollama pull qwen3.5:9b-gguf`（即 `speaker_filter.DEFAULT_MODEL` 的值）。
+打分失败的句子会保留，只是没有 `speaker_score`。
+
+> ⚠️ **默认模型必须指向本机确实装了的那个** —— 这个模块的失败模式是
+> 「提示一句、跳过打分、句子全部保留」，**跑完不会报错**，
+> 用户只会发现结果里没有 `speaker_score`。改模型时改
+> `speaker_filter.DEFAULT_MODEL` 一处即可，CLI 默认值引用它
+> （见 `tests/test_cli_defaults.py` 的回归测试）。
 
 ---
 
