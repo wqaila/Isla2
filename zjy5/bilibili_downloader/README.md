@@ -143,6 +143,7 @@ python -m bilibili_downloader --interactive
 | `--order` | | 排序方式（pubdate/hot/view/totalrank/click/stow） |
 | `--interactive` | | 进入交互式模式 |
 | `--cookie` | | Bilibili Cookie |
+| `--check-cookie` | | **联网检查 Cookie 是否还有效**，然后退出（不下载任何东西） |
 | `--no-check-certificate` | | 跳过 HTTPS 证书校验（默认校验） |
 | `-v`, `--version` | `-v` | 显示版本信息 |
 
@@ -234,6 +235,21 @@ downloader.download_video(url)
 ---
 
 ## Cookie 设置
+
+### 先检查 Cookie 还有没有效（推荐第一步）
+
+```bash
+python -m bilibili_downloader --check-cookie
+```
+
+会联网问一次服务端，输出用户名或失败原因，**失败时退出码非 0**（可用于脚本判断）。
+
+> ⚠️ **为什么不能只看「文件里有没有 SESSDATA」**
+> Cookie 过期后 B 站接口**不报错**，只会**静默返回未登录结果** ——
+> 表现为「字幕全都探测不到」「视频信息取不到」，
+> 看起来像风控或接口改版，**很难联想到是 Cookie 过期**。
+> 所以有一个联网预检，把「凭据失效」和「网络不通」**分开报**：
+> 网络故障时不会说成「Cookie 失效」（否则你会白去重新登录）。
 
 ### 自动获取 Cookie
 

@@ -681,7 +681,7 @@ OCR 逐帧、语音识别逐段都是长任务，现在都会打印进度：
 
 ## 测试
 
-`tests/` 下 5 个脚本**全部离线**（不联网、不需要 GPU），直接跑：
+`tests/` 下 9 个脚本 / 70 个用例**全部离线**（不联网、不需要 GPU），直接跑：
 
 ```bash
 cd zjy5
@@ -695,6 +695,10 @@ cd zjy5
 | `test_harvest.py` | 批量收割：URL/清单解析、探测、断点续跑、jsonl 落盘 |
 | `test_term_fix.py` | OCR 术语校正：各错字群、级联替换、不过度替换、审计两种模式 |
 | `test_cli_defaults.py` | CLI 默认值与库常量一致（源码级断言，不 import `main.py` 的重依赖） |
+| `test_wbi.py` | **WBI 签名**：重排表、`wts`/`w_rid`、字符过滤、参数顺序无关、缓存 |
+| `test_channel_crawler.py` | **频道翻页**：空页/不满页停止、`max_count` 截断、保护上限、无重复 |
+| `test_cookie_manager.py` | **Cookie 有效性**：失效/网络故障分别报错、接口错误码、只读不改文件 |
+| `test_cli_exit_code.py` | **CLI 退出码契约**：✗ 必须非 0（子进程实测） |
 
 另外 `tests/smoke_ocr.py` 是**集成冒烟测试**（需要 paddleocr，会真跑一次 OCR）：
 它临时合成一段带字幕的小视频，验证「识别准确 + 跳帧生效 + 相同文本会合并」。

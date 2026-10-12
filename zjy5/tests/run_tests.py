@@ -6,7 +6,11 @@
     cd zjy5
     ./.venv/Scripts/python.exe tests/run_tests.py
 
-三个脚本各自独立（不是 pytest），任何一个失败都会让退出码非 0。
+各脚本独立（不是 pytest），任何一个失败都会让退出码非 0。
+
+⚠️ 除 `test_cli_exit_code.py` 会起子进程跑 `--version` / `--help`
+（以及一次 `--check-cookie`，它在无 cookie 文件时**不联网**）之外，
+其余全部是纯内存测试。
 """
 
 import importlib.util
@@ -21,6 +25,10 @@ TEST_MODULES = [
     "test_harvest.py",
     "test_term_fix.py",
     "test_cli_defaults.py",
+    "test_wbi.py",
+    "test_channel_crawler.py",
+    "test_cookie_manager.py",
+    "test_cli_exit_code.py",
 ]
 
 
