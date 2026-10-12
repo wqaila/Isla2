@@ -59,6 +59,10 @@ def find_src(explicit: str | None) -> Path | None:
     """定位 zjy5 的台词文件。
 
     按"最可能被用到"的顺序找，全部落空则返回 None。
+
+    ⚠️ `explicit` 可以是**目录**（见 `collect_from_dir`）：`harvest` 的产物是
+    `downloads/subtitles/<BV>.txt` 这种「一视频一文件」的形态，
+    直接吃目录比让用户先手工合并合理。
     """
     if explicit:
         p = Path(explicit)
@@ -74,11 +78,65 @@ def find_src(explicit: str | None) -> Path | None:
         PROJECT_ROOT.parent / "zjy5" / "chibtaici" / DEFAULT_SRC_NAME,
         PROJECT_ROOT.parent / "zjy5" / DEFAULT_SRC_NAME,
         PROJECT_ROOT.parent / "zjy5" / "downloads" / DEFAULT_SRC_NAME,
+        # harvest 的批量产物：一个视频一个文件
+        PROJECT_ROOT.parent / "zjy5" / "downloads" / "subtitles",
+        PROJECT_ROOT.parent / "zjy5" / "bilibili_downloader" / "downloads" / "subtitles",
     ]
     for c in candidates:
         if c.exists():
             return c.resolve()
     return None
+
+
+class DirSource:
+    """目录模式下单个源文件的处理结果。"""
+
+    __slots__ = ("path", "name", "line_count")
+
+    def __init__(self, path: Path, line_count: int):
+        self.path = path
+        self.name = path.name
+        self.line_count = line_count
+
+
+def collect_from_dir(dir_path: Path):
+    """目录模式：把目录下所有顶层 `.txt` 合并成一个台词列表。
+
+    返回 `(lines, warnings, files)`，其中 `files` 是 `DirSource` 列表
+    （保留「每个文件贡献了多少行」，便于日后回溯来源）。
+
+    【为什么要这个模式】
+    `harvest` 的产物是 `downloads/subtitles/<BV>.txt`（一视频一文件），
+    而原来的 `collect_corpus.py` 只认单个 `role_lines.txt` ——
+    两个工具各自能跑，却**拼不成流水线**。
+
+    【设计取舍】
+    - **只读顶层 `.txt`**，不下钻子目录：避免把备份目录、
+      `speaker_filtered/` 之类的产物一起吞进来。
+    - **按文件名排序**合并：同样的输入必须得到同样的输出，
+      否则每次跑出来的语料顺序不同，训练结果不可复现。
+    - **不静默跳过坏文件**：读不动的文件会进 warnings。
+    """
+    warnings: list[str] = []
+    files: list[DirSource] = []
+    txts = sorted(p for p in dir_path.iterdir()
+                  if p.is_file() and p.suffix.lower() == ".txt")
+    if not txts:
+        warnings.append(f"目录里没有 .txt 文件：{dir_path}")
+
+    all_lines: list[str] = []
+    for p in txts:
+        lines, warns = read_lines(p)
+        for w in warns:
+            warnings.append(f"[{p.name}] {w}")
+        files.append(DirSource(p, len(lines)))
+        all_lines.extend(lines)
+
+    empty = [f.name for f in files if f.line_count == 0]
+    if empty:
+        warnings.append(f"{len(empty)} 个文件没有有效行：{'、'.join(empty[:5])}"
+                        f"{'…' if len(empty) > 5 else ''}")
+    return all_lines, warnings, files
 
 
 def _load_term_fixer():
@@ -170,7 +228,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="默认源：" + DEFAULT_SRC_NAME + "（自动在 zjy5 下查找）",
     )
-    ap.add_argument("--src", help="源台词文件（chibtaici 的 --output 产物）")
+    ap.add_argument("--src", help="源台词文件**或目录**（harvest 的 downloads/subtitles/ 也行）")
     ap.add_argument("--name", help="输出到 zjy7/downloads 下的文件名（默认沿用源文件名）")
     ap.add_argument("--force", action="store_true", help="目标已存在时覆盖")
     ap.add_argument("--dry-run", action="store_true", help="只检查并打印，不写文件")
@@ -185,7 +243,7 @@ def main():
     print("zjy5 → zjy7 语料直通")
     print("=" * 64)
 
-    # ---- 1. 找源文件 ----
+    # ---- 1. 找源 ----
     src = find_src(args.src)
     if src is None:
         print("❌ 找不到台词文件。")
@@ -193,15 +251,27 @@ def main():
         print("    cd zjy5/chibtaici")
         print("    ../.venv/Scripts/python.exe main.py ../downloads/1.mp4 "
               "--output ../downloads/role_lines.txt")
-        print("\n或者用 --src 显式指定路径。")
+        print("\n或跑批量字幕收割（一个视频一个 txt）：")
+        print("    cd zjy5/bilibili_downloader")
+        print("    python -m bilibili_downloader --harvest <UP空间URL>")
+        print("    # 产物在 downloads/subtitles/，直接把它当 --src 传进来")
+        print("\n或者用 --src 显式指定路径（文件或目录）。")
         return 2
-    print(f"源文件：{src}")
-    print(f"  大小：{src.stat().st_size / 1024:.1f} KB")
 
-    # ---- 2. 读取与体检 ----
-    lines, warnings = read_lines(src)
+    # ---- 2. 读取与体检（文件 / 目录两种模式）----
+    is_dir = src.is_dir()
+    if is_dir:
+        print(f"源目录：{src}（目录模式：合并其中所有 .txt）")
+        lines, warnings, files = collect_from_dir(src)
+        print(f" 文件数：{len(files)}")
+        for f in files:
+            print(f"   - {f.name:<28} {f.line_count:>6} 行")
+    else:
+        print(f"源文件：{src}")
+        print(f"  大小：{src.stat().st_size / 1024:.1f} KB")
+        lines, warnings = read_lines(src)
+        files = []
     print(f" 有效行：{len(lines)}")
-
     if warnings:
         print("\n⚠️ 体检发现：")
         for w in warnings:
@@ -213,7 +283,11 @@ def main():
         return 1
 
     # ---- 3. 决定目标路径 ----
-    dest_name = args.name or src.name
+    if is_dir:
+        # 目录模式下 src.name 是目录名，直接用会得到没有扩展名的目标文件
+        dest_name = args.name or f"{src.name}_merged.txt"
+    else:
+        dest_name = args.name or src.name
     dest = dest_dir / dest_name
     print(f"\n目标文件：{dest}")
 
@@ -239,10 +313,14 @@ def main():
     meta = {
         "source": str(src),
         "source_name": src.name,
+        "source_kind": "dir" if is_dir else "file",
         "collected_at": datetime.now().isoformat(timespec="seconds"),
         "line_count": len(lines),
         "warnings": warnings,
     }
+    if is_dir:
+        # 目录模式保留每个文件的贡献，日后能回溯「这句台词来自哪个视频」
+        meta["files"] = [{"name": f.name, "line_count": f.line_count} for f in files]
     meta_path = dest.with_suffix(dest.suffix + ".meta.json")
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
