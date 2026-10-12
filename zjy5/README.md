@@ -51,7 +51,7 @@ python main.py --video ../downloads/xxx.mp4 --disable_voice
 
 ```bash
 cd zjy5
-./.venv/Scripts/python.exe tests/run_tests.py     # 三个离线脚本，不联网、不需要 GPU
+./.venv/Scripts/python.exe tests/run_tests.py     # 5 个离线脚本，40 个用例，不联网、不需要 GPU
 ```
 
 ---
@@ -131,6 +131,6 @@ python -m chibtaici.term_fix                  # 审计 OCR 错写（引导模式
 python -m chibtaici.term_fix --wide           # 找全新类型的混淆（噪声大）
 ```
 
-测试：`./.venv/Scripts/python.exe tests/run_tests.py`（4 个离线脚本，36 个用例）。
+测试：`./.venv/Scripts/python.exe tests/run_tests.py`（5 个离线脚本，40 个用例）。
 
 详见 `chibtaici/README.md` 的「语气打标」与「OCR 术语校正」两节。
