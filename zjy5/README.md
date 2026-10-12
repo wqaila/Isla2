@@ -121,13 +121,16 @@ cd zjy5
 | 脚本 | 作用 |
 |------|------|
 | `tag_speakers.py` | 给现有语料打**角色相似度**分（哪句像角色本人说的），输出 `speaker_tags/*.jsonl`；可另存过滤后的 txt |
-| `chibtaici/term_fix.py` | **OCR 术语校正** —— 把识别错的角色名改回来（芽依→芽衣、独心术→读心术…）；同时能审计疑似错写 |
+| `chibtaici/term_fix.py` | **OCR 术语校正** —— 把识别错的角色名改回来（芽依→芽衣、烛火→逐火、牙医→芽衣…）；同时能审计疑似错写。2026-10-12 全量复查后规则扩到 **31 条 / 578 处** |
 
 ```bash
 cd zjy5
 python tag_speakers.py --dry-run              # 先看要处理多少句
 python tag_speakers.py --filtered-dir out     # 全量打标 + 输出过滤后语料
-python -m chibtaici.term_fix                  # 审计 OCR 错写
+python -m chibtaici.term_fix                  # 审计 OCR 错写（引导模式）
+python -m chibtaici.term_fix --wide           # 找全新类型的混淆（噪声大）
 ```
+
+测试：`./.venv/Scripts/python.exe tests/run_tests.py`（4 个离线脚本，36 个用例）。
 
 详见 `chibtaici/README.md` 的「语气打标」与「OCR 术语校正」两节。
