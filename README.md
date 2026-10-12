@@ -79,24 +79,36 @@ python -m bilibili_downloader --help
 支持下载视频 / 音频、按频道或搜索结果批量下载、提取 AI 字幕（纯文本或 SRT）。
 内置 WBI 签名，用 Playwright 处理登录。
 
+**批量字幕收割（`--harvest`）**：给一个 UP 空间 URL 或 `urls.txt`，
+自动枚举视频并逐个探测字幕，命中的**直接抄文本** —— 不下载视频、不做 OCR、不做语音识别。
+带断点续跑（`harvest_state.json` 按 BV 号记状态，中断后重跑只补没做的）。
+先用 `--probe-only` 探命中率，再决定要不要跑识别。
+
 **② `chibtaici/` —— 视频台词识别**
 
-把视频里的台词抽成**纯文本**（无时间戳）：
+把视频里的台词抽成 **纯文本**（语料）、**SRT**（字幕）或 **jsonl**（句级溯源）：
 
 ```bash
 cd zjy5/chibtaici
-python main.py
+python main.py --video 番剧.mp4 --format all --skip-head 90 --skip-tail 90
 ```
 
 能力比"OCR"广 —— 同时走 **语音识别（whisper / faster-whisper）** 与
 **OCR（PaddleOCR）** 两条路，两者可以单独启用或同时用。
 
+采集质量上做了几件事：默认 `large-v3` + VAD + 专有名词提示词（人名准确率）；
+OCR 跳帧（字幕静止就不重跑 OCR，实测省掉 88% 调用）；文本规范化与长度红线；
+可选**语气打标**（本地 LLM 判断「像不像角色本人」，低分剔除）。
+
 > ⚠️ 代码的模块 docstring 一度声称"支持说话人分离 / 多人声识别"，
 > 但**实际并未实现**（`speaker_diarization` 参数只是个空壳，依赖里也没有
 > 任何声纹/分离库）。该 docstring 已更正，别按那个说法规划用途。
+> 轻量的**语气打标**（`--speaker-filter`）是可用的替代。
 
 > `chibtaici/main.py` 里的 `import whisper` 是**有意的能力探测**（缺失时降级到
 > OCR 路径），带 `# noqa: F401`，**不要当成无用导入删掉**。
+
+测试：`cd zjy5 && ./.venv/Scripts/python.exe tests/run_tests.py`（离线，三个脚本）。
 
 ### zjy6 —— Qwen/Gemma 多端本地部署
 
@@ -181,6 +193,22 @@ Windows + RTX 5070 + GPT-SoVITS 的动漫角色声线复刻与可控语音生成
 ---
 
 ## 最近更新
+
+**2026-09-28** —— zjy5 采集链路大改（批量字幕收割 → jsonl 结构化 → 识别质量）：
+
+- zjy5 新增 **`--harvest` 批量字幕收割**：UP 空间 / urls.txt → 自动枚举 + 逐个探测字幕，
+  命中的直接抄文本（不下载、不 OCR）；`harvest_state.json` 断点续跑；`--probe-only` 先看命中率；
+  频道枚举补了分页（`--max-count` 默认不再卡在 10）
+- zjy5 新增 **`--format jsonl`**：句级溯源（BV 号 + 时间点 + 通道 + 置信度），
+  与收割端的 jsonl 字段对齐，下游可以混着吃
+- zjy5 chibtaici：默认 whisper 模型 `base` → **`large-v3`**，VAD 切句 + 专有名词
+  `--hotwords`（人名准确率）；**OCR 跳帧**（字幕静止则跳过，实测省 88% 调用）；
+  合并策略改为**相同文本才合并**（不再把两条台词拼成连行）；文本规范化与长度红线；
+  可选 `--speaker-filter` **语气打标**（本地 LLM 判断「像不像角色本人」）
+- zjy5 新增 `tests/`：三个**离线**测试脚本（不需要网络 / GPU）+ 一个 OCR 集成冒烟测试
+- zjy7：人设改为**单一来源**（`persona.py` 读 `zjy9/server/characters/elysia.json`，
+  训练 `prepare_data.py` 与部署 `deploy_ollama.py` 共用），新增 `check_persona.py`
+  一致性自检（区分「人设来源不一致」与「产物过期」两种修法）
 
 **2026-09-24** —— 新增 `zjy10`（Anime Voice Lab）；zjy9 完成多轮功能补强：
 
