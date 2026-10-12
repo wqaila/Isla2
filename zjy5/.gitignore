@@ -2,6 +2,12 @@
 downloads/
 bilibili_downloader/downloads/
 
+# 语料与语气打标产物（含台词原文，属数据不属源码，不入库）
+# 对应 `.workbuddy-ai/tools/collect_files.py` 的 SKIP_DIRS；
+# 决策依据见 `zjy7/prepare_data.py` 第 596 行注释。
+speaker_tags/
+speaker_filtered/
+
 # Python 缓存
 __pycache__/
 *.pyc

@@ -4,6 +4,9 @@ merged_model/
 lora_output/
 gguf_output/
 downloads/
+# 备份目录（形如 downloads.bak-20261008/）：保留本地可回溯，
+# 但备份的同样是台词语料，不入库。
+downloads.bak-*/
 *.gguf
 *.safetensors
 *.bin
