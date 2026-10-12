@@ -106,7 +106,7 @@ from text_clean import (  # noqa: E402
     text_frequencies,
     write_jsonl,
 )
-from speaker_filter import LlmSpeakerFilter  # noqa: E402
+from speaker_filter import DEFAULT_MODEL, DEFAULT_ROLE, LlmSpeakerFilter  # noqa: E402
 
 
 class RoleLineExtractor:
@@ -1243,9 +1243,10 @@ def main():
     speaker = parser.add_argument_group("说话人过滤（本地 LLM 语气打标）")
     speaker.add_argument("--speaker-filter", action="store_true",
                          help="启用语气打标：让本地 LLM 判断每句像不像角色本人，低分剔除")
-    speaker.add_argument("--speaker-role", default="爱莉希雅", help="角色名（默认 爱莉希雅）")
-    speaker.add_argument("--speaker-model", default="qwen3:8b",
-                         help="Ollama 模型名（默认 qwen3:8b）")
+    speaker.add_argument("--speaker-role", default=DEFAULT_ROLE,
+                         help=f"角色名（默认 {DEFAULT_ROLE}）")
+    speaker.add_argument("--speaker-model", default=DEFAULT_MODEL,
+                         help=f"Ollama 模型名（默认 {DEFAULT_MODEL}）")
     speaker.add_argument("--speaker-threshold", type=int, default=3,
                          help="低于这个分剔除（1-5，默认 3）")
     speaker.add_argument("--speaker-batch", type=int, default=20,

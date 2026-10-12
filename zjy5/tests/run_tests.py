@@ -20,6 +20,7 @@ TEST_MODULES = [
     "test_merge_and_srt.py",
     "test_harvest.py",
     "test_term_fix.py",
+    "test_cli_defaults.py",
 ]
 
 
