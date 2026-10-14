@@ -164,6 +164,7 @@ python -m bilibili_downloader --interactive
 | `--danmaku` | 关 | 同时下载弹幕（**默认关** —— 弹幕是观众发言，属辅助信息而非训练语料） |
 | `--audio-format` | `mp3` | 音频格式：`mp3` / `m4a` / `opus` / `wav` / `flac` |
 | `--video-only` | 关 | **只要画面不要声音**（做 OCR / 视觉任务时有用） |
+| `--ffmpeg-location` | 自动探测 | ffmpeg 路径（PATH → 本 venv 的 imageio_ffmpeg 副本） |
 
 **画质档位**：`best` / `2160`(4K) / `1440`(2K) / `1080` / `720` / `480` / `360`
 
@@ -404,6 +405,21 @@ BV1xx411c7mD.mp4            ← 你想要的那个，不存在
 
 **安装 ffmpeg**：
 
+程序会**自动探测**，按这个顺序找：
+
+1. `--ffmpeg-location` 显式指定的路径
+2. 系统 `PATH`
+3. **本 venv 里 `imageio-ffmpeg` 包自带的副本**（很多机器上唯一有的那份）
+
+> 💡 **先确认是不是真没有** —— 很多环境（含本项目的 venv）里其实已经有一份，
+> 只是不在 PATH。跑一下即可看到实际会被用哪个：
+>
+> ```bash
+> python -c "import sys; sys.path.insert(0,'bilibili_downloader'); from downloader import find_ffmpeg; print(find_ffmpeg())"
+> ```
+
+真没有时再装：
+
 ```bash
 # Windows（推荐）
 winget install Gyan.FFmpeg
@@ -412,6 +428,9 @@ winget install Gyan.FFmpeg
 
 装好后**直接重跑即可** —— 已下载的分片会被复用，不会重下。
 若清单里有记录，可用 `--retry-downloads` 精确补齐。
+
+> ⚠️ **只装 `ffmpeg` 就够**，不需要 `ffprobe` ——
+> 合并音视频只用到 ffmpeg（ffprobe 仅用于探测格式信息，非必需）。
 
 ### Q: 字幕提取失败？
 
