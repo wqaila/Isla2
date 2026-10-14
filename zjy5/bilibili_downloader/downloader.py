@@ -6,6 +6,7 @@
 基于 yt-dlp 实现 Bilibili 视频/音频下载
 """
 
+import json
 import os
 import re
 import subprocess
@@ -19,6 +20,102 @@ try:
     from .download_failures import FailureStore
 except ImportError:  # 直接以脚本方式运行本文件时回退
     from download_failures import FailureStore
+
+# yt-dlp 自动安装的超时（秒）。没有超时的话网络卡住会无限挂起 ——
+# 实测踩过：沙箱里挂死了 3 个后台 job，连 kill 都要等。
+YTDLP_INSTALL_TIMEOUT = 180
+
+
+def parse_info_json(path: Optional[str]) -> Optional[Dict]:
+    """解析 yt-dlp 写出的 `.info.json`，取出对语料有用的元数据。
+
+    【为什么需要它】
+    `_build_download_args` 一直带着 `--no-clean-info-json`（即**写** info.json），
+    但**从来没人读** —— 数据一直躺在本地没人用。里面有几样对下游有价值：
+
+    - `upload_date`：做时间线语料时能按时间排序/筛选
+    - `chapters` / 分P 标题：区分同一 BV 的不同段落
+    - `description`：简介里常出现角色名与设定，可作为术语白名单线索
+
+    :return: 解析好的字典；文件不存在/坏 JSON/None 一律返回 None（不抛异常）
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        # 坏文件不能中断流程：info.json 只是附带的元数据
+        print(f"  ⚠️ info.json 解析失败（已跳过）：{e}")
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    upload_date = str(data.get("upload_date") or "")
+    readable = ""
+    if len(upload_date) == 8 and upload_date.isdigit():
+        readable = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+
+    chapters = []
+    for ch in (data.get("chapters") or []):
+        if isinstance(ch, dict) and ch.get("title"):
+            chapters.append({"title": ch["title"],
+                             "start": ch.get("start_time")})
+
+    return {
+        "video_id": data.get("id") or "",
+        "title": data.get("title") or "",
+        "uploader": data.get("uploader") or "",
+        "upload_date": upload_date,
+        "date": readable,
+        "duration": data.get("duration"),
+        "description": data.get("description") or "",
+        "chapters": chapters,
+    }
+
+
+def parse_danmaku_xml(path: Optional[str]) -> List[Dict]:
+    """解析 B 站弹幕 XML，返回 `[{"time","text","color","mode"}]`。
+
+    【定位说明：弹幕是**辅助信息**，不是训练语料】
+    弹幕是**观众**发言，不是角色台词 —— 直接拿来训 `zjy7` 是错的
+    （会把观众的语气学进角色里）。它真正的价值是：
+    - 观众对内容的即时反应，可用来理解「这个角色受欢迎吗」
+    - 弹幕里高频出现的角色名/梗，可作为 `term_fix.py` 的**错字线索**
+
+    格式：`<d p="时间,模式,字号,颜色,时间戳,池,用户,行ID">文本</d>`
+    """
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(path)
+    except Exception as e:
+        print(f"  ⚠️ 弹幕 XML 解析失败（已跳过）：{e}")
+        return []
+
+    items: List[Dict] = []
+    for node in tree.iter("d"):
+        p = node.get("p") or ""
+        parts = p.split(",")
+        if len(parts) < 4:
+            continue                       # 坏行跳过，不整份丢弃
+        try:
+            time_val = float(parts[0])
+            color = int(parts[3])
+        except (ValueError, TypeError):
+            continue
+        text = (node.text or "").strip()
+        if not text:
+            continue
+        items.append({
+            "time": time_val,
+            "text": text,
+            "color": color,
+            "mode": parts[1] if len(parts) > 1 else "",
+        })
+    return items
 
 
 @dataclass
@@ -46,7 +143,11 @@ class BilibiliDownloader:
                  retries: int = 3, fragment_retries: int = 3,
                  retry_sleep: float = 5, audio_quality: str = "0",
                  merge_output_format: str = "mp4",
-                 failure_path: str = None):
+                 failure_path: str = None,
+                 write_info_json: bool = True,
+                 download_danmaku: bool = False,
+                 audio_format: str = "mp3",
+                 video_only: bool = False):
         """
         :param output_dir: 下载输出目录
         :param cookie_path: Cookie 文件路径
@@ -64,6 +165,13 @@ class BilibiliDownloader:
         :param merge_output_format: 音视频合并后的容器格式
         :param failure_path: 失败清单文件路径（None 表示不记录）。
             批量下载时传入它，就能在重跑时用 `--retry-failed` 精确补齐
+        :param write_info_json: 是否写 `.info.json`（默认写）。里面有发布时间、
+            分P 标题、简介 —— 对做时间线语料与术语白名单有用
+        :param download_danmaku: 是否下载弹幕（**默认关**）。
+            弹幕是**观众**发言、不是角色台词，定位是辅助信息而非训练语料；
+            且体积可能很大，所以默认不开
+        :param audio_format: 音频格式（默认 mp3；也可 m4a/opus/wav）
+        :param video_only: 只要画面不要声音（做 OCR / 视觉任务时有用）
 
         ⚠️ 这些参数**默认值与改动前完全一致**（纯增量：原来全硬编码，
         用户改不了；现在可配但仍保持原行为）。
@@ -81,6 +189,10 @@ class BilibiliDownloader:
         self.merge_output_format = merge_output_format
         # 失败清单（None = 不记录，保持旧行为）
         self.failures = FailureStore(failure_path) if failure_path else None
+        self.write_info_json = write_info_json
+        self.download_danmaku = download_danmaku
+        self.audio_format = audio_format
+        self.video_only = video_only
         self.ytdlp_path = self._find_ytdlp()
         
         # 确保输出目录存在
@@ -121,20 +233,32 @@ class BilibiliDownloader:
         return None
     
     def check_ytdlp(self) -> bool:
-        """检查 yt-dlp 是否可用"""
+        """检查 yt-dlp 是否可用（缺失时尝试自动安装，但**必须带超时**）。
+
+        ⚠️ 2026-10-12 踩过：原来这里的 `subprocess.run(["pip", "install", ...])`
+        **没有 timeout**，网络卡住时会**无限挂起** ——
+        表现为「脚本没有任何输出、也永远不结束」。
+        所以现在带上超时，并且失败时给可执行的指引而不是干等。
+        """
         if self.ytdlp_path:
             return True
-        
-        print("yt-dlp 未安装，正在尝试安装...")
+
+        print("yt-dlp 未安装，正在尝试安装（最多等 180 秒）...")
         try:
             subprocess.run(
                 ["pip", "install", "-U", "yt-dlp"],
                 check=True,
-                capture_output=True
+                capture_output=True,
+                timeout=YTDLP_INSTALL_TIMEOUT,
             )
             self.ytdlp_path = "python -m yt_dlp"
             print("✓ yt-dlp 安装成功")
             return True
+        except subprocess.TimeoutExpired:
+            print(f"✗ 安装超时（超过 {YTDLP_INSTALL_TIMEOUT} 秒），已中止")
+            print("  可能是网络不通或 pip 源太慢。建议手动安装：")
+            print("    pip install -U yt-dlp")
+            return False
         except subprocess.CalledProcessError as e:
             print(f"yt-dlp 安装失败：{e}")
             print("\n请手动安装 yt-dlp:")
@@ -184,17 +308,31 @@ class BilibiliDownloader:
         if download_audio:
             args.extend([
                 "-x",  # 提取音频
-                "--audio-format", "mp3",
+                "--audio-format", str(self.audio_format),
                 "--audio-quality", str(self.audio_quality)
             ])
         else:
-            # 画质映射：将 quality 转换为 yt-dlp 的 format 选择器
+            # 画质映射：把档位名换成 yt-dlp 的 format 选择器。
+            # ⚠️ 档位要覆盖到 4K/2K —— 原来只有 best/1080/720/480，
+            #    想要 1440 或 2160 的人只能拿 best（可能下到很低画质）。
+            # `video_only` 时去掉 `+bestaudio`，只留画面（OCR/视觉任务用）。
+            heights = ("2160", "1440", "1080", "720", "480", "360")
             quality_format_map = {
                 "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
-                "720": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-                "480": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
             }
+            for h in heights:
+                if self.video_only:
+                    quality_format_map[h] = (
+                        f"bestvideo[height<={h}][ext=mp4]/best[height<={h}][ext=mp4]"
+                        f"/bestvideo[height<={h}]/best[height<={h}]"
+                    )
+                else:
+                    quality_format_map[h] = (
+                        f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]"
+                        f"/best[height<={h}][ext=mp4]/best[height<={h}]"
+                    )
+            if self.video_only:
+                quality_format_map["best"] = "bestvideo[ext=mp4]/bestvideo/best"
             format_selector = quality_format_map.get(quality, quality_format_map["best"])
             
             # 视频格式：按画质选择，优先 mp4
@@ -202,6 +340,15 @@ class BilibiliDownloader:
                 "-f", format_selector,
                 "--merge-output-format", str(self.merge_output_format)
             ])
+        
+        # 元数据：写出 .info.json（含发布时间 / 分P 标题 / 简介）。
+        # `--no-clean-info-json` 是让 yt-dlp 保留完整字段，不要精简掉。
+        if self.write_info_json:
+            args.extend(["--write-info-json", "--no-clean-info-json"])
+        
+        # 弹幕（默认关；它是观众发言，定位是辅助信息而非训练语料）
+        if self.download_danmaku:
+            args.extend(["--write-subs", "--sub-langs", "danmaku"])
         
         # 反爬策略
         args.extend([
@@ -212,7 +359,6 @@ class BilibiliDownloader:
             "--retries", str(self.retries),
             "--fragment-retries", str(self.fragment_retries),
             "--retry-sleep", str(self.retry_sleep),
-            "--no-clean-info-json",
             # 让进度按行输出。不加这个的话 yt-dlp 用 \r 原地刷新，
             # 被管道接住时会攒成一大块、最后才一起冒出来 ——
             # 表现就是「下载全程没有百分比，然后突然结束」。

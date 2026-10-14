@@ -32,6 +32,7 @@ TEST_MODULES = [
     "test_downloader_args.py",
     "test_download_failures.py",
     "test_retry_downloads.py",
+    "test_downloader_extras.py",
 ]
 
 

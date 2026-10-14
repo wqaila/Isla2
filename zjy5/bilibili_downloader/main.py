@@ -576,6 +576,23 @@ def main_cli(args: Optional[list] = None):
         "--failure-list", dest="failure_list", default=None,
         help="下载失败清单文件路径（默认 <输出目录>/failed_downloads.json）"
     )
+    tuning.add_argument(
+        "--no-info-json", dest="no_info_json", action="store_true",
+        help="不写 .info.json（默认写：含发布时间 / 分P 标题 / 简介）"
+    )
+    tuning.add_argument(
+        "--danmaku", dest="danmaku", action="store_true",
+        help="同时下载弹幕（默认关。弹幕是观众发言，属辅助信息而非训练语料）"
+    )
+    tuning.add_argument(
+        "--audio-format", dest="audio_format", default="mp3",
+        choices=["mp3", "m4a", "opus", "wav", "flac"],
+        help="音频格式（默认 mp3）"
+    )
+    tuning.add_argument(
+        "--video-only", dest="video_only", action="store_true",
+        help="只要画面不要声音（做 OCR / 视觉任务时有用）"
+    )
     
     parser.add_argument(
         "--no-check-certificate",
@@ -645,6 +662,10 @@ def main_cli(args: Optional[list] = None):
         merge_output_format=parsed_args.merge_format,
         failure_path=(parsed_args.failure_list
                       or os.path.join(parsed_args.output, "failed_downloads.json")),
+        write_info_json=not parsed_args.no_info_json,
+        download_danmaku=parsed_args.danmaku,
+        audio_format=parsed_args.audio_format,
+        video_only=parsed_args.video_only,
     )
 
     # `--retry-downloads`：把「上次下载失败的」变成本次的目标列表。
