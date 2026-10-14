@@ -319,25 +319,46 @@ def harvest_subtitles_interactive():
 def configure_settings():
     """配置设置"""
     print("\n配置选项:")
-    print("1. 设置 Cookie")
-    print("2. 查看 Cookie 状态")
+    print("1. 设置 Cookie（手动粘贴）")
+    print("2. 查看 Cookie 状态（联网校验）")
     print("3. 清除 Cookie")
     choice = input("请输入选项 (1-3): ").strip()
     
     cookie_manager = CookieManager()
     
     if choice == "1":
-        cookie_str = input("\n请输入 Cookie 字符串（形如 SESSDATA=xxx; bili_jct=yyy）: ").strip()
+        # ⚠️ 自动获取已屏蔽（需要弹浏览器手动登录，无界面环境不可用）。
+        #    这里只保留最可靠的一条路：手动粘贴 Cookie 字符串。
+        print("\n【手动粘贴 Cookie】")
+        print("获取方法：浏览器登录 B 站 → F12 → Network → 任意请求 → 复制请求头 Cookie")
+        print("（至少要有 SESSDATA；建议连 bili_jct、DedeUserID 一起带上）")
+        cookie_str = input("\n请粘贴 Cookie 字符串（形如 SESSDATA=xxx; bili_jct=yyy）: ").strip()
         if not cookie_str:
             print("Cookie 不能为空，已取消")
         else:
             # 真正写入 Cookie 文件
             cookie_manager.set_cookie(cookie_str)
+            # 写完**立刻联网验证** —— 否则用户不知道到底成没成，
+            # 而「文件里有字符串」并不等于「服务端认」（Cookie 可能已过期）
+            print("\n正在联网校验…")
+            ok_flag, message = cookie_manager.check_cookie_online()
+            print(f"{'✓' if ok_flag else '✗'} {message}")
+            if not ok_flag:
+                print("\n⚠️ 校验没通过。常见原因：")
+                print("   - 复制漏了 SESSDATA（它是关键字段）")
+                print("   - 复制的是**未登录状态**下的 Cookie")
+                print("   - Cookie 已经过期")
+                print("   可以再选一次 1 重新粘贴。")
     elif choice == "2":
-        if cookie_manager.is_logged_in():
-            print("Cookie 已设置且有效")
-        else:
-            print("未设置 Cookie 或 Cookie 已过期")
+        # ⚠️ 必须用**联网检查**，不能只靠 is_logged_in()。
+        #    is_logged_in() 只查文件里有没有 `SESSDATA` 字符串 ——
+        #    Cookie 过期后它照样返回 True，用户会看到「已设置且有效」
+        #    却在下载时处处失败（服务端其实返回 -101 未登录）。
+        ok_flag, message = cookie_manager.check_cookie_online()
+        print(f"\n{'✓' if ok_flag else '✗'} {message}")
+        if not ok_flag:
+            print("\n（文件里确实有 SESSDATA，但服务端不认 —— 这就是「看起来配了")
+            print("  其实是失效的」那种情况。请重新设置 Cookie：选 1，手动粘贴。）")
     elif choice == "3":
         cookie_manager.clear_cookie()
         print("Cookie 已清除")

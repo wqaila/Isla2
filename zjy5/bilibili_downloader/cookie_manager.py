@@ -44,54 +44,36 @@ class CookieManager:
         """)
     
     def get_cookies_from_playwright(self) -> bool:
-        """使用 Playwright 自动获取 Cookie"""
-        try:
-            from playwright.sync_api import sync_playwright
-            
-            print("\n正在启动浏览器...")
-            
-            with sync_playwright() as p:
-                # 启动浏览器
-                browser = p.chromium.launch(headless=False)
-                context = browser.new_context(
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                )
-                page = context.new_page()
-                
-                print("请手动登录 Bilibili 账号...")
-                print("登录完成后，请关闭浏览器窗口")
-                
-                # 访问 Bilibili
-                page.goto("https://www.bilibili.com", wait_until='networkidle')
-                
-                # 等待用户登录
-                while True:
-                    # 检查是否已登录
-                    cookie_names = [c['name'] for c in context.cookies()]
-                    if 'SESSDATA' in cookie_names:
-                        print("✓ 检测到登录状态")
-                        break
-                    
-                    time.sleep(1)
-                
-                # 等待用户确认
-                print("\n登录成功！正在获取 Cookie...")
-                time.sleep(3)  # 等待用户关闭浏览器
-                
-                # 获取 Cookie
-                cookies = context.cookies()
-                
-                # 保存到文件
-                self._save_cookies(cookies)
-                
-                browser.close()
-                
-                print(f"✓ Cookie 已保存到：{self.cookie_path}")
-                return True
-                
-        except Exception as e:
-            print(f"✗ 获取 Cookie 失败：{e}")
-            return False
+        """【已屏蔽】自动获取 Cookie —— 请改用手动粘贴。
+
+        ⚠️ **为什么屏蔽**（2026-10-12）：
+        这条路要**弹出可见浏览器窗口让用户手动登录**，在无 GUI / 沙箱环境
+        里根本走不通；而且本机**没装 Playwright 浏览器**，调用只会抛
+        `No module named 'playwright'` 或 `Executable doesn't exist`，看起来像 bug。
+
+        而且它本来就是个**死代码**：全项目**没有任何调用点**，
+        所以屏蔽它不会改变任何现有行为。
+
+        【改用哪种方式】
+        手动粘贴 Cookie 字符串（推荐，最可靠）：
+
+            cookie_manager.set_cookie("SESSDATA=xxx; bili_yct=yyy; DedeUserID=123")
+
+        或走交互菜单：「6. 配置设置」→「1. 设置 Cookie」。
+        获取方法：浏览器登录 B 站 → F12 → Network → 任意请求 → 复制请求头里的
+        Cookie 值（至少要有 `SESSDATA`）。
+
+        【为什么保留方法签名而不删掉】
+        1. 想启用的人能一眼看到这里曾经怎么实现；
+        2. 避免任何外部调用因 `AttributeError` 直接崩。
+        """
+        print("\n⚠️ 自动获取 Cookie 已屏蔽（那条路需要弹出浏览器手动登录，")
+        print("   在无界面环境里不可用）。请改用手动粘贴：")
+        print("\n   方法一：交互菜单 →「6. 配置设置」→「1. 设置 Cookie」")
+        print("   方法二：代码里调用 set_cookie(\"SESSDATA=xxx; bili_jct=yyy; ...\")")
+        print("\n   获取 Cookie：浏览器登录 B 站 → F12 → Network → 任意请求")
+        print("   → 请求头里的 Cookie 值（至少要有 SESSDATA）。")
+        return False
     
     def _save_cookies(self, cookies: List[Dict]):
         """保存 Cookie 到文件"""
