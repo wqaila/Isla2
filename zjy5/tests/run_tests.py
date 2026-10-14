@@ -29,6 +29,7 @@ TEST_MODULES = [
     "test_channel_crawler.py",
     "test_cookie_manager.py",
     "test_cli_exit_code.py",
+    "test_downloader_args.py",
 ]
 
 

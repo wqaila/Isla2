@@ -36,15 +36,41 @@ class BilibiliDownloader:
     """Bilibili 视频下载器（基于 yt-dlp）"""
     
     def __init__(self, output_dir: str = "downloads", cookie_path: str = None,
-                 verify_ssl: bool = True):
+                 verify_ssl: bool = True, resume: bool = True,
+                 sleep_interval: float = 3, max_sleep_interval: float = 10,
+                 retries: int = 3, fragment_retries: int = 3,
+                 retry_sleep: float = 5, audio_quality: str = "0",
+                 merge_output_format: str = "mp4"):
         """
         :param output_dir: 下载输出目录
         :param cookie_path: Cookie 文件路径
         :param verify_ssl: 是否校验 HTTPS 证书（默认校验，仅在明确要求时关闭）
+        :param resume: 断点续传（默认开）。大文件下到一半中断后，
+            重跑会**从断点继续**而不是从头下。极少数需要「重新下干净的」
+            场景可以关掉
+        :param sleep_interval: 每次请求之间的最小间隔秒数（反爬）
+        :param max_sleep_interval: 间隔的随机上限（yt-dlp 会在
+            [sleep_interval, max_sleep_interval] 之间随机取值）
+        :param retries: 单个视频的重试次数
+        :param fragment_retries: 分片（DASH 流）的重试次数
+        :param retry_sleep: 重试前的等待秒数
+        :param audio_quality: 音频质量（0 = 最好，9 = 最差）
+        :param merge_output_format: 音视频合并后的容器格式
+
+        ⚠️ 这些参数**默认值与改动前完全一致**（纯增量：原来全硬编码，
+        用户改不了；现在可配但仍保持原行为）。
         """
         self.output_dir = output_dir
         self.cookie_path = cookie_path
         self.verify_ssl = verify_ssl
+        self.resume = resume
+        self.sleep_interval = sleep_interval
+        self.max_sleep_interval = max_sleep_interval
+        self.retries = retries
+        self.fragment_retries = fragment_retries
+        self.retry_sleep = retry_sleep
+        self.audio_quality = audio_quality
+        self.merge_output_format = merge_output_format
         self.ytdlp_path = self._find_ytdlp()
         
         # 确保输出目录存在
@@ -149,7 +175,7 @@ class BilibiliDownloader:
             args.extend([
                 "-x",  # 提取音频
                 "--audio-format", "mp3",
-                "--audio-quality", "0"  # 最佳质量
+                "--audio-quality", str(self.audio_quality)
             ])
         else:
             # 画质映射：将 quality 转换为 yt-dlp 的 format 选择器
@@ -164,24 +190,30 @@ class BilibiliDownloader:
             # 视频格式：按画质选择，优先 mp4
             args.extend([
                 "-f", format_selector,
-                "--merge-output-format", "mp4"
+                "--merge-output-format", str(self.merge_output_format)
             ])
         
         # 反爬策略
         args.extend([
             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "--referer", "https://www.bilibili.com",
-            "--sleep-interval", "3",  # 请求间隔 3 秒
-            "--max-sleep-interval", "10",
-            "--retries", "3",
-            "--fragment-retries", "3",
-            "--retry-sleep", "5",
+            "--sleep-interval", str(self.sleep_interval),
+            "--max-sleep-interval", str(self.max_sleep_interval),
+            "--retries", str(self.retries),
+            "--fragment-retries", str(self.fragment_retries),
+            "--retry-sleep", str(self.retry_sleep),
             "--no-clean-info-json",
             # 让进度按行输出。不加这个的话 yt-dlp 用 \r 原地刷新，
             # 被管道接住时会攒成一大块、最后才一起冒出来 ——
             # 表现就是「下载全程没有百分比，然后突然结束」。
             "--newline",
         ])
+
+        # 断点续传：大文件下到一半中断后，重跑从断点继续而不是从头下。
+        # yt-dlp 原生支持（-c），之前只是没传 —— 一个 2GB 视频下到 1.5GB
+        # 挂掉就要重下，代价很大。
+        if self.resume:
+            args.append("--continue")
         
         # 仅在显式关闭校验时才跳过证书验证
         if not self.verify_ssl:

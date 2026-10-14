@@ -536,6 +536,37 @@ def main_cli(args: Optional[list] = None):
         action="store_true",
         help="联网检查 Cookie 是否还有效，然后退出（不下载任何东西）"
     )
+
+    # ---- 下载行为微调（原来这些全硬编码在 downloader.py 里，用户改不了）----
+    tuning = parser.add_argument_group("下载行为（反爬 / 重试 / 断点续传）")
+    tuning.add_argument(
+        "--no-resume", dest="no_resume", action="store_true",
+        help="关闭断点续传（默认开启：大文件中断后重跑从断点继续）"
+    )
+    tuning.add_argument(
+        "--sleep-interval", dest="sleep_interval", type=float, default=3.0,
+        help="每次请求之间的最小间隔秒数（默认 3）"
+    )
+    tuning.add_argument(
+        "--max-sleep-interval", dest="max_sleep_interval", type=float, default=10.0,
+        help="间隔的随机上限（默认 10；yt-dlp 在两者之间随机取）"
+    )
+    tuning.add_argument(
+        "--retries", type=int, default=3,
+        help="单个视频的重试次数（默认 3）"
+    )
+    tuning.add_argument(
+        "--retry-sleep", dest="retry_sleep", type=float, default=5.0,
+        help="重试前的等待秒数（默认 5）"
+    )
+    tuning.add_argument(
+        "--audio-quality", dest="audio_quality", default="0",
+        help="音频质量，0 最好、9 最差（默认 0）"
+    )
+    tuning.add_argument(
+        "--merge-format", dest="merge_format", default="mp4",
+        help="音视频合并后的容器格式（默认 mp4）"
+    )
     
     parser.add_argument(
         "--no-check-certificate",
@@ -590,7 +621,17 @@ def main_cli(args: Optional[list] = None):
     # 下载/提取
     cookie_manager = CookieManager()
     cookie_path = cookie_manager.cookie_path if cookie_manager.is_logged_in() else None
-    downloader = BilibiliDownloader(cookie_path=cookie_path, verify_ssl=verify_ssl)
+    downloader = BilibiliDownloader(
+        cookie_path=cookie_path, verify_ssl=verify_ssl,
+        # 这些原来全是硬编码，用户改不了；现在可从命令行覆盖，默认值不变
+        resume=not parsed_args.no_resume,
+        sleep_interval=parsed_args.sleep_interval,
+        max_sleep_interval=parsed_args.max_sleep_interval,
+        retries=parsed_args.retries,
+        retry_sleep=parsed_args.retry_sleep,
+        audio_quality=parsed_args.audio_quality,
+        merge_output_format=parsed_args.merge_format,
+    )
     extractor = SubtitleExtractor(cookie_path=cookie_path, verify_ssl=verify_ssl)
     
     try:
