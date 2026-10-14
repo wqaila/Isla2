@@ -283,6 +283,46 @@ def test_default_quality_unchanged():
            "mp3", "默认音频格式仍是 mp3")
 
 
+def test_uses_sys_executable_not_bare_python():
+    """调用 yt-dlp 必须用**当前解释器**（`sys.executable`），不能裸写 `"python"`。
+
+    ⚠️ 真实缺陷（2026-10-12 实测）：原来 4 处都硬编码 `"python"`。
+    在 venv 里运行时，裸 `python` 指向**系统 python**（本机 `D:\\python`），
+    而 yt_dlp 只装在 venv 里 → `_find_ytdlp()` **误判「未安装」** →
+    白白走 180 秒的 pip 安装尝试 → 最后报「安装超时」，
+    而实际上 venv 里 yt-dlp 好端端地装着（2026.08.19）。
+
+    这个 bug 的表现极具误导性：用户会以为「网络不好装不上」，
+    真正原因是**找错了 python**。
+    """
+    import tempfile as _t
+    with _t.TemporaryDirectory() as tmp:
+        d = BilibiliDownloader(output_dir=tmp)
+        args = d._build_download_args(
+            video_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            output_path=os.path.join(tmp, "o.mp4"))
+        # 参数列表开头若是 python 调用，必须是 sys.executable
+        if "-m" in args and "yt_dlp" in args:
+            idx = args.index("-m")
+            interp = args[idx - 1]
+            eq(interp, sys.executable,
+               "应使用 sys.executable，而不是裸 python")
+            ok(interp != "python", "不能是裸 'python'")
+
+
+def test_source_has_no_bare_python():
+    """源码级断言：所有调 yt_dlp 的地方都不该出现裸 `"python"`。
+
+    加这条是因为上面那条只覆盖 `_build_download_args` 一条路径，
+    而实际有 4 处会拼 yt-dlp 命令（下载/字幕/播放列表等）。
+    """
+    import re
+    src = inspect.getsource(sys.modules["downloader"])
+    # 找 ["python", "-m", "yt_dlp"] 这种字面量
+    hits = re.findall(r'\[\s*"python"\s*,\s*"-m"\s*,\s*"yt_dlp"', src)
+    eq(hits, [], f"还有 {len(hits)} 处硬编码裸 python，应改用 sys.executable")
+
+
 TESTS = [
     test_install_has_timeout,
     test_install_timeout_is_reasonable,
@@ -298,6 +338,8 @@ TESTS = [
     test_audio_only_format_choice,
     test_video_only_no_audio,
     test_default_quality_unchanged,
+    test_uses_sys_executable_not_bare_python,
+    test_source_has_no_bare_python,
 ]
 
 

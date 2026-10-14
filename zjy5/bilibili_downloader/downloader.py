@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import concurrent.futures
 from typing import Optional, List, Dict, Callable
@@ -194,6 +195,11 @@ class BilibiliDownloader:
         self.audio_format = audio_format
         self.video_only = video_only
         self.ytdlp_path = self._find_ytdlp()
+        # 是否走「当前解释器 -m yt_dlp」而不是 PATH 里的 yt-dlp 可执行文件。
+        # ⚠️ 用显式布尔而不是比较哨兵字符串 —— 字符串比较是脆弱耦合，
+        #    一旦有人改了哨兵值就会**静默退化**成调用 `yt-dlp`，
+        #    而那个可执行文件可能并不存在。
+        self._use_python_module = (self.ytdlp_path == "python -m yt_dlp")
         
         # 确保输出目录存在
         os.makedirs(output_dir, exist_ok=True)
@@ -220,7 +226,7 @@ class BilibiliDownloader:
         # 尝试 Python 模块调用
         try:
             result = subprocess.run(
-                ["python", "-m", "yt_dlp", "--version"],
+                [sys.executable, "-m", "yt_dlp", "--version"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -252,6 +258,7 @@ class BilibiliDownloader:
                 timeout=YTDLP_INSTALL_TIMEOUT,
             )
             self.ytdlp_path = "python -m yt_dlp"
+            self._use_python_module = True
             print("✓ yt-dlp 安装成功")
             return True
         except subprocess.TimeoutExpired:
@@ -279,9 +286,9 @@ class BilibiliDownloader:
         """构建 yt-dlp 下载参数"""
         args = []
         
-        # 使用 Python 模块调用
-        if self.ytdlp_path == "python -m yt_dlp":
-            args = ["python", "-m", "yt_dlp"]
+        # 走 Python 模块调用（用 sys.executable 而不是裸 "python"）
+        if self._use_python_module:
+            args = [sys.executable, "-m", "yt_dlp"]
         else:
             args = ["yt-dlp"]
         
@@ -424,6 +431,68 @@ class BilibiliDownloader:
         rec = self.failures.record(url, reason=reason, title=title)
         print(f"  → 已记入失败清单（第 {rec.attempts} 次，类型：{rec.kind}）")
 
+    def _verify_download(self, path: str) -> bool:
+        """校验下载**结果是否真实存在**。
+
+        ⚠️ 为什么必须校验（2026-10-12 实测的真实缺陷）：
+        原来只看 `process.returncode == 0` 就宣布成功。但机器上**没有 ffmpeg** 时，
+        yt-dlp 无法把音视频流合并，会把两条流各自留在目录里
+        （`xxx.f100023.mp4` + `xxx.f30280.m4a`），**返回码仍然是 0**。
+        于是程序打印「✓ 下载完成：...xxx.mp4」—— 而那个文件**根本不存在**。
+        用户去找文件时才发现什么都没有，且完全不知道原因。
+        """
+        if not path or not os.path.exists(path):
+            return False
+        try:
+            return os.path.getsize(path) > 0
+        except OSError:
+            return False
+
+    def _find_fragments(self, path: str) -> List[str]:
+        """找出同目录下的**分离流残留**（`<base>.f<数字>.<ext>`）。
+
+        这是缺 ffmpeg 时 yt-dlp 的典型产物：音视频各自落盘、没有合并。
+        识别它的意义在于给出**可执行的提示**（装 ffmpeg 即可自动合并），
+        而不是让用户对着「文件不存在」反复重试。
+        """
+        if not path:
+            return []
+        directory = os.path.dirname(path) or "."
+        base = os.path.basename(path)
+        stem = os.path.splitext(base)[0]
+        found = []
+        try:
+            for name in sorted(os.listdir(directory)):
+                # 形如 BV1xxx.f100023.mp4：以 "<stem>.f" 开头且后面是数字
+                if not name.startswith(stem + ".f"):
+                    continue
+                rest = name[len(stem) + 2:]
+                digits = rest.split(".")[0]
+                if digits.isdigit():
+                    found.append(os.path.join(directory, name))
+        except OSError:
+            return []
+        return found
+
+    def _on_download_unverified(self, url: str, path: str, title: str = "") -> None:
+        """返回码为 0 但**文件不存在**时的收尾：记失败 + 给出根因提示。"""
+        print(f"✗ 返回码为 0，但目标文件不存在：{path}")
+        fragments = self._find_fragments(path)
+        if fragments:
+            print(f"  发现 {len(fragments)} 个**未合并的分离流**：")
+            for f in fragments[:6]:
+                print(f"    - {os.path.basename(f)}")
+            print("  原因：本机没有 ffmpeg，yt-dlp 无法把音视频**合并**成单个文件。")
+            print("  解决：装 ffmpeg 后重跑即可（已下载的分片会被复用，不会重下）。")
+            print("        Windows: winget install Gyan.FFmpeg")
+            print("        或下载后把 ffmpeg.exe 所在目录加进 PATH")
+            reason = f"未合并（缺 ffmpeg），留下 {len(fragments)} 个分离流"
+        else:
+            print("  可能是 yt-dlp 的过滤器没有匹配到任何格式。")
+            print("  建议：换个画质档位重试（如 --quality 1080）。")
+            reason = "返回码 0 但目标文件不存在"
+        self._record_failure(url, reason, title)
+
     def download_video(self, video_url: str, title: str = None, 
                        output_dir: str = None, download_subtitle: bool = False,
                        force_subtitle: bool = False, quality: str = "best") -> Optional[str]:
@@ -507,6 +576,13 @@ class BilibiliDownloader:
             else:
                 print("⚠ 字幕下载失败")
         
+        # ⚠️ 关键：宣布成功**之前**先确认文件真的存在。
+        #    只看返回码会漏掉「缺 ffmpeg → 音视频没合并」这种情况：
+        #    yt-dlp 返回码是 0，但目标 .mp4 根本不存在。
+        if not video_exists and not self._verify_download(output_path):
+            self._on_download_unverified(video_url, output_path, safe_title)
+            return None
+        
         print(f"✓ 下载完成：{output_path}")
         return output_path
     
@@ -516,7 +592,7 @@ class BilibiliDownloader:
         try:
             print(f"  使用 yt-dlp 下载字幕，输出目录：{output_dir}")
             
-            args = ["python", "-m", "yt_dlp"]
+            args = [sys.executable, "-m", "yt_dlp"]
             args.extend(self._get_cookie_option())
             # 字幕选项 - 尝试多种字幕语言
             args.extend([
@@ -690,7 +766,7 @@ class BilibiliDownloader:
         os.makedirs(output_dir, exist_ok=True)
         
         # 使用 yt-dlp 下载播放列表
-        args = ["python", "-m", "yt_dlp"]
+        args = [sys.executable, "-m", "yt_dlp"]
         args.extend(self._get_cookie_option())
         args.extend([
             "-o", f"{output_dir}/%(title)s.%(ext)s",

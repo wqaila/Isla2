@@ -781,6 +781,7 @@ def main_cli(args: Optional[list] = None):
                 print(f"下载完成！文件：{result}")
             else:
                 print("下载失败")
+                return 1
         else:
             result = downloader.download_video(
                 parsed_args.url,
@@ -790,7 +791,10 @@ def main_cli(args: Optional[list] = None):
             if result:
                 print(f"下载完成！文件：{result}")
             else:
+                # ⚠️ 必须返回非 0：之前这里只 print 然后隐式 return None，
+                #    退出码恒为 0，脚本 / CI 无法用 $? 判断成败。
                 print("下载失败")
+                return 1
         
         # 下载字幕
         if parsed_args.subtitle:
