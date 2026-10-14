@@ -29,11 +29,16 @@ cd bilibili_downloader
 pip install -r requirements.txt
 ```
 
-### 3. 安装 Playwright 浏览器（首次使用）
+### 3. （可选）安装 Playwright 浏览器
+
+**只在需要「用 Playwright 提取 AI 字幕」时才装**（那条链路仍保留）：
 
 ```bash
 playwright install
 ```
+
+> ⚠️ **获取 Cookie 不再需要它** —— 自动获取已屏蔽（原因见「Cookie 设置」一节），
+> 现在一律手动粘贴。没装 Playwright 也不影响下载与字幕下载。
 
 ## 使用方法
 
@@ -332,17 +337,23 @@ python -m bilibili_downloader --check-cookie
 > 所以有一个联网预检，把「凭据失效」和「网络不通」**分开报**：
 > 网络故障时不会说成「Cookie 失效」（否则你会白去重新登录）。
 
-### 自动获取 Cookie
+### 手动获取 Cookie（**推荐，也是唯一可用的方式**）
 
-首次使用时，程序会提示是否使用 Playwright 自动获取 Cookie：
+> ⚠️ **自动获取（Playwright）已屏蔽**（2026-10-12）。
+> 那条路要**弹出可见浏览器窗口让你手动登录**，在无界面 / 沙箱环境里走不通，
+> 而且本机没装 Playwright 浏览器，调用只会抛异常、看起来像 bug。
+> 它本来也**从未被任何代码调用**，所以屏蔽不影响任何现有行为。
 
+**方式一：交互菜单（最省事，粘贴后会自动校验）**
+
+```bash
+python -m bilibili_downloader --interactive
+# 选「6. 配置设置」→「1. 设置 Cookie」→ 粘贴
 ```
-是否使用 Playwright 自动获取 Cookie? (y/n): y
-```
 
-浏览器会打开 Bilibili 登录页面，登录后等待几秒钟即可自动保存 Cookie。
+粘贴后会**立刻联网校验**并告诉你成没成 —— 不用自己猜。
 
-### 手动获取 Cookie
+**方式二：直接写文件**
 
 1. 打开浏览器（Chrome/Edge/Firefox）
 2. 访问 https://www.bilibili.com 并登录账号
@@ -351,7 +362,18 @@ python -m bilibili_downloader --check-cookie
 5. 刷新页面（F5）
 6. 找到任意一个 Bilibili 的 API 请求
 7. 在请求头（Headers）中找到 Cookie
-8. 复制 Cookie 值并保存到 `bilibili_cookies.txt` 文件
+8. 复制**完整的 Cookie 值**（至少要含 `SESSDATA`；建议连 `bili_jct`、
+   `DedeUserID` 一起）写入 `bilibili_cookies.txt`
+
+**方式三：代码里设置**
+
+```python
+from cookie_manager import CookieManager
+CookieManager().set_cookie("SESSDATA=xxx; bili_jct=yyy; DedeUserID=123")
+```
+
+> 💡 **粘贴完记得验证**（`--check-cookie` 或菜单选 2）——
+> 文件里**有** `SESSDATA` 不等于服务端**认**，Cookie 可能已经过期。
 
 Cookie 文件格式（Netscape 格式）：
 
