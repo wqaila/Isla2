@@ -567,6 +567,15 @@ def main_cli(args: Optional[list] = None):
         "--merge-format", dest="merge_format", default="mp4",
         help="音视频合并后的容器格式（默认 mp4）"
     )
+    tuning.add_argument(
+        "--retry-downloads", dest="retry_downloads", action="store_true",
+        help="只重试**上次下载失败的**那些（读失败清单，成功会自动移除）。"
+             "注意与 --retry-failed 不同：那个是重试「字幕收割」失败的条目"
+    )
+    tuning.add_argument(
+        "--failure-list", dest="failure_list", default=None,
+        help="下载失败清单文件路径（默认 <输出目录>/failed_downloads.json）"
+    )
     
     parser.add_argument(
         "--no-check-certificate",
@@ -611,9 +620,12 @@ def main_cli(args: Optional[list] = None):
         cookie_manager.set_cookie(parsed_args.cookie)
     
     # 显式交互模式，或未提供任何任务参数时进入交互模式
+    # ⚠️ `retry_downloads` 必须在这里 —— 否则敲了 `--retry-downloads`
+    #    会被判定成「没给任务」→ 掉进交互式问答（明明给了参数却被问「请输入 URL」）
     if parsed_args.interactive or not (
         parsed_args.url or parsed_args.channel or parsed_args.search
         or parsed_args.harvest or parsed_args.urls_file
+        or parsed_args.retry_downloads
     ):
         main()
         return
@@ -631,7 +643,34 @@ def main_cli(args: Optional[list] = None):
         retry_sleep=parsed_args.retry_sleep,
         audio_quality=parsed_args.audio_quality,
         merge_output_format=parsed_args.merge_format,
+        failure_path=(parsed_args.failure_list
+                      or os.path.join(parsed_args.output, "failed_downloads.json")),
     )
+
+    # `--retry-downloads`：把「上次下载失败的」变成本次的目标列表。
+    # 这样重跑不用重新枚举整个 UP 主空间，直接补没下的那几个。
+    if parsed_args.retry_downloads:
+        pending = downloader.failures.urls() if downloader.failures else []
+        if not pending:
+            print("✓ 失败清单是空的 —— 没有需要重试的")
+            return 0
+        print(f"从失败清单读到 {len(pending)} 个待重试：")
+        for u in pending[:10]:
+            print(f"  - {u}")
+        if len(pending) > 10:
+            print(f"  …另有 {len(pending) - 10} 个")
+        ok_count = 0
+        for i, u in enumerate(pending, 1):
+            print(f"\n[{i}/{len(pending)}] {u}")
+            result = downloader.download_video(u)
+            if result:
+                ok_count += 1
+        left = len(downloader.failures) if downloader.failures else 0
+        print("\n" + "=" * 52)
+        print(f"重试完成：成功 {ok_count}，仍失败 {left}")
+        if left:
+            print("  失败的仍在清单里，可再次 --retry-downloads")
+        return 0
     extractor = SubtitleExtractor(cookie_path=cookie_path, verify_ssl=verify_ssl)
     
     try:

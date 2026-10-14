@@ -15,6 +15,11 @@ from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+try:
+    from .download_failures import FailureStore
+except ImportError:  # 直接以脚本方式运行本文件时回退
+    from download_failures import FailureStore
+
 
 @dataclass
 class VideoInfo:
@@ -40,7 +45,8 @@ class BilibiliDownloader:
                  sleep_interval: float = 3, max_sleep_interval: float = 10,
                  retries: int = 3, fragment_retries: int = 3,
                  retry_sleep: float = 5, audio_quality: str = "0",
-                 merge_output_format: str = "mp4"):
+                 merge_output_format: str = "mp4",
+                 failure_path: str = None):
         """
         :param output_dir: 下载输出目录
         :param cookie_path: Cookie 文件路径
@@ -56,6 +62,8 @@ class BilibiliDownloader:
         :param retry_sleep: 重试前的等待秒数
         :param audio_quality: 音频质量（0 = 最好，9 = 最差）
         :param merge_output_format: 音视频合并后的容器格式
+        :param failure_path: 失败清单文件路径（None 表示不记录）。
+            批量下载时传入它，就能在重跑时用 `--retry-failed` 精确补齐
 
         ⚠️ 这些参数**默认值与改动前完全一致**（纯增量：原来全硬编码，
         用户改不了；现在可配但仍保持原行为）。
@@ -71,6 +79,8 @@ class BilibiliDownloader:
         self.retry_sleep = retry_sleep
         self.audio_quality = audio_quality
         self.merge_output_format = merge_output_format
+        # 失败清单（None = 不记录，保持旧行为）
+        self.failures = FailureStore(failure_path) if failure_path else None
         self.ytdlp_path = self._find_ytdlp()
         
         # 确保输出目录存在
@@ -257,6 +267,17 @@ class BilibiliDownloader:
         if in_progress:
             print()
 
+    def _record_failure(self, url: str, reason: str, title: str = "") -> None:
+        """记一条失败到清单（未配置清单时是空操作）。
+
+        记录的意义：重跑时能用 `--retry-failed` 精确补齐，
+        而不是只能靠「文件在不在」猜。
+        """
+        if self.failures is None:
+            return
+        rec = self.failures.record(url, reason=reason, title=title)
+        print(f"  → 已记入失败清单（第 {rec.attempts} 次，类型：{rec.kind}）")
+
     def download_video(self, video_url: str, title: str = None, 
                        output_dir: str = None, download_subtitle: bool = False,
                        force_subtitle: bool = False, quality: str = "best") -> Optional[str]:
@@ -288,6 +309,9 @@ class BilibiliDownloader:
         video_exists = os.path.exists(output_path)
         if video_exists:
             print(f"✓ 视频文件已存在：{safe_title}")
+            # 之前失败过、现在文件在了 → 从失败清单移除，否则清单会越来越脏
+            if self.failures is not None:
+                self.failures.clear(video_url)
         else:
             print(f"正在下载：{safe_title}")
             
@@ -314,10 +338,13 @@ class BilibiliDownloader:
                 
                 if process.returncode != 0:
                     print(f"✗ 下载失败，返回码：{process.returncode}")
+                    self._record_failure(video_url, f"返回码 {process.returncode}",
+                                         safe_title)
                     return None
                     
             except Exception as e:
                 print(f"✗ 下载异常：{e}")
+                self._record_failure(video_url, f"{type(e).__name__}: {e}", safe_title)
                 return None
         
         # 下载字幕（无论视频是否已存在）

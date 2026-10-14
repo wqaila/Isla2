@@ -30,6 +30,8 @@ TEST_MODULES = [
     "test_cookie_manager.py",
     "test_cli_exit_code.py",
     "test_downloader_args.py",
+    "test_download_failures.py",
+    "test_retry_downloads.py",
 ]
 
 
