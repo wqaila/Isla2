@@ -25,10 +25,12 @@ from harvest import (  # noqa: E402
     STATUS_NO_SUBTITLE,
     STATUS_OK,
     STATUS_PROBED,
+    STATUS_RISK_CONTROL,
     STATUS_SKIPPED,
     HarvestState,
     SubtitleHarvester,
     extract_bvid,
+    is_risk_control_error,
     load_url_list,
     looks_like_up_url,
     normalize_target,
@@ -53,9 +55,12 @@ def ok(condition, label):
 class FakeExtractor:
     """假字幕提取器：按 URL 里的 BV 号决定「有没有字幕」。"""
 
-    def __init__(self, with_subtitle=(), entries=None, broken=()):
+    def __init__(self, with_subtitle=(), entries=None, broken=(),
+                 broken_error="接口 403"):
         self.with_subtitle = set(with_subtitle)
         self.broken = set(broken)
+        # 让测试能区分「普通错误」与「风控」——两者必须走不同分支
+        self.broken_error = broken_error
         self.entries = entries or [{"text": "第一句。", "start": 1.0, "end": 2.0},
                                    {"text": "第二句。", "start": 3.0, "end": 4.0}]
         self.probe_calls = []
@@ -65,7 +70,7 @@ class FakeExtractor:
         self.probe_calls.append(url)
         bvid = extract_bvid(url)
         if bvid in self.broken:
-            return {"bvid": bvid, "has_subtitle": False, "error": "接口 403"}
+            return {"bvid": bvid, "has_subtitle": False, "error": self.broken_error}
         if bvid in self.with_subtitle:
             return {"bvid": bvid, "has_subtitle": True, "lang": "zh-CN",
                     "ai_type": 1, "subtitle_url": f"https://sub/{bvid}.json", "error": None}
@@ -115,7 +120,8 @@ def make_harvester(tmp, **kw):
         rate_limit=kw.pop("rate_limit", 0.0),
         extractor=kw.pop("extractor", None) or FakeExtractor(),
         crawler=kw.pop("crawler", None) or FakeCrawler(),
-        sleep_fn=lambda _seconds: None,
+        # 默认不真睡；需要断言限速行为的用例显式传入记录器
+        sleep_fn=kw.pop("sleep_fn", lambda _seconds: None),
         **kw
     )
 
@@ -251,6 +257,151 @@ def test_urls_file_and_dedup():
         eq(len(extractor.probe_calls), 2, "重复项被去重")
 
 
+def _make_sleep_recorder():
+    """返回 (sleep_fn, 记录列表)：每次睡眠把秒数记下来。"""
+    slept = []
+
+    def fn(seconds):
+        slept.append(seconds)
+
+    return fn, slept
+
+
+def test_rate_limit_applies_to_probe_only():
+    """⚠️ 回归：`--probe-only` 原来**完全绕过限速**。
+
+    旧实现只在 `status == STATUS_OK and not probe_only` 时 sleep，
+    于是「探测 1000 个视频」= 1000 个请求**连打、中间零间隔** ——
+    这是最容易触发风控的用法，而文档却写着「默认 1 秒限速」。
+
+    限速必须对**每一次实际发出的请求**生效，与模式无关。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        sleep_fn, slept = _make_sleep_recorder()
+        extractor = FakeExtractor(with_subtitle=[bvid(0), bvid(1)])
+        harvester = make_harvester(tmp, extractor=extractor,
+                                   rate_limit=1.0, sleep_fn=sleep_fn)
+        harvester.run(target="https://space.bilibili.com/123456",
+                      max_count=5, probe_only=True)
+
+        eq(len(extractor.probe_calls), 5, "探测了 5 个")
+        eq(len(slept), 5, "每次探测后都应限速（原来这里是 0 次）")
+
+
+def test_rate_limit_applies_to_failures_and_misses():
+    """失败与「无字幕」也要限速 —— 它们同样发出了请求。
+
+    旧实现只对 `STATUS_OK` 睡，于是「一个 UP 主 90% 视频没字幕」时，
+    实际请求速率远超 `--rate-limit` 的承诺。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        sleep_fn, slept = _make_sleep_recorder()
+        # 全部「无字幕」：一次命中都没有
+        harvester = make_harvester(tmp, extractor=FakeExtractor(),
+                                   rate_limit=1.0, sleep_fn=sleep_fn)
+        harvester.run(target="https://space.bilibili.com/123456", max_count=4)
+        eq(len(slept), 4, "4 个请求都要限速")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sleep_fn, slept = _make_sleep_recorder()
+        # 全部失败（如接口 403）
+        extractor = FakeExtractor(broken=[bvid(i) for i in range(3)])
+        harvester = make_harvester(tmp, extractor=extractor,
+                                   rate_limit=1.0, sleep_fn=sleep_fn)
+        harvester.run(target="https://space.bilibili.com/123456", max_count=3)
+        eq(len(slept), 3, "失败的请求也发出去了，同样要限速")
+
+
+def test_rate_limit_zero_disables_sleeping():
+    """`--rate-limit 0` 应完全不睡（用户显式选择不限速）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        sleep_fn, slept = _make_sleep_recorder()
+        harvester = make_harvester(tmp, extractor=FakeExtractor(),
+                                   rate_limit=0.0, sleep_fn=sleep_fn)
+        harvester.run(target="https://space.bilibili.com/123456", max_count=3)
+        eq(slept, [], "限速为 0 时不睡")
+
+
+def test_rate_limit_skips_do_not_sleep():
+    """断点跳过的条目**没有发请求**，不该占用限速。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        first = make_harvester(tmp, extractor=FakeExtractor(with_subtitle=[bvid(0)]))
+        first.run(target="https://space.bilibili.com/123456", max_count=3)
+
+        sleep_fn, slept = _make_sleep_recorder()
+        second = make_harvester(tmp, extractor=FakeExtractor(with_subtitle=[bvid(0)]),
+                                rate_limit=1.0, sleep_fn=sleep_fn)
+        stats = second.run(target="https://space.bilibili.com/123456", max_count=3)
+        eq(stats.get(STATUS_SKIPPED), 3, "全部跳过")
+        eq(slept, [], "跳过不发请求，因此不该睡")
+
+
+def test_risk_control_detected_in_error_text():
+    """`-352` 是风控码，必须与普通网络错误**分开**。
+
+    现状：`harvest.py` 只有一个 `STATUS_ERROR`，且全库**没有任何地方
+    判断 -352**。风控与超时被归成一类，后果是「继续跑只会加重风控」。
+    """
+    ok(is_risk_control_error("接口返回 -352"), "识别 -352")
+    ok(is_risk_control_error("风控校验失败"), "识别「风控」字样")
+    ok(is_risk_control_error("请求被拦截，请稍后再试"), "识别「拦截」")
+    ok(not is_risk_control_error("接口 403"), "403 不算风控")
+    ok(not is_risk_control_error("连接超时"), "超时不算风控")
+    ok(not is_risk_control_error(None), "None 安全")
+    ok(not is_risk_control_error(""), "空串安全")
+
+
+def test_harvest_stops_after_consecutive_risk_control():
+    """连续 3 次风控 → **立即停止整批**，而不是继续撞墙。
+
+    理由：风控通常是会话级/IP 级的，下一个视频多半也会失败；
+    停下来能保住已收到的结果，也避免把风控升级成封禁。
+
+    容忍「连续 3 次」是为了放过偶发：单个视频的异常不该中断整批。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        extractor = FakeExtractor(
+            broken=[bvid(i) for i in range(5)],
+            broken_error="-352 风控校验失败",
+        )
+        harvester = make_harvester(tmp, extractor=extractor, rate_limit=0.0)
+        stats = harvester.run(target="https://space.bilibili.com/123456", max_count=5)
+
+        eq(stats.get(STATUS_RISK_CONTROL), 3, "记录到 3 次风控后停止")
+        eq(len(extractor.probe_calls), 3, "第 4、5 个不该再发请求")
+        ok(harvester.stopped_by_risk_control, "应标记「因风控中断」")
+
+
+def test_risk_control_counter_resets_on_success():
+    """偶发风控不该累积到中断整批：中间有一次成功就重新计数。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        # 风控、风控、成功、风控、风控 —— 永远不到「连续 3 次」
+        extractor = FakeExtractor(
+            with_subtitle=[bvid(2)],
+            broken=[bvid(0), bvid(1), bvid(3), bvid(4)],
+            broken_error="-352 风控",
+        )
+        harvester = make_harvester(tmp, extractor=extractor, rate_limit=0.0)
+        stats = harvester.run(target="https://space.bilibili.com/123456", max_count=5)
+
+        eq(len(extractor.probe_calls), 5, "5 个都应被处理（未触发连续 3 次）")
+        eq(stats.get(STATUS_OK), 1, "中间的成功计入")
+        ok(not harvester.stopped_by_risk_control, "不该被中断")
+
+
+def test_normal_errors_do_not_trigger_stop():
+    """普通错误（403/超时）**不该**触发中断 —— 只记录，继续跑。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        extractor = FakeExtractor(broken=[bvid(i) for i in range(5)],
+                                  broken_error="接口 403")
+        harvester = make_harvester(tmp, extractor=extractor, rate_limit=0.0)
+        stats = harvester.run(target="https://space.bilibili.com/123456", max_count=5)
+
+        eq(len(extractor.probe_calls), 5, "普通错误不中断整批")
+        eq(stats.get(STATUS_ERROR), 5, "全部记为普通 error")
+        ok(not harvester.stopped_by_risk_control, "不该标记为风控中断")
+
+
 TESTS = [
     test_target_parsing,
     test_state_roundtrip,
@@ -258,6 +409,14 @@ TESTS = [
     test_resume_skips_finished,
     test_probe_only_and_formats,
     test_urls_file_and_dedup,
+    test_rate_limit_applies_to_probe_only,
+    test_rate_limit_applies_to_failures_and_misses,
+    test_rate_limit_zero_disables_sleeping,
+    test_rate_limit_skips_do_not_sleep,
+    test_risk_control_detected_in_error_text,
+    test_harvest_stops_after_consecutive_risk_control,
+    test_risk_control_counter_resets_on_success,
+    test_normal_errors_do_not_trigger_stop,
 ]
 
 

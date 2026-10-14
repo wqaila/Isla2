@@ -43,6 +43,38 @@ STATUS_PROBED = "probed"         # 只探测过「有字幕」，正文还没取
 STATUS_NO_SUBTITLE = "no_subtitle"   # 探测过，确实没有字幕
 STATUS_ERROR = "error"           # 请求/解析失败，值得重试
 STATUS_SKIPPED = "skipped"       # 断点：上次已收割，本次跳过
+# 风控（-352 等）与普通错误**必须分开**：
+# 风控通常是会话级 / IP 级的，继续跑只会加重它，甚至升级成封禁。
+STATUS_RISK_CONTROL = "risk_control"
+
+# 连续几次风控就判定「整批已被拦」，停止后续请求。
+# 取 3 而不是 1：放过偶发（单个视频的异常不该中断整批）。
+RISK_CONTROL_STREAK_LIMIT = 3
+
+# 风控的识别特征。B 站用 `-352` 表示签名/风控校验失败，
+# 但错误信息经过多层包装后可能只剩文字描述，所以两种都要认。
+_RISK_CONTROL_PATTERNS = (
+    "-352", "352",
+    "风控", "被拦截", "拦截", "请求过于频繁", "访问过于频繁",
+    "操作频繁", "请稍后再试", "校验失败", "risk",
+)
+
+
+def is_risk_control_error(error: Any) -> bool:
+    """判断错误信息是否属于**风控**（而非普通网络/解析错误）。
+
+    为什么要单独识别：普通错误值得重试，风控**越重试越糟**。
+    旧实现把两者都塞进 `STATUS_ERROR`，于是「批量重试」等于「批量撞墙」。
+
+    ⚠️ 用文本匹配而不是错误码，是因为错误信息在
+    `subtitle_extractor` 里已经被压成字符串（`data.get("message")`），
+    code 在中途丢掉了。所以这里做**保守**匹配：宁可漏判，
+    也不要把普通错误误判成风控（那会白白中断整批）。
+    """
+    if not error:
+        return False
+    text = str(error).lower()
+    return any(p.lower() in text for p in _RISK_CONTROL_PATTERNS)
 
 
 def extract_bvid(text: str) -> Optional[str]:
@@ -166,11 +198,13 @@ class HarvestState:
           如果它把状态写成"已完成"，接着跑正式收割就会一个都不做 —— 那样
           「先探测再收割」这个推荐用法直接失效。
         - ``error``：默认跳过（避免反复撞同一堵墙），``--retry-failed`` 时重试
+        - ``risk_control``：同上，但**更该跳过** —— 风控是会话级的，
+          立刻重试多半还是被拦
         """
         status = self.status_of(bvid)
         if status is None:
             return False
-        if status == STATUS_ERROR:
+        if status in (STATUS_ERROR, STATUS_RISK_CONTROL):
             return not retry_failed
         if status == STATUS_PROBED:
             return bool(probe_only)
@@ -199,6 +233,8 @@ class SubtitleHarvester:
         self.jsonl_name = jsonl_name
         self.rate_limit = max(0.0, float(rate_limit or 0.0))
         self._sleep = sleep_fn
+        # 是否因连续风控而中断（run() 结束后可读，用于提示与测试）
+        self.stopped_by_risk_control = False
 
         self.extractor = extractor or SubtitleExtractor(
             cookie_path=cookie_path, output_dir=output_dir, verify_ssl=verify_ssl
@@ -290,6 +326,14 @@ class SubtitleHarvester:
             f.write("\n".join(e["text"] for e in entries))
         return path
 
+    def _error_result(self, error: str, bvid: str, **extra) -> Dict[str, Any]:
+        """把错误归类成「风控」或「普通错误」。
+
+        风控要单独记状态，因为它触发的是**停止整批**而不是重试。
+        """
+        status = STATUS_RISK_CONTROL if is_risk_control_error(error) else STATUS_ERROR
+        return {"status": status, "error": error, "bvid": bvid, **extra}
+
     def harvest_one(self, target: Dict[str, Any], probe_only: bool = False) -> Dict[str, Any]:
         """处理单个目标。返回 ``{"status":.., "sentences":.., ...}``。"""
         url = target.get("url") or ""
@@ -300,7 +344,7 @@ class SubtitleHarvester:
 
         if not probed.get("has_subtitle"):
             if probed.get("error"):
-                return {"status": STATUS_ERROR, "error": probed["error"], "bvid": bvid}
+                return self._error_result(probed["error"], bvid)
             return {"status": STATUS_NO_SUBTITLE, "bvid": bvid}
 
         info = {
@@ -315,7 +359,7 @@ class SubtitleHarvester:
             video_url=url, subtitle_url=probed.get("subtitle_url"), info=probed
         )
         if meta.get("error"):
-            return {"status": STATUS_ERROR, "error": meta["error"], "bvid": bvid, **info}
+            return self._error_result(meta["error"], bvid, **info)
         if not entries:
             return {"status": STATUS_NO_SUBTITLE, "bvid": bvid, **info}
 
@@ -340,12 +384,22 @@ class SubtitleHarvester:
     def harvest_targets(self, targets: List[Dict[str, Any]],
                         probe_only: bool = False,
                         retry_failed: bool = False) -> Dict[str, int]:
-        """逐个收割。断点逻辑在这里生效。"""
+        """逐个收割。断点逻辑与限速、风控中断都在这里生效。
+
+        ⚠️ **限速对每一次真实请求生效**（2026-10-12 修）：
+        旧实现只在 `status == STATUS_OK and not probe_only` 时 sleep，于是
+        「`--probe-only` 探测 1000 个视频」= 1000 个请求**连打、零间隔** ——
+        这是最容易触发风控的用法，而文档却写着「默认 1 秒限速」。
+        现在改为：**只要发过请求就限速**（跳过的不算，它没发请求）。
+        """
         stats = Counter()
         total = len(targets)
         if not total:
             print("没有可处理的目标")
             return dict(stats)
+
+        self.stopped_by_risk_control = False
+        risk_streak = 0
 
         for index, target in enumerate(targets, 1):
             bvid = target.get("bvid") or extract_bvid(target.get("url"))
@@ -364,7 +418,8 @@ class SubtitleHarvester:
             try:
                 result = self.harvest_one(target, probe_only=probe_only)
             except Exception as e:                      # 单个视频失败不中断整批
-                result = {"status": STATUS_ERROR, "error": f"{type(e).__name__}: {e}"}
+                err = f"{type(e).__name__}: {e}"
+                result = self._error_result(err, bvid)
 
             status = result.get("status")
             stats[status] += 1
@@ -377,10 +432,11 @@ class SubtitleHarvester:
                           f"（{result.get('lang') or '未知语言'}）→ {result.get('output')}")
             elif status == STATUS_NO_SUBTITLE:
                 print(f"{label}  – 无字幕")
+            elif status == STATUS_RISK_CONTROL:
+                print(f"{label}  ⛔ 风控：{result.get('error')}")
             else:
                 print(f"{label}  ✗ 失败：{result.get('error')}")
 
-            # 探测本身也要一个请求，无字幕的视频不值得为它多睡一轮
             self.state.mark(
                 result.get("bvid") or bvid, status,
                 sentences=result.get("sentences"),
@@ -389,7 +445,26 @@ class SubtitleHarvester:
             )
             self.state.save()
 
-            if status == STATUS_OK and not probe_only and self.rate_limit:
+            # ---- 风控熔断：连续 N 次就停，别继续撞墙 ----
+            if status == STATUS_RISK_CONTROL:
+                risk_streak += 1
+                if risk_streak >= RISK_CONTROL_STREAK_LIMIT:
+                    self.stopped_by_risk_control = True
+                    remaining = total - index
+                    print("\n" + "!" * 52)
+                    print(f"⛔ 连续 {risk_streak} 次触发风控，已停止后续 {remaining} 个请求。")
+                    print("   风控通常是会话级 / IP 级的，继续跑只会加重它。")
+                    print("   建议：等待一段时间后重跑（会自动跳过已完成的），")
+                    print("        或调大 --rate-limit、更换 Cookie。")
+                    print("!" * 52)
+                    break
+            else:
+                # 中间成功过就重新计数：偶发风控不该累积成「整批被拦」
+                risk_streak = 0
+
+            # ⚠️ 只要这次真的发了请求就限速（成功的、失败的、无字幕的都算）。
+            #    跳过的不算 —— 它没发请求。
+            if self.rate_limit:
                 self._sleep(self.rate_limit)
 
         return dict(stats)
@@ -412,7 +487,7 @@ class SubtitleHarvester:
                                     retry_failed=retry_failed)
 
         handled = sum(stats.get(k, 0) for k in (STATUS_OK, STATUS_PROBED, STATUS_NO_SUBTITLE,
-                                                STATUS_ERROR))
+                                                STATUS_ERROR, STATUS_RISK_CONTROL))
         hit = stats.get(STATUS_OK, 0) + stats.get(STATUS_PROBED, 0)
         print("\n" + "=" * 52)
         print("收割汇总" if not probe_only else "探测汇总")
@@ -421,6 +496,10 @@ class SubtitleHarvester:
         print(f"  命中字幕   : {hit}")
         print(f"  无字幕     : {stats.get(STATUS_NO_SUBTITLE, 0)}")
         print(f"  失败       : {stats.get(STATUS_ERROR, 0)}")
+        # 风控单独一行：它的处置方式与普通失败完全不同（等一会儿再跑，而不是重试）
+        if stats.get(STATUS_RISK_CONTROL):
+            print(f"  风控拦截   : {stats.get(STATUS_RISK_CONTROL, 0)}"
+                  f"{'（已中断整批）' if self.stopped_by_risk_control else ''}")
         print(f"  断点跳过   : {stats.get(STATUS_SKIPPED, 0)}")
         if handled:
             print(f"  命中率     : {hit / handled * 100:.1f}%")
@@ -442,6 +521,11 @@ class SubtitleHarvester:
         state_summary = self.state.summary()
         if state_summary:
             print(f"  状态文件累计: {state_summary}")
+
+        if self.stopped_by_risk_control:
+            print("\n⚠️ 本次因**风控**中断，剩余视频没有处理。")
+            print("   等一段时间后重跑即可 —— 已完成与已失败的都会自动跳过，")
+            print("   只补没做的（失败项要重试请加 --retry-failed）。")
         return stats
 
 
