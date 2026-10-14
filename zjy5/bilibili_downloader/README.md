@@ -159,7 +159,13 @@ python -m bilibili_downloader --interactive
 | `--audio-quality` | `0` | 音频质量，0 最好、9 最差 |
 | `--merge-format` | `mp4` | 音视频合并后的容器格式 |
 | `--retry-downloads` | 关 | **只重试上次下载失败的**（读失败清单，成功自动移除） |
-| `--failure-list` | `<输出目录>/failed_downloads.json` | 失败清单文件路径 |
+| `--failure-list` | `<输出目录>/failed_downloads.json` | 失败清单路径 |
+| `--no-info-json` | 关（即**默认写出**） | 不写 `.info.json`（里面有发布时间 / 分P 标题 / 简介） |
+| `--danmaku` | 关 | 同时下载弹幕（**默认关** —— 弹幕是观众发言，属辅助信息而非训练语料） |
+| `--audio-format` | `mp3` | 音频格式：`mp3` / `m4a` / `opus` / `wav` / `flac` |
+| `--video-only` | 关 | **只要画面不要声音**（做 OCR / 视觉任务时有用） |
+
+**画质档位**：`best` / `2160`(4K) / `1440`(2K) / `1080` / `720` / `480` / `360`
 
 > 💡 **网络差就调大 `--retries` / `--retry-sleep`；怕被风控就调大 `--sleep-interval`；
 > 想要小体积音频就调大 `--audio-quality`。**
@@ -207,6 +213,31 @@ python -m bilibili_downloader --retry-downloads --failure-list my.json
 - `totalrank`: 综合排序
 - `click`: 最多点击
 - `stow`: 最多收藏
+
+### 元数据（`.info.json`）与弹幕
+
+**元数据默认写出**（`--no-info-json` 可关）。里面有几样对下游语料有用：
+
+| 字段 | 用途 |
+|------|------|
+| `upload_date` | 做时间线语料时能按时间排序/筛选 |
+| `chapters` / 分P 标题 | 区分同一 BV 的不同段落 |
+| `description` | 简介里常出现角色名与设定，可作为 `term_fix.py` 的错字线索 |
+
+用 `parse_info_json(path)` 读它（文件缺失/损坏返回 `None`，不抛异常）。
+
+> ⚠️ 这个开关是 2026-10-12 加的。在此之前 `--no-clean-info-json` **一直在写**
+> info.json，但**从来没人读** —— 数据一直躺在本地没人用。
+
+**弹幕默认关闭**（`--danmaku` 开启），用 `parse_danmaku_xml(path)` 解析。
+
+> ⚠️ **弹幕是「观众发言」，不是角色台词** —— 直接拿来训 `zjy7`
+> 会把观众的语气学进角色里。它真正的定位是**辅助信息**：
+> - 观众对内容的即时反应，可用来理解「这个角色受欢迎吗」
+> - 弹幕里高频出现的角色名/梗，可作为术语校正的**错字线索**
+>
+> B 站弹幕格式：`<d p="时间,模式,字号,颜色,时间戳,池,用户,行ID">文本</d>`；
+> 坏行会被**逐条跳过**而不是整份丢弃。
 
 ### Python API 使用
 
