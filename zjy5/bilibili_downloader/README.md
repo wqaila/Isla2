@@ -158,10 +158,43 @@ python -m bilibili_downloader --interactive
 | `--retry-sleep` | `5` | 重试前的等待秒数 |
 | `--audio-quality` | `0` | 音频质量，0 最好、9 最差 |
 | `--merge-format` | `mp4` | 音视频合并后的容器格式 |
+| `--retry-downloads` | 关 | **只重试上次下载失败的**（读失败清单，成功自动移除） |
+| `--failure-list` | `<输出目录>/failed_downloads.json` | 失败清单文件路径 |
 
 > 💡 **网络差就调大 `--retries` / `--retry-sleep`；怕被风控就调大 `--sleep-interval`；
 > 想要小体积音频就调大 `--audio-quality`。**
 > 这些默认值与改动前**完全一致** —— 纯增量，不改变原有行为。
+
+### 批量下载失败了怎么补？（`--retry-downloads`）
+
+批量下载 100 个视频、第 80 个挂了 —— 以前只会在屏幕打一行 `✗ 下载失败`
+然后继续，**失败原因与清单全部丢失**，重跑只能靠「文件在不在」猜。
+
+现在每次失败都会记进 `failed_downloads.json`（含 URL、原因、次数、分类）：
+
+```bash
+# 只补上次没下成功的（成功过的会自动从清单移除）
+python -m bilibili_downloader --retry-downloads
+
+# 指定清单位置
+python -m bilibili_downloader --retry-downloads --failure-list my.json
+```
+
+失败原因会**自动分类**，因为分类决定了「该不该重试」：
+
+| 分类 | 含义 |
+|------|------|
+| `network` | 网络问题 —— **重试有意义** |
+| `risk_control` | 风控拦截 —— 等一会儿再试，别硬撞 |
+| `http_403` | Cookie 失效或缺权限 —— 重试无用，先 `--check-cookie` |
+| `not_found` | 视频被删或 URL 错 —— 重试无用 |
+| `ssl` | 证书问题 —— 加 `--no-check-certificate` |
+
+> ⚠️ 注意区分：`--retry-downloads` 是**下载**失败重试；
+> `--retry-failed` 是**字幕收割**失败重试（harvest 用）。两者独立。
+>
+> ⚠️ 清单写入是**原子**的（先写 `.tmp` 再替换），中途被打断不会留下半个坏文件；
+> 清单损坏时按空清单继续，不会中断下载。
 
 > 注：`--channel`、`--search` 等接口需要 WBI 签名（已内置实现）；
 > 若签名或请求失败会打印明确错误，不会静默返回空列表。
