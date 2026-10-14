@@ -34,6 +34,7 @@ TEST_MODULES = [
     "test_retry_downloads.py",
     "test_downloader_extras.py",
     "test_download_result.py",
+    "test_ffmpeg_locate.py",
 ]
 
 

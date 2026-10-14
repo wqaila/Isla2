@@ -27,6 +27,69 @@ except ImportError:  # 直接以脚本方式运行本文件时回退
 YTDLP_INSTALL_TIMEOUT = 180
 
 
+def _looks_like_ffmpeg(name: str) -> bool:
+    """文件名是否像 ffmpeg 可执行文件。
+
+    ⚠️ 不能只匹配 `== "ffmpeg.exe"`：`imageio-ffmpeg` 包自带的叫
+    `ffmpeg-win-x86_64-v7.1.exe`，严格匹配会漏掉它 —— 而那个包
+    恰恰是很多机器上唯一有的 ffmpeg。
+    """
+    low = name.lower()
+    if not (low.endswith(".exe") or "." not in low):
+        return False
+    stem = low.rsplit(".", 1)[0]
+    return stem == "ffmpeg" or stem.startswith("ffmpeg-") or stem.startswith("ffmpeg_")
+
+
+def find_ffmpeg(search_dirs: Optional[List[str]] = None) -> Optional[str]:
+    """自动寻找可用的 ffmpeg，找不到返回 None。
+
+    【为什么需要它】
+    B 站高清视频**音视频分离**，合并需要 ffmpeg。但用户的 ffmpeg 常常
+    **不在 PATH 里**，而是躺在某个包的内部目录，例如
+    `imageio-ffmpeg` 自带的 `binaries/ffmpeg-win-x86_64-v7.1.exe`。
+    只查 PATH 会得出「没装 ffmpeg」的结论，让用户白去下载 100MB ——
+    而机器上其实就有。
+
+    探测顺序：
+    1. 显式传入的 `search_dirs`
+    2. `PATH`（`shutil.which`）
+    3. 当前 venv 的 `imageio_ffmpeg` 自带副本
+    """
+    import shutil
+
+    candidates: List[str] = []
+
+    # 1) 显式目录
+    for d in (search_dirs or []):
+        if d and os.path.isdir(d):
+            try:
+                for name in sorted(os.listdir(d)):
+                    if _looks_like_ffmpeg(name):
+                        candidates.append(os.path.join(d, name))
+            except OSError:
+                pass
+
+    # 2) PATH
+    which = shutil.which("ffmpeg")
+    if which:
+        candidates.insert(0, which)
+
+    # 3) 本 venv 的 imageio_ffmpeg 自带副本
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.exists(exe):
+            candidates.append(exe)
+    except Exception:
+        pass
+
+    for c in candidates:
+        if c and os.path.exists(c) and os.path.isfile(c):
+            return c
+    return None
+
+
 def parse_info_json(path: Optional[str]) -> Optional[Dict]:
     """解析 yt-dlp 写出的 `.info.json`，取出对语料有用的元数据。
 
@@ -148,7 +211,8 @@ class BilibiliDownloader:
                  write_info_json: bool = True,
                  download_danmaku: bool = False,
                  audio_format: str = "mp3",
-                 video_only: bool = False):
+                 video_only: bool = False,
+                 ffmpeg_path: str = None):
         """
         :param output_dir: 下载输出目录
         :param cookie_path: Cookie 文件路径
@@ -173,6 +237,9 @@ class BilibiliDownloader:
             且体积可能很大，所以默认不开
         :param audio_format: 音频格式（默认 mp3；也可 m4a/opus/wav）
         :param video_only: 只要画面不要声音（做 OCR / 视觉任务时有用）
+        :param ffmpeg_path: ffmpeg 可执行文件路径。**默认自动探测**
+            （PATH → 本 venv 的 imageio_ffmpeg 副本）。
+            传 None 且探测不到时会显式禁用，避免 yt-dlp 拿一个坏路径去合并
 
         ⚠️ 这些参数**默认值与改动前完全一致**（纯增量：原来全硬编码，
         用户改不了；现在可配但仍保持原行为）。
@@ -194,6 +261,10 @@ class BilibiliDownloader:
         self.download_danmaku = download_danmaku
         self.audio_format = audio_format
         self.video_only = video_only
+        # ffmpeg：显式传入优先；传 None 表示「自动探测」。
+        # 探测不到就保持 None —— 拼参数时不会硬塞一个不存在的路径
+        # （塞坏路径会让 yt-dlp 直接报错，比不传更糟）。
+        self.ffmpeg_path = ffmpeg_path if ffmpeg_path is not None else find_ffmpeg()
         self.ytdlp_path = self._find_ytdlp()
         # 是否走「当前解释器 -m yt_dlp」而不是 PATH 里的 yt-dlp 可执行文件。
         # ⚠️ 用显式布尔而不是比较哨兵字符串 —— 字符串比较是脆弱耦合，
@@ -377,6 +448,12 @@ class BilibiliDownloader:
         # 挂掉就要重下，代价很大。
         if self.resume:
             args.append("--continue")
+        
+        # ffmpeg 位置：**必须传给 yt-dlp**，否则它仍只去 PATH 找、
+        # 仍然合并失败（「找到了却没告诉它」等于没找到）。
+        # 只在确实找到时才传 —— 塞一个不存在的路径会让 yt-dlp 直接报错。
+        if self.ffmpeg_path and os.path.exists(self.ffmpeg_path):
+            args.extend(["--ffmpeg-location", self.ffmpeg_path])
         
         # 仅在显式关闭校验时才跳过证书验证
         if not self.verify_ssl:

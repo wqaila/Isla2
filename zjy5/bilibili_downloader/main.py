@@ -593,6 +593,11 @@ def main_cli(args: Optional[list] = None):
         "--video-only", dest="video_only", action="store_true",
         help="只要画面不要声音（做 OCR / 视觉任务时有用）"
     )
+    tuning.add_argument(
+        "--ffmpeg-location", dest="ffmpeg_location", default=None,
+        help="ffmpeg 可执行文件路径（默认自动探测：PATH → 本 venv 的 "
+             "imageio_ffmpeg 副本）。合并音视频必需"
+    )
     
     parser.add_argument(
         "--no-check-certificate",
@@ -666,6 +671,7 @@ def main_cli(args: Optional[list] = None):
         download_danmaku=parsed_args.danmaku,
         audio_format=parsed_args.audio_format,
         video_only=parsed_args.video_only,
+        ffmpeg_path=parsed_args.ffmpeg_location,
     )
 
     # `--retry-downloads`：把「上次下载失败的」变成本次的目标列表。
