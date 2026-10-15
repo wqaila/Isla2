@@ -344,7 +344,25 @@ python -m bilibili_downloader --check-cookie
 > 而且本机没装 Playwright 浏览器，调用只会抛异常、看起来像 bug。
 > 它本来也**从未被任何代码调用**，所以屏蔽不影响任何现有行为。
 
-**方式一：交互菜单（最省事，粘贴后会自动校验）**
+**方式一：图形界面（最省事，推荐）**
+
+双击项目根目录的 **`设置Cookie.bat`**（或直接跑）：
+
+```bash
+python bilibili_downloader/cookie_gui.py
+```
+
+窗口里粘贴 → 点「保存并验证」→ **立刻联网校验并回显用户名**。
+界面上还有「查看状态」「清除」，不用再进终端菜单。
+
+> 💡 **为什么用界面**：终端里粘贴长 Cookie 很别扭（容易带换行、
+> 终端可能吞字符），而且**看不出到底成没成**。
+> 界面还能在你手滑时**自动备份**旧 Cookie（`bilibili_cookies.txt.bak-<时间戳>`）。
+>
+> ⚠️ **安全**：Cookie 只写进本地文件，**不经过网络、不进任何日志**
+> —— 比把它贴到聊天/文档里安全得多。
+
+**方式二：交互菜单（无图形界面时用）**
 
 ```bash
 python -m bilibili_downloader --interactive
@@ -353,7 +371,7 @@ python -m bilibili_downloader --interactive
 
 粘贴后会**立刻联网校验**并告诉你成没成 —— 不用自己猜。
 
-**方式二：直接写文件**
+**方式三：直接写文件**
 
 1. 打开浏览器（Chrome/Edge/Firefox）
 2. 访问 https://www.bilibili.com 并登录账号
@@ -365,7 +383,7 @@ python -m bilibili_downloader --interactive
 8. 复制**完整的 Cookie 值**（至少要含 `SESSDATA`；建议连 `bili_jct`、
    `DedeUserID` 一起）写入 `bilibili_cookies.txt`
 
-**方式三：代码里设置**
+**方式四：代码里设置**
 
 ```python
 from cookie_manager import CookieManager
