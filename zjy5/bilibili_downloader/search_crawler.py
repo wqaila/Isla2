@@ -20,6 +20,30 @@ except ImportError:  # 直接以脚本方式运行本文件时回退
     from wbi import build_signed_query
 
 
+# 搜索接口支持的排序值（**与频道接口不同**，别混用）。
+SEARCH_ORDER_MAP = {
+    "totalrank": 0,    # 综合排序
+    "click": 1,        # 最多点击
+    "pubdate": 2,      # 最新发布
+    "stow": 7,         # 最多收藏
+}
+SEARCH_ORDERS = tuple(SEARCH_ORDER_MAP)
+
+
+def resolve_search_order(order: str) -> int:
+    """把排序名转成搜索接口的数值；**未知值报错而不是静默降级**。
+
+    ⚠️ 原来是 `order_map.get(order, 0)` —— 传 `hot`（那是**频道**的值）
+    会**悄悄变成「综合排序」**，用户毫无察觉。
+    """
+    if order in SEARCH_ORDER_MAP:
+        return SEARCH_ORDER_MAP[order]
+    raise ValueError(
+        f"搜索排序不支持 {order!r}；可用值：{'/'.join(SEARCH_ORDERS)}"
+        f"（注意 hot/view/latest 是**频道**专用的，搜索不接受）"
+    )
+
+
 class SearchCrawler:
     """Bilibili 搜索爬取器"""
     
@@ -64,15 +88,8 @@ class SearchCrawler:
         :param order: 排序方式 (totalrank/click/pubdate/stow)
         :return: 视频列表
         """
-        # 排序映射
-        order_map = {
-            "totalrank": 0,    # 综合排序
-            "click": 1,        # 最多点击
-            "pubdate": 2,      # 最新发布
-            "stow": 7,         # 最多收藏
-        }
-        
-        order_value = order_map.get(order, 0)
+        # 排序映射：未知值**报错**（见 resolve_search_order 的说明）
+        order_value = resolve_search_order(order)
         
         # 搜索 API
         api_url = "https://api.bilibili.com/x/web-interface/search/type"

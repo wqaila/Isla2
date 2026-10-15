@@ -21,6 +21,33 @@ except ImportError:  # 直接以脚本方式运行本文件时回退
     from wbi import build_signed_query
 
 
+# 频道接口支持的排序值（**与搜索接口不同**，别混用）。
+# 暴露成常量是为了让 CLI 的 help、参数校验与这里的映射共用同一份定义，
+# 避免三处各写一份、改一处漏两处。
+CHANNEL_ORDER_MAP = {
+    "pubdate": 1,    # 最新发布
+    "latest": 1,     # 最新发布（同义词）
+    "hot": 3,        # 最热
+    "view": 2,       # 最多播放
+}
+CHANNEL_ORDERS = tuple(CHANNEL_ORDER_MAP)
+
+
+def resolve_channel_order(order: str) -> int:
+    """把排序名转成频道接口的数值；**未知值报错而不是静默降级**。
+
+    ⚠️ 原来是 `order_map.get(order, 1)` —— 传 `totalrank`（那是**搜索**的值）
+    会**悄悄变成「最新发布」**，用户以为按综合排了，其实不是，且毫无提示。
+    静默兜底比报错难排查得多。
+    """
+    if order in CHANNEL_ORDER_MAP:
+        return CHANNEL_ORDER_MAP[order]
+    raise ValueError(
+        f"频道排序不支持 {order!r}；可用值：{'/'.join(CHANNEL_ORDERS)}"
+        f"（注意 totalrank/click/stow 是**搜索**专用的，频道不接受）"
+    )
+
+
 class ChannelCrawler:
     """Bilibili 频道爬取器"""
     
@@ -79,15 +106,8 @@ class ChannelCrawler:
         :param order: 排序方式 (pubdate/latest/hot)
         :return: 视频列表
         """
-        # 排序映射
-        order_map = {
-            "pubdate": 1,    # 最新发布
-            "latest": 1,     # 最新发布
-            "hot": 3,        # 最热
-            "view": 2,       # 最多播放
-        }
-        
-        order_value = order_map.get(order, 1)
+        # 排序映射：未知值**报错**（见 resolve_channel_order 的说明）
+        order_value = resolve_channel_order(order)
         
         # 频道视频 API
         api_url = "https://api.bilibili.com/x/space/wbi/arc/search"

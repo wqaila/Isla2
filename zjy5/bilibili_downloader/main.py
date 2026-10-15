@@ -16,15 +16,15 @@ from typing import Optional
 try:
     from .downloader import BilibiliDownloader
     from .cookie_manager import CookieManager
-    from .search_crawler import SearchCrawler, SearchDownloader
-    from .channel_crawler import ChannelDownloader
+    from .search_crawler import SearchCrawler, SearchDownloader, SEARCH_ORDERS
+    from .channel_crawler import ChannelDownloader, CHANNEL_ORDERS
     from .subtitle_extractor import SubtitleExtractor
     from .harvest import SubtitleHarvester
 except ImportError:
     from downloader import BilibiliDownloader
     from cookie_manager import CookieManager
-    from search_crawler import SearchCrawler, SearchDownloader
-    from channel_crawler import ChannelDownloader
+    from search_crawler import SearchCrawler, SearchDownloader, SEARCH_ORDERS
+    from channel_crawler import ChannelDownloader, CHANNEL_ORDERS
     from subtitle_extractor import SubtitleExtractor
     from harvest import SubtitleHarvester
 
@@ -479,7 +479,7 @@ def main_cli(args: Optional[list] = None):
         "--max",
         type=int,
         default=10,
-        help="频道/搜索最多下载数量 (默认：10)"
+        help="频道/搜索最多下载数量 (默认：10；必须 ≥1)"
     )
 
     parser.add_argument(
@@ -537,7 +537,9 @@ def main_cli(args: Optional[list] = None):
     parser.add_argument(
         "--order",
         default="pubdate",
-        help="排序方式 (pubdate/hot/view/totalrank/click/stow)"
+        help="排序方式。⚠️ 频道与搜索的**可选值不同**："
+             "频道 pubdate/latest/hot/view；搜索 totalrank/click/pubdate/stow。"
+             "填错会直接报错（不再静默降级）"
     )
     
     parser.add_argument(
@@ -639,6 +641,27 @@ def main_cli(args: Optional[list] = None):
     if parsed_args.version:
         print(f"Bilibili 视频/音频下载器 v{__version__}")
         return
+    
+    # ---- 参数校验：非法值**直接报错退出**，不静默兜底 ----
+    # ⚠️ 静默兜底比报错难排查得多：用户以为按 `--max 50` 下了 50 个，
+    #    实际因为传了 -1 而一个都没下到，却不知道为什么。
+    if parsed_args.max is not None and parsed_args.max < 1:
+        print(f"❌ --max 必须 ≥1，实际给了 {parsed_args.max}", file=sys.stderr)
+        print("   它表示「最多下载多少个」（要「不限」请用 --max-count 0）")
+        return 2
+    if parsed_args.max_count is not None and parsed_args.max_count < 0:
+        print(f"❌ --max-count 不能为负，实际给了 {parsed_args.max_count}"
+              f"（0 表示不限）", file=sys.stderr)
+        return 2
+    if parsed_args.order:
+        # order 的合法值取决于目标是频道还是搜索，这里只做「是否已知」的粗筛；
+        # 具体到某个模块的校验由 resolve_channel_order / resolve_search_order 负责
+        known = set(CHANNEL_ORDERS) | set(SEARCH_ORDERS)
+        if parsed_args.order not in known:
+            print(f"❌ --order 不认识的排序方式：{parsed_args.order!r}", file=sys.stderr)
+            print(f"   频道可用：{'/'.join(CHANNEL_ORDERS)}", file=sys.stderr)
+            print(f"   搜索可用：{'/'.join(SEARCH_ORDERS)}", file=sys.stderr)
+            return 2
     
     verify_ssl = not parsed_args.no_check_certificate
     
@@ -758,6 +781,10 @@ def main_cli(args: Optional[list] = None):
                 order=parsed_args.order
             )
             print(f"下载完成！共下载 {len(results)} 个视频")
+            # ⚠️ 一个都没下到 = 失败，必须返回非 0（否则 CI 无法感知）
+            if not results:
+                print("下载失败：没有成功下载任何视频")
+                return 1
             return
         
         # 搜索并下载
@@ -774,6 +801,9 @@ def main_cli(args: Optional[list] = None):
                 audio_only=parsed_args.audio_only
             )
             print(f"下载完成！共下载 {len(results)} 个视频")
+            if not results:
+                print("下载失败：没有成功下载任何视频")
+                return 1
             return
         
         # 仅下载字幕
@@ -799,6 +829,9 @@ def main_cli(args: Optional[list] = None):
                 max_videos=parsed_args.max_count or parsed_args.max
             )
             print(f"下载完成！共下载 {len(results)} 个视频")
+            if not results:
+                print("下载失败：合集里没有成功下载任何视频")
+                return 1
         elif parsed_args.audio_only:
             result = downloader.download_audio(
                 parsed_args.url,
