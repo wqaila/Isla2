@@ -31,13 +31,21 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ZJY5 = os.path.dirname(HERE)
+# ⚠️ 推送工具在 `.workbuddy-ai/tools/`，而**该目录不入库** ——
+# 所以 CI 上不存在。依赖它的用例必须能**优雅跳过**，
+# 否则整个 zjy5 测试步骤会因 ImportError 而挂掉（实测踩过）。
 TOOLS = os.path.join(os.path.dirname(ZJY5), ".workbuddy-ai", "tools")
-
-sys.path.insert(0, TOOLS)
+HAVE_TOOLS = os.path.isdir(TOOLS)
+if HAVE_TOOLS:
+    sys.path.insert(0, TOOLS)
 
 
 class Missing(Exception):
     """断言失败。"""
+
+
+class Skipped(Exception):
+    """环境不具备（不算失败）。"""
 
 
 def eq(actual, expected, label):
@@ -48,6 +56,11 @@ def eq(actual, expected, label):
 def ok(condition, label):
     if not condition:
         raise Missing(label)
+
+
+def _require_tools():
+    if not HAVE_TOOLS:
+        raise Skipped("推送工具目录不存在（.workbuddy-ai 不入库，CI 上正常）")
 
 
 BACKUP_NAME = "bilibili_cookies.txt.bak-20261015-145237"
@@ -62,6 +75,7 @@ def test_push_collector_skips_backup_by_design():
     把前缀规则整条删掉后，断言仍可能因 `.bak` 判断而通过（实测确实如此）。
     现在改为：**真的跑一遍收集器**，确认备份名不在结果里。
     """
+    _require_tools()
     from collect_files import collect
 
     files = {r for r, _ in collect()[0]}
@@ -80,6 +94,7 @@ def test_prefix_rule_is_what_blocks_non_bak_names():
     但那只检查**配置**，不检查**是否被使用** —— 把使用它的那行 `if` 删掉后
     断言仍通过（实测确实如此）。现在**真造一个文件**放进目录跑收集器。
     """
+    _require_tools()
     from collect_files import collect
 
     # 造一个真实的不带 .bak 的凭据备份文件
@@ -156,15 +171,21 @@ TESTS = [
 def run():
     passed = 0
     failed = 0
+    skipped = 0
     for test in TESTS:
         try:
             test()
             print(f"  ✓ {test.__name__}")
             passed += 1
+        except Skipped as e:
+            # 环境不具备（CI 上没有本地推送工具）——不算失败
+            print(f"  - {test.__name__}：跳过（{e}）")
+            skipped += 1
         except Exception as e:
             print(f"  ✗ {test.__name__}：{type(e).__name__}: {e}")
             failed += 1
-    print(f"\ntest_cookie_backup_safety：通过 {passed}，失败 {failed}")
+    tail = f"，跳过 {skipped}" if skipped else ""
+    print(f"\ntest_cookie_backup_safety：通过 {passed}，失败 {failed}{tail}")
     return failed == 0
 
 
