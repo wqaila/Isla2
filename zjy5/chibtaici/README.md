@@ -681,7 +681,7 @@ OCR 逐帧、语音识别逐段都是长任务，现在都会打印进度：
 
 ## 测试
 
-`tests/` 下 18 个脚本 / 173 个用例**全部离线**（不联网、不需要 GPU），直接跑：
+`tests/` 下 19 个脚本 / 179 个用例**全部离线**（不联网、不需要 GPU），直接跑：
 
 ```bash
 cd zjy5
@@ -708,6 +708,7 @@ cd zjy5
 | `test_cookie_flow.py` | **Cookie 流程**：手动粘贴落盘、状态走联网校验（不再误报）、自动获取已屏蔽 |
 | `test_param_validation.py` | **参数校验与退出码**：order 未知值报错（不再静默降级）、频道/搜索/合集失败返回非 0 |
 | `test_cookie_gui_core.py` | **Cookie 图形界面的逻辑层**：保存前备份、缺 SESSDATA 拦截、联网校验回显、清除留备份 |
+| `test_cookie_backup_safety.py` | **Cookie 备份防泄露**：git 必须忽略备份、收集器按凭据前缀挡（不靠 `.bak` 巧合） |
 
 另外 `tests/smoke_ocr.py` 是**集成冒烟测试**（需要 paddleocr，会真跑一次 OCR）：
 它临时合成一段带字幕的小视频，验证「识别准确 + 跳帧生效 + 相同文本会合并」。
