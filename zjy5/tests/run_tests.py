@@ -38,6 +38,7 @@ TEST_MODULES = [
     "test_cookie_flow.py",
     "test_param_validation.py",
     "test_cookie_gui_core.py",
+    "test_cookie_backup_safety.py",
 ]
 
 

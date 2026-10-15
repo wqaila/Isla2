@@ -28,3 +28,10 @@ bilibili_cookies.txt
 .venv/
 venv/
 env/
+
+# Cookie 备份（GUI 保存前自动生成，含同样完整的凭据，必须忽略）
+
+bilibili_cookies.txt.bak-*
+
+bilibili_cookies*.bak*
+
