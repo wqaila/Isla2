@@ -1,0 +1,23 @@
+menu "zjy11 配置"
+
+config ZJY11_GATEWAY_URL
+    string "网关地址（例如 http://192.168.42.42:8111）"
+    default "http://192.168.1.100:8111"
+    help
+        必须是局域网地址，不要用 127.0.0.1 或 localhost。
+
+config ZJY11_DEVICE_TOKEN
+    string "网关设备令牌"
+    default ""
+    help
+        网关访问令牌，不是模型 API Key。模型密钥只保存在电脑端。
+
+config ZJY11_WIFI_SSID
+    string "Wi-Fi 名称（2.4 GHz）"
+    default ""
+
+config ZJY11_WIFI_PASSWORD
+    string "Wi-Fi 密码"
+    default ""
+
+endmenu

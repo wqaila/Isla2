@@ -1,0 +1,16 @@
+.venv/
+.env
+.env.*
+!.env.example
+.local/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+
+# ===== ESP-IDF 工具链与构建产物（体积大，不入库）=====
+.toolchain/
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig.old
+*.zip

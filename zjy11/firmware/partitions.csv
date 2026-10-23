@@ -1,0 +1,9 @@
+# 分区表：ESP32-S3-Touch-LCD-1.85B（16MB Flash）
+# 理由：LVGL 中文字库使固件超过 1MB，默认单应用分区放不下。
+# 这里给应用 4MB，其余空间留给预留给后续扩展（语音缓存、资源等）。
+
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x9000,   0x6000,
+phy_init,  data, phy,     0xf000,   0x1000,
+factory,   app,  factory, 0x10000,  0x400000,
+storage,   data, spiffs,  0x410000, 0x400000,

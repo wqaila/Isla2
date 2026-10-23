@@ -1,0 +1,62 @@
+name: CI
+
+# 本文件位于 zjy9 仓库根部（远端 github.com/wqaila/Isla2）。
+# 仓库的根就是 zjy9/ 项目本身，所以下面的路径都**不含** zjy9/ 前缀。
+#
+# 历史背景：原先这份 CI 放在工作区根目录（D:\xiangmudaima\.github\），
+# 但工作区根并不是一个 git 仓库 —— 那份配置从未、也无法被触发，
+# 等于一张纸上的安全网。同时它引用的 `zjy9/server`、`zjy5`、`zjy7`
+# 是按「工作区根」布局写的路径，在本仓库里一个都不存在。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: 服务端 · 静态检查 + 测试
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyflakes
+
+      - name: 语法编译检查
+        run: python -m compileall -q .
+
+      - name: 静态检查（pyflakes，零告警为门槛）
+        # 全树扫描，含 tts/ 等子包 —— 只扫 *.py 会漏掉子目录里的问题。
+        run: python -m pyflakes $(find . -name '*.py' -not -path './venv/*')
+
+      - name: 运行测试
+        # 需要 Ollama / 真实语音引擎的用例在脚本内部自动 SKIP（不判失败）：
+        #   - 无 Ollama → 跳过端到端对话
+        #   - 非 Windows 或无声卡 → 跳过 SAPI 真实合成
+        #   - 无网络 / 未装 edge-tts → 跳过在线合成
+        # 控制器的契约（缓存键、降级、元数据、API 通路）由确定性桩引擎锁住，
+        # 不依赖运行环境，因此这些跳过不会留下覆盖空洞。
+        run: python run_tests.py
+
+  # 注：采集（zjy5）与微调（zjy7）流水线的 CI 不在这里 ——
+  # 这两个项目不在本仓库内，它们各自位于同一远端的其他分支
+  # （zjy5 → tiqutaici 分支）。要为它们加 CI，请在对应分支上
+  # 单独放一份 workflow，而不是在这里引用不存在的路径。

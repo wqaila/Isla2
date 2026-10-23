@@ -71,3 +71,6 @@ Thumbs.db
 # ===== 杂项 =====
 $null
 *.tmp
+
+# ===== 单个项目的大体积二进制 =====
+zjy6/android_app/app/*.zip

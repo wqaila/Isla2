@@ -29,7 +29,6 @@ server/cloudflared-windows-amd64.exe
 # Website（独立静态展示站；后端不提供，但作为项目产物一并入库）
 # 如需排除，取消下面一行的注释即可
 # website/
-$null
 
 # Android
 android/.gradle/

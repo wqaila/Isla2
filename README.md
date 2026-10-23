@@ -18,6 +18,8 @@
 | [`zjy8/`](zjy8/) | **PC 本地推理 + 手机远程调用** | Python / llama-server / Ollama | 可用 |
 | [`zjy9/`](zjy9/) | **爱莉希雅 AI 聊天系统** | FastAPI + Android + 树莓派 + 网页 | 功能最完整 |
 | [`zjy10/`](zjy10/) | **Anime Voice Lab** —— 动漫角色声线复刻 | 文档（规划中）/ GPT-SoVITS | 规划阶段，仅文档 |
+| [`zjy11/`](zjy11/) | **ESP32-S3 云端角色对话原型** | Python 网关 / ESP-IDF | 网关可运行；固件未实现 |
+| [`zjy12/`](zjy12/) | **设计决策台账 + 本地 LLM 基准** | 文档 / 标准库 bench | 文档与基准脚本 |
 | [`zjy13/`](zjy13/) | **ESP32-S3 语音交互 · 云端 LLM 模块** | Python / httpx / DeepSeek | LLM 模块可用，ASR/TTS/固件未开始 |
 
 另外根目录还有一份 [`代码审查报告.md`](代码审查报告.md)，

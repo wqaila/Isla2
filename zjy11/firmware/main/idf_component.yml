@@ -1,0 +1,7 @@
+﻿## 组件依赖：LVGL 由 ESP-IDF 组件管理器拉取
+## 版本约束取 9 系，与官方 B 型示例一致；实际锁定版本在 dependencies.lock
+dependencies:
+  idf:
+    version: ">=5.5.0"
+  lvgl/lvgl:
+    version: "^9"

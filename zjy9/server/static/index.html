@@ -1592,7 +1592,8 @@ function connectLogWS() {
         if (data.type === 'log') {
             appendLiveLog(data);
         } else if (data.type === 'chat') {
-            appendLiveLog({ level: 'INFO', category: 'chat', message: `[${data.role}] ${data.content?.slice(0,80)}`, time: data.time });
+            // 服务端只广播元数据（正文不再下发），这里也就只显示长度与耗时
+            appendLiveLog({ level: 'INFO', category: 'chat', message: `[${data.role}] ${data.length ?? 0} 字符 · ${data.tokens ?? 0} tokens · ${data.response_ms ?? 0}ms`, time: data.time });
         } else if (data.type === 'connection') {
             appendLiveLog({ level: 'INFO', category: 'connection', message: `${data.event}: ${data.device_name||data.device_id}`, time: data.time });
             refreshDashboard();

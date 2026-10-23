@@ -171,16 +171,25 @@ class LoggerService:
 
     def chat_log(self, session_id: str, role: str, content: str,
                  tokens: int = 0, response_ms: int = 0):
-        """记录聊天消息日志"""
-        preview = content[:50] + "..." if len(content) > 50 else content
-        self.info("chat", f"[{role}] {preview}")
+        """记录聊天消息日志（**只记元数据，不记正文**）。
 
-        # 广播聊天日志给监控面板（截断内容避免传输过大的消息）
+        ⚠️ 这里刻意不落正文。这条日志有两条出口，原先两条都带着正文：
+          ① 写进 system_logs 表 → `/api/logs` 可读；
+          ② 广播给所有 `/ws/logs` 订阅者。
+        而 `/ws/logs` 在未设 api_token 时是放行的（见 main.py 的 `_ws_token_ok`），
+        正文一旦跟着出去，任何能访问到端口的人都能实时读到用户与 AI 的对话
+        —— 开了公网隧道就等于把对话公开到互联网。字数与 token 数足够支撑
+        面板的健康监控，正文没有出现在日志里的正当理由。
+        """
+        length = len(content or "")
+        self.info("chat", f"[{role}] {length} 字符, {tokens} tokens, {response_ms}ms")
+
+        # 广播聊天事件给监控面板（同样只传元数据）
         self._enqueue("broadcast", {
             "type": "chat",
             "session_id": session_id,
             "role": role,
-            "content": content[:200] if len(content) > 200 else content,
+            "length": length,
             "tokens": tokens,
             "response_ms": response_ms,
             "time": datetime.now().isoformat(),
