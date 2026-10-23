@@ -11,7 +11,7 @@
 | 2. 支持角色卡注入 | `server/dialogue/character.py` | ✅ 已验证 |
 | 3. 支持最近对话历史 | `build_messages(max_history_messages=...)` | ✅ 已验证 |
 | 4. 支持多轮对话 | 无状态 messages 列表，由调用方维护 | ✅ 已验证 |
-| 5. 优先支持流式文本输出 | `LLMClient.chat(on_delta=...)` | ✅ 已验证（对本地桩） |
+| 5. 优先支持流式文本输出 | `LLMClient.chat(on_delta=...)` | ✅ 已验证（本地桩 + 真实 DeepSeek） |
 | 6. 记录首片段与完整回复时间 | `LLMResult.first_token_ms` / `total_ms` | ✅ 已验证 |
 | 7. 超时/限流/网络/API 错误处理 | `server/llm/base.py` 错误体系 | ✅ 已验证 |
 | 8. 日志不输出密钥 | `redacted()` + 测试断言 | ✅ 已验证 |
@@ -21,7 +21,9 @@
 | 12. 防同轮重复调用（避免重复扣费） | `turn_id` 去重 | ✅ 已验证 |
 | 13. 服务商返回格式适配 | `ChatAdapter` 注册表 | ✅ 已验证（OpenAI 兼容协议） |
 
-**未实现（按文档要求延后）**：真实服务商联调、TTS 音色绑定、角色切换、记忆系统、WebSocket 协议。
+**未实现（按文档要求延后）**：TTS 音色绑定、角色切换、记忆系统、WebSocket 协议、ESP32 固件。
+
+> 真实服务商联调已完成：`deepseek-flash`，见 [docs/model-selection.md](docs/model-selection.md)。
 
 ## 2. 环境（本机实测）
 
@@ -60,6 +62,21 @@ notepad .env   # 填写 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 
 `.env` 已在 `.gitignore` 中，不会被提交。
 
+### 交互演示
+
+**网页版（推荐）**：双击 `启动演示.bat`，浏览器自动打开 `http://127.0.0.1:8760`。
+
+**终端版**：双击 `开始对话.bat`，或：
+
+```powershell
+$env:PYTHONUTF8="1"
+.\.venv\Scripts\python.exe -m tools.chat_demo
+```
+
+终端命令：`/reset` 清空历史、`/stats` 统计、`/cancel` 取消、`/card` 查看角色卡、`/quit` 退出。
+
+详细操作见 [docs/demo-guide.md](docs/demo-guide.md)。
+
 ### 冒烟测试（真实服务商）
 
 ```powershell
@@ -90,7 +107,7 @@ $env:LLM_MODEL="fake-model"
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-本机实测结果：**51 passed in 10.23s**。
+本机实测结果：**111 passed in 10.4s**。
 
 ## 4. 真实测试记录
 
@@ -98,14 +115,15 @@ $env:LLM_MODEL="fake-model"
 
 ```
 $ .\.venv\Scripts\python.exe -m pytest tests -q
-..........................................................               [100%]
-58 passed in 10.28s
+........................................................................ [ 64%]
+.......................................                                  [100%]
+111 passed in 10.44s
 ```
 
 覆盖：配置解析/校验/脱敏、SSE 解析、HTTP 状态码映射、重试后成功、鉴权失败不重试、
 限流、5xx、坏 JSON、连接拒绝、超时、turn 去重、cancel 中途取消、角色卡加载、
 历史截断、system 注入防护、密钥不落日志、思考内容不进正文、thinking 参数构造、
-.env 编码损坏检测。
+.env 编码损坏检测、软截断、空历史记忆提问拦截、重置换 session_id。
 
 ### 4.2 真实 DeepSeek 调用（2026-10-23，本机）
 
@@ -193,18 +211,32 @@ zjy13/
 │  │  └─ client.py       # LLMClient：流式/重试/取消/去重/计时
 │  ├─ dialogue/
 │  │  ├─ __init__.py
-│  │  └─ character.py    # 角色卡加载 + 提示词结构化组装
+│  │  ├─ character.py    # 角色卡加载 + 提示词结构化组装 + few-shot
+│  │  ├─ session.py      # 会话层：多轮历史/轮次/取消/软截断
+│  │  ├─ guards.py       # 空历史 + 记忆类提问的结构性拦截
+│  │  └─ text_utils.py   # 句边界软截断、可朗读化
 │  └─ characters/
-│     └─ default.yaml    # 默认角色卡（含 5 组示例对话）
+│     └─ default.yaml    # 默认角色卡（含 7 组示例对话）
 ├─ tools/
 │  ├─ __init__.py
 │  ├─ fake_llm_server.py # 本地 OpenAI 兼容桩（仅测试用）
-│  └─ llm_smoke.py       # 命令行冒烟
+│  ├─ llm_smoke.py       # 命令行冒烟
+│  ├─ bench_models.py    # 真实模型对比基准
+│  ├─ chat_demo.py       # 终端交互演示
+│  ├─ web_demo.py        # 网页交互演示（浏览器）
+│  └─ demo_report.py     # 生成 HTML 演示报告
+├─ docs/
+│  ├─ model-selection.md # DeepSeek 模型选型报告
+│  ├─ character-review.md# 角色卡审查报告
+│  └─ demo-guide.md      # 演示操作指南
 └─ tests/
    ├─ test_config.py
    ├─ test_adapter.py
    ├─ test_character.py
-   └─ test_client.py
+   ├─ test_client.py
+   ├─ test_session.py
+   ├─ test_guards.py
+   └─ test_text_utils.py
 ```
 
 ## 8. 下一阶段前置条件
