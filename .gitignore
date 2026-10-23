@@ -39,6 +39,8 @@ zjy7/data/
 bilibili_cookies.txt
 .encryption_key
 runtime_config.json
+.env
+.env.local
 
 # ===== 构建产物 =====
 build/
