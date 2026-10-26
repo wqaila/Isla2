@@ -1,7 +1,16 @@
 .venv/
+.venv-asr/
 __pycache__/
 *.pyc
 .env
 logs/
 .pytest_cache/
 tests/.tmp/
+
+# ===== 模型与下载缓存（体积大，不入库）=====
+_models/
+_wheels/
+_pipcache/
+*.pt
+*.gguf
+*.safetensors
