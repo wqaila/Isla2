@@ -17,3 +17,6 @@ _pipcache/
 
 # pytest 临时目录
 pytest-of-*/
+
+# 固件备份（16MB 二进制，不入库；bootlog.txt 保留）
+backup/esp32/*.bin
