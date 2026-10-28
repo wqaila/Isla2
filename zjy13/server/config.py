@@ -104,6 +104,9 @@ class LLMConfig:
     # 会让语音交互的首字延迟增加约 1~2.5 秒（本机实测）。
     # 取值："default"（不发送该参数）/ "disabled" / "enabled"
     thinking: str = "default"
+    # HTTP 代理。默认空表示直连（trust_env=False，不读系统代理）。
+    # 需要走代理时显式配置，例如 http://127.0.0.1:7897
+    proxy: str = ""
 
     # ---- 构造 ----
 
@@ -126,6 +129,7 @@ class LLMConfig:
             stream=_env_bool("LLM_STREAM", True),
             stream_include_usage=_env_bool("LLM_STREAM_INCLUDE_USAGE", False),
             thinking=_env_str("LLM_THINKING", "default") or "default",
+            proxy=_env_str("LLM_PROXY", ""),
         )
 
     # ---- 校验 ----
@@ -181,6 +185,7 @@ class LLMConfig:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "thinking": self.thinking,
+            "proxy": self.proxy or "(直连)",
         }
 
 

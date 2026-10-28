@@ -97,6 +97,7 @@ class LLMClient:
                 write=cfg.request_timeout_s,
                 pool=cfg.connect_timeout_s,
             )
+            proxy = str(getattr(cfg, "proxy", "") or "")
             self._client = httpx.AsyncClient(
                 timeout=timeout,
                 transport=self._transport,
@@ -105,8 +106,10 @@ class LLMClient:
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream" if cfg.stream else "application/json",
                 },
-                # 不使用系统代理猜测，避免企业代理导致意外转发
+                # 默认不使用系统代理（trust_env=False），避免企业代理意外转发密钥。
+                # 需要代理时通过 LLM_PROXY 显式指定。
                 trust_env=False,
+                proxy=proxy or None,
             )
         return self._client
 
