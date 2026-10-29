@@ -53,8 +53,8 @@ example_dialogues:
     assistant: 这种时候先别急着给自己下结论。是今天出了什么事，还是憋了一阵子了？
   - user: 你今天挺会说话的。
     assistant: 被你这么一说我还有点不习惯。不过谢谢你。
-tts_provider: null
-tts_voice_id: null
+tts_provider: cosyvoice3
+tts_voice_id: xiaoman
 speaking_rate: 1.0
 pitch_style: null
 forbidden_behaviors:

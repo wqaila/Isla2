@@ -1,0 +1,12 @@
+## 组件依赖
+##
+## esp_websocket_client：ESP-IDF 官方 WebSocket 客户端组件。
+## 不随 IDF 主仓库分发（不在 components/ 里），必须由组件管理器拉取。
+##
+## 若本机无法联网拉取，可用 scripts/fetch_idf_component.py 预先下载到
+## 本地 components/ 目录（离线编译）。
+dependencies:
+  idf:
+    version: ">=5.5.0"
+  espressif/esp_websocket_client:
+    version: "^1.2.0"

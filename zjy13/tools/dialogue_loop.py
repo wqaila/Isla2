@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import time
 from dataclasses import dataclass, field, replace
@@ -111,6 +112,7 @@ async def run_turn(
     wav_path: Path | None,
     asr: ASRRunner | None,
     turn_no: int,
+    voice_id: str | None = None,
 ) -> DialogueResult:
     """跑一轮完整链路。"""
     timing = TurnTiming()
@@ -158,7 +160,9 @@ async def run_turn(
     print(f"  [TTS] 合成语音 ...", end="", flush=True)
     try:
         tts_result = await tts_client.synthesize(
-            reply, turn_id=f"tts-{turn_no}-{int(time.time()*1000)}"
+            reply,
+            turn_id=f"tts-{turn_no}-{int(time.time()*1000)}",
+            voice_id=voice_id,
         )
     except TTSError as exc:
         print(f" 失败: {exc.code}: {exc.message}")
@@ -196,14 +200,26 @@ async def main_async(args: argparse.Namespace) -> int:
         out_dir = PROJECT_ROOT / out_dir
     tts_cfg = replace(tts_cfg, output_dir=out_dir)
 
-    card = CharacterCard.from_file(
-        PROJECT_ROOT / "server" / "characters" / f"{args.character}.yaml"
-    )
+    # 角色 id 必须在 .env 加载之后再决定，否则读到的是进程启动时的旧环境变量。
+    character_id = args.character or os.environ.get("DEFAULT_CHARACTER_ID", "default")
+    card_path = PROJECT_ROOT / "server" / "characters" / f"{character_id}.yaml"
+    if not card_path.is_file():
+        print(f"[错误] 角色卡不存在: {card_path}", file=sys.stderr)
+        print(f"  可选: {[p.stem for p in card_path.parent.glob('*.yaml')]}", file=sys.stderr)
+        return 2
+
+    card = CharacterCard.from_file(card_path)
+
+    # 角色卡绑定的音色优先，其次才是环境变量里的默认音色。
+    # 这样切换角色时声音跟着角色走，不需要额外改 .env。
+    card_voice = (card.tts_settings() or {}).get("tts_voice_id")
+    voice_id = card_voice or tts_cfg.default_voice
 
     print("=" * 60)
     print("  本地语音对话闭环")
     print("=" * 60)
     print(f"  角色  : {card.name} (v{card.prompt_version()})")
+    print(f"  音色  : {voice_id}")
     print(f"  LLM   : {llm_cfg.model}")
     print(f"  TTS   : {tts_cfg.base_url}")
 
@@ -261,6 +277,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     session=session, tts_client=tts_client,
                     user_text=line, wav_path=None, asr=None,
                     turn_no=len(results) + 1,
+                    voice_id=voice_id,
                 )
                 results.append(r)
                 print()
@@ -278,6 +295,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 r = await run_turn(
                     session=session, tts_client=tts_client,
                     user_text="", wav_path=wav, asr=asr, turn_no=i,
+                    voice_id=voice_id,
                 )
                 results.append(r)
                 print()
@@ -312,7 +330,11 @@ def main() -> int:
     ap.add_argument("audio", nargs="?", help="WAV 文件路径（音频模式）")
     ap.add_argument("--text-mode", action="store_true",
                     help="文本输入模式，跳过 ASR")
-    ap.add_argument("--character", default="default")
+    ap.add_argument(
+        "--character",
+        default=None,
+        help="角色卡 id（默认取 .env 的 DEFAULT_CHARACTER_ID）",
+    )
     ap.add_argument("--use-vad", action="store_true", help="ASR 启用 VAD")
     args = ap.parse_args()
     return asyncio.run(main_async(args))

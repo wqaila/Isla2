@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -169,13 +170,26 @@ class CharacterCard:
 
     @classmethod
     def from_file(cls, path: str | Path) -> "CharacterCard":
+        """从 .yaml/.yml 或 .json 加载角色卡。
+
+        支持 JSON 是因为历史角色卡（如 zjy9 的 elysia.json）就是 JSON 格式，
+        直接复用可以避免手工转录出错。
+        """
         p = Path(path)
         if not p.is_file():
             raise LLMConfigError(f"角色卡文件不存在: {p}")
-        try:
-            raw = yaml.safe_load(p.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            raise LLMConfigError(f"角色卡 YAML 解析失败: {p}: {exc}") from exc
+
+        text = p.read_text(encoding="utf-8")
+        if p.suffix.lower() == ".json":
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise LLMConfigError(f"角色卡 JSON 解析失败: {p}: {exc}") from exc
+        else:
+            try:
+                raw = yaml.safe_load(text)
+            except yaml.YAMLError as exc:
+                raise LLMConfigError(f"角色卡 YAML 解析失败: {p}: {exc}") from exc
         return cls.from_dict(raw, source_path=p)
 
     # ---- 提示词 ----

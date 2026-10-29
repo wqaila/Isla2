@@ -1,0 +1,47 @@
+menu "zjy13 语音项目"
+
+    config APP_WIFI_SSID
+        string "Wi-Fi SSID（必须 2.4GHz）"
+        default ""
+        help
+            板子只支持 2.4GHz。配成 5GHz 的 SSID 会报 reason 201（找不到 AP）。
+
+    config APP_WIFI_PASSWORD
+        string "Wi-Fi 密码"
+        default ""
+        help
+            开放网络留空。
+
+    config APP_SERVER_HOST
+        string "服务端地址（电脑的局域网 IP）"
+        default "192.168.1.100"
+        help
+            运行 server.ws.server 的那台电脑的 IP。
+            注意服务端要用 --host 0.0.0.0 启动，默认的 127.0.0.1 无法被板子访问。
+
+    config APP_SERVER_PORT
+        int "服务端端口"
+        default 8765
+
+    config APP_DEVICE_ID
+        string "设备标识"
+        default "esp32s3-01"
+        help
+            服务端日志里用于区分多台设备。
+
+    config APP_DEVICE_TOKEN
+        string "设备访问令牌（可留空）"
+        default ""
+        help
+            服务端用 --token 启动时必填，否则留空。
+
+    config APP_UI_LCD_ENABLE
+        bool "启用 LCD 显示"
+        default n
+        help
+            本项目主要复用板子里已有的显示固件。
+            打开需要额外引入 ST77916 驱动组件，
+            且中文显示需要字库。联调阶段建议关闭，
+            用串口日志 + 屏幕已有 UI 即可。
+
+endmenu

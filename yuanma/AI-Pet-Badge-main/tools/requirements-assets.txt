@@ -1,0 +1,4 @@
+Pillow>=11,<13
+imageio-ffmpeg==0.6.0
+numpy==2.3.4
+pyserial==3.5

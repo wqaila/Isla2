@@ -1,0 +1,18 @@
+# 分区表：ESP32-S3-Touch-LCD-1.85B（16MB Flash）
+#
+# 布局说明：
+#   - 应用给 4MB：语音固件本身约 1.5MB，留足余量
+#   - storage 4MB：预留给缓存/资源
+#   - 不用 OTA 双槽（原厂固件也没有 ota_0/ota_1），
+#     升级走 USB 重烧，避免浪费 4MB
+#
+# 与原厂固件分区表的差异（重要）：
+#   原厂 ai_pet_badge 是 factory@0x20000(9MB) + model@0x920000(5MB)。
+#   本固件用标准布局 factory@0x10000，**烧录时会整片覆盖原固件**。
+#   原固件已完整备份（backup/esp32/，SHA256 已记录），可随时刷回。
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x400000,
+storage,    data, spiffs,  0x410000, 0x400000,

@@ -285,7 +285,10 @@ class TTSClient:
         # 服务返回 wav 二进制 + 头部元数据
         out_dir = self.config.output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        name = output_name or f"tts_{turn_key}.wav"
+        # 文件名带上音色标识，便于事后区分是哪套音色生成的。
+        # 历史文件不改名（避免打乱按时间排序、影响已引用它们的日志与测试）。
+        used_voice = _sanitize_voice_id(payload["voice_id"])
+        name = output_name or f"tts_{used_voice}_{turn_key}.wav"
         out_path = out_dir / name
         out_path.write_bytes(response.content)
 
@@ -321,6 +324,20 @@ class TTSClient:
     def reset_turn(self, turn_id: str) -> None:
         """允许显式重试同一 turn。"""
         self._completed_turns.discard(turn_id)
+
+
+def _sanitize_voice_id(voice_id: str) -> str:
+    """把音色名清洗成可安全放进文件名的片段。
+
+    voice_id 来自角色卡配置或调用方，可能含空格、路径分隔符等。
+    这里只保留字母数字与下划线连字符，其余替换为下划线；
+    全空时回退为 "unknown"，避免出现 `tts_.wav` 这类无名文件。
+    """
+    import re
+
+    cleaned = re.sub(r"[^0-9A-Za-z_\-]", "_", (voice_id or "").strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "unknown"
 
 
 def _probe_wav(path: Path) -> tuple[int, float]:

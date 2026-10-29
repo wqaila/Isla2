@@ -85,6 +85,59 @@ def test_synthesize_success(cfg: TTSConfig) -> None:
     assert result.realtime_factor > 0
 
 
+def test_output_filename_contains_voice(cfg: TTSConfig) -> None:
+    """输出文件名必须带音色标识，否则事后无法区分是哪套音色生成的。"""
+    wav = make_wav_bytes(1.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=wav,
+                              headers={"x-sample-rate": "24000", "x-duration": "1.0"})
+
+    async def go():
+        async with TTSClient(cfg, transport=httpx.MockTransport(handler)) as tts:
+            return await tts.synthesize("你好", turn_id="t9", voice_id="elysia")
+
+    result = asyncio.run(go())
+    assert result.audio_path.name == "tts_elysia_t9.wav"
+    assert "elysia" in result.audio_path.name
+
+
+def test_output_filename_sanitizes_unsafe_voice(cfg: TTSConfig) -> None:
+    """音色名含路径分隔符时必须清洗，不能写到目录外。"""
+    wav = make_wav_bytes(1.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=wav,
+                              headers={"x-sample-rate": "24000", "x-duration": "1.0"})
+
+    async def go():
+        async with TTSClient(cfg, transport=httpx.MockTransport(handler)) as tts:
+            return await tts.synthesize("你好", turn_id="t10", voice_id="../evil")
+
+    result = asyncio.run(go())
+    # 必须仍落在 output_dir 内
+    assert result.audio_path.parent == cfg.output_dir
+    assert ".." not in result.audio_path.name
+    assert result.audio_path.name == "tts_evil_t10.wav"
+
+
+def test_output_name_override_still_wins(cfg: TTSConfig) -> None:
+    """显式 output_name 优先于自动命名（保持向后兼容）。"""
+    wav = make_wav_bytes(1.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=wav,
+                              headers={"x-sample-rate": "24000", "x-duration": "1.0"})
+
+    async def go():
+        async with TTSClient(cfg, transport=httpx.MockTransport(handler)) as tts:
+            return await tts.synthesize("你好", turn_id="t11",
+                                        voice_id="elysia", output_name="custom.wav")
+
+    result = asyncio.run(go())
+    assert result.audio_path.name == "custom.wav"
+
+
 def test_headers_missing_falls_back_to_wav_probe(cfg: TTSConfig) -> None:
     """服务没返回元数据头时，应从 WAV 头读取。"""
     wav = make_wav_bytes(1.5)

@@ -20,7 +20,7 @@ import sys
 import time
 import wave
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -37,11 +37,95 @@ PROMPT_TEXT = (
 )
 SPK_ID = "xiaoman"
 
+# CosyVoice3 的参考文本必须带这个前缀分隔符。
+# 实测教训：只写纯文本（不加前缀）时，注册能成功、健康检查也正常，
+# 但每次合成都在卷积层报
+#   RuntimeError: Calculated padded input size per channel: (3).
+#   Kernel size: (4). Kernel size can't be greater than actual input size
+# 原因是 LLM 前缀错位后生成阶段拿到过短的 token 序列。
+# 官方所有示例（example.py / vllm_example.py）的 prompt_text 都带此前缀。
+PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
+
+# 角色音色注册表：voice_id -> (参考音频, 参考文本)。
+# 参考音频由 tools/prepare_voice_ref.py 从角色语音素材中挑选并归一化导出，
+# 放在 Windows 侧的 server/characters/voices/<voice_id>/ 下，
+# 通过 /mnt/d/... 路径在 WSL 里访问。
+VOICES_DIR = Path(os.environ.get(
+    "TTS_VOICES_DIR",
+    "/mnt/d/xiangmudaima/zjy13/server/characters/voices",
+))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("cosyvoice.server")
+
+
+@dataclass
+class VoiceProfile:
+    """一个可用的音色。"""
+
+    voice_id: str
+    ref_wav: Path
+    ref_text: str
+    is_builtin: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "voice_id": self.voice_id,
+            "ref_wav": str(self.ref_wav),
+            "is_builtin": self.is_builtin,
+        }
+
+
+def discover_voices() -> dict[str, VoiceProfile]:
+    """扫描音色目录，返回 voice_id -> VoiceProfile。
+
+    约定：每个音色一个子目录，内含 ``ref_*.wav`` 与同名 ``.txt``。
+    文本缺失时该音色不可用 —— 零样本克隆没有参考文本会明显跑偏，
+    宁可报错也不要悄悄用空文本合成。
+    """
+    voices: dict[str, VoiceProfile] = {}
+
+    # 内置音色：CosyVoice 自带的示例参考音频
+    if PROMPT_WAV.is_file():
+        voices[SPK_ID] = VoiceProfile(
+            voice_id=SPK_ID,
+            ref_wav=PROMPT_WAV,
+            ref_text=PROMPT_TEXT,
+            is_builtin=True,
+        )
+
+    if not VOICES_DIR.is_dir():
+        logger.warning("音色目录不存在，仅内置音色可用: %s", VOICES_DIR)
+        return voices
+
+    for sub in sorted(VOICES_DIR.iterdir()):
+        if not sub.is_dir():
+            continue
+        wavs = sorted(sub.glob("ref_*.wav")) or sorted(sub.glob("*.wav"))
+        if not wavs:
+            logger.warning("音色 %s 缺少参考音频，已跳过", sub.name)
+            continue
+        wav = wavs[0]
+        txt = wav.with_suffix(".txt")
+        if not txt.is_file():
+            logger.warning("音色 %s 缺少参考文本 %s，已跳过", sub.name, txt.name)
+            continue
+        text = txt.read_text(encoding="utf-8").strip()
+        if not text:
+            logger.warning("音色 %s 的参考文本为空，已跳过", sub.name)
+            continue
+        # 补上 CosyVoice3 必需的分隔符前缀（纯文本会导致合成阶段卷积报错）
+        if "<|endofprompt|>" not in text:
+            text = PROMPT_PREFIX + text
+        voices[sub.name] = VoiceProfile(
+            voice_id=sub.name, ref_wav=wav, ref_text=text, is_builtin=False
+        )
+        logger.info("发现音色 %s -> %s", sub.name, wav.name)
+
+    return voices
 
 
 @dataclass
@@ -57,6 +141,7 @@ class Runtime:
     torch_version: str = ""
     gpu_name: str = ""
     arch_match: bool = False
+    voices: dict[str, VoiceProfile] = field(default_factory=dict)
 
 
 runtime = Runtime()
@@ -93,17 +178,33 @@ def load_model() -> None:
     runtime.load_s = time.time() - t0
     logger.info("模型加载完成 %.1fs, 采样率 %d", runtime.load_s, runtime.sample_rate)
 
-    # 缓存参考音频编码：实测省 16.5% 合成耗时
+    # 缓存所有参考音频编码：实测省 16.5% 合成耗时。
+    # 逐个注册而不是只注册一个，切换音色时才不用重新编码。
     t0 = time.time()
-    model.add_zero_shot_spk(PROMPT_TEXT, str(PROMPT_WAV), SPK_ID)
-    runtime.prompt_cached = True
-    logger.info("参考音频编码已缓存 %.2fs", time.time() - t0)
+    runtime.voices = discover_voices()
+    if not runtime.voices:
+        raise RuntimeError(
+            f"没有可用音色。内置参考音频缺失，且 {VOICES_DIR} 下无有效音色目录。"
+        )
+    for voice_id, prof in runtime.voices.items():
+        try:
+            model.add_zero_shot_spk(prof.ref_text, str(prof.ref_wav), voice_id)
+            logger.info("音色已注册: %s", voice_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("音色 %s 注册失败，已跳过", voice_id)
+            runtime.voices.pop(voice_id, None)
+    runtime.prompt_cached = bool(runtime.voices)
+    logger.info("参考音频编码已缓存 %.2fs，可用音色 %s",
+                time.time() - t0, list(runtime.voices))
 
     # 预热：避免首句承担 CUDA kernel 初始化开销
     t0 = time.time()
+    warmup_voice = SPK_ID if SPK_ID in runtime.voices else next(iter(runtime.voices))
+    warmup_prof = runtime.voices[warmup_voice]
     for _ in range(2):
         list(model.inference_zero_shot(
-            "你好。", "", str(PROMPT_WAV), zero_shot_spk_id=SPK_ID, stream=False))
+            "你好。", "", str(warmup_prof.ref_wav),
+            zero_shot_spk_id=warmup_voice, stream=False))
     runtime.warmup_s = time.time() - t0
     logger.info("预热完成 %.2fs", runtime.warmup_s)
 
@@ -158,6 +259,7 @@ async def health() -> JSONResponse:
         "warmup_s": round(runtime.warmup_s, 2),
         "prompt_cached": runtime.prompt_cached,
         "voice_id": SPK_ID,
+        "voices": [p.to_dict() for p in runtime.voices.values()],
     })
 
 
@@ -172,11 +274,15 @@ async def synthesize(req: SynthRequest) -> Response:
         raise HTTPException(status_code=400, detail="text is empty")
 
     voice = req.voice_id or SPK_ID
-    if voice != SPK_ID:
+    if voice not in runtime.voices:
         raise HTTPException(
             status_code=400,
-            detail=f"unknown voice_id {voice!r}, only {SPK_ID!r} is available",
+            detail=(
+                f"unknown voice_id {voice!r}, available: "
+                f"{sorted(runtime.voices)}"
+            ),
         )
+    profile = runtime.voices[voice]
 
     # 修复上游 bug：token_hop_len 是实例属性，出包后翻倍且不重置，
     # 会导致后续合成的首包越来越慢（实测 1.75s -> 2.25s）。
@@ -187,8 +293,8 @@ async def synthesize(req: SynthRequest) -> Response:
     started = time.perf_counter()
     try:
         chunks = list(model.inference_zero_shot(
-            text, "", str(PROMPT_WAV),
-            zero_shot_spk_id=SPK_ID,
+            text, "", str(profile.ref_wav),
+            zero_shot_spk_id=voice,
             stream=False,
             speed=req.speed,
         ))
@@ -208,8 +314,8 @@ async def synthesize(req: SynthRequest) -> Response:
     rtf = (total_ms / 1000) / duration if duration > 0 else 0.0
 
     logger.info(
-        "synthesize ok chars=%d dur=%.2fs total=%.0fms rtf=%.3f",
-        len(text), duration, total_ms, rtf,
+        "synthesize ok voice=%s chars=%d dur=%.2fs total=%.0fms rtf=%.3f",
+        voice, len(text), duration, total_ms, rtf,
     )
 
     return Response(
@@ -221,7 +327,7 @@ async def synthesize(req: SynthRequest) -> Response:
             "x-total-ms": f"{total_ms:.1f}",
             "x-rtf": f"{rtf:.4f}",
             "x-engine": "cosyvoice3",
-            "x-voice-id": SPK_ID,
+            "x-voice-id": voice,
         },
     )
 

@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -133,12 +134,20 @@ class DialogueServer:
         tts_client: TTSClient,
         card: CharacterCard,
         asr_engine: Any = None,
+        voice_id: str | None = None,
     ) -> None:
         self.config = config
         self.llm = llm_client
         self.tts = tts_client
         self.card = card
         self.asr = asr_engine
+        # 音色必须跟着角色卡走，否则开发板听到的声音和终端演示不一致。
+        # 优先取角色卡绑定的 tts_voice_id，其次回退到 TTSConfig 的默认音色。
+        self.voice_id = (
+            voice_id
+            or (card.tts_settings() or {}).get("tts_voice_id")
+            or tts_client.config.default_voice
+        )
         self._clients: dict[str, ClientSession] = {}
 
     # ------------------------------------------------------------------
@@ -616,7 +625,7 @@ class DialogueServer:
 
         try:
             tts_result = await self.tts.synthesize(
-                reply, turn_id=f"{my_turn}-tts"
+                reply, turn_id=f"{my_turn}-tts", voice_id=self.voice_id
             )
         except TTSUnavailableError as exc:
             await self.send_error(
@@ -753,7 +762,16 @@ async def main_async(args: argparse.Namespace) -> int:
     llm_cfg.validate()
     tts_cfg = TTSConfig.from_env()
 
-    card = CharacterCard.from_file(args.character_file)
+    # 角色卡默认值跟随 .env 的 DEFAULT_CHARACTER_ID，避免命令行入口与
+    # dialogue_loop / web_demo 用不同角色（曾出现"终端是爱莉、板子是小满"）。
+    from ..config import PROJECT_ROOT
+
+    default_char = os.environ.get("DEFAULT_CHARACTER_ID", "default")
+    default_card_path = PROJECT_ROOT / "server" / "characters" / f"{default_char}.yaml"
+    if not default_card_path.is_file():
+        default_card_path = PROJECT_ROOT / "server" / "characters" / "default.yaml"
+
+    card = CharacterCard.from_file(args.character_file or default_card_path)
 
     cfg = ServerConfig(
         host=args.host,
@@ -809,7 +827,8 @@ def main() -> int:
     ap.add_argument("--in-sample-rate", type=int, default=16000)
     ap.add_argument("--in-channels", type=int, default=4)
     ap.add_argument("--token", default="", help="设备访问令牌（空表示不校验）")
-    ap.add_argument("--character-file", default=str(root / "server" / "characters" / "default.yaml"))
+    ap.add_argument("--character-file", default=None,
+                    help="角色卡路径（默认按 .env 的 DEFAULT_CHARACTER_ID 选择）")
     ap.add_argument("--env", default=str(root / ".env"))
     ap.add_argument("--no-asr", action="store_true", help="不加载 ASR（仅测协议）")
     args = ap.parse_args()

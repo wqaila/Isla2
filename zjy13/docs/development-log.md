@@ -2,7 +2,7 @@
 
 > 项目：ESP32-S3 智能角色语音交互系统
 > 架构：**本地 ASR + 云端 LLM + 本地 TTS**（V2 方案）
-> 记录时间：2026-10-26
+> 记录时间：2026-10-28（更新）
 > 所有数据均为真实执行结果，未使用模拟数据。
 
 ---
@@ -16,6 +16,7 @@
 - **ASR**：本地 FunASR Paraformer，RTX 5070 加速
 - **LLM**：云端 DeepSeek API
 - **TTS**：本地 CosyVoice 3.0，跑在 WSL2
+- **角色**：爱莉希雅（Elysia），音色由真实语音素材克隆
 
 ### 当前进度
 
@@ -25,7 +26,8 @@
 | 一 | 本地 ASR 验证 | ✅ 完成并验证 |
 | 二 | 云端 LLM 验证 | ✅ 完成并验证 |
 | 三 | 本地 TTS + 终端闭环 | ✅ 完成并验证 |
-| 四 | WebSocket 通信 | ⬜ 未开始 |
+| 四 | WebSocket 通信 | ✅ 完成，10 轮连续对话通过 |
+| 四.五 | 角色音色克隆 | ✅ 完成，多音色注册 + 全链路生效 |
 | 五 | ESP32 固件 | ⬜ 未开始 |
 | 六 | 整机联调 | ⬜ 未开始 |
 
@@ -267,8 +269,11 @@ self.token_hop_len = min(self.token_max_hop_len, self.token_hop_len * self.strea
 
 | 环境 | 测试数 | 覆盖内容 |
 | --- | --- | --- |
-| `.venv`（LLM+TTS） | **123** | 配置/适配器/客户端/角色卡/会话/守卫/文本处理/TTS 客户端 |
-| `.venv-asr`（ASR） | **28** | 音频格式/重采样/规范化/引擎/架构校验 |
+| `.venv`（LLM+TTS+WS+音色） | **208** | 配置/适配器/客户端/角色卡/会话/守卫/文本处理/TTS 客户端/协议/音频/音色 |
+| `.venv-asr`（全量，含 ASR） | **218** | 上述全部 + ASR 音频格式/重采样/规范化/引擎/架构校验 |
+
+> 两个环境都能用一条命令跑完：`conftest.py` 在缺少 torch 时自动跳过
+> `test_asr_engine.py`，不会在收集阶段整体中断（历史上曾因缺 numpy 中断）。
 
 关键测试：
 
@@ -277,6 +282,8 @@ self.token_hop_len = min(self.token_max_hop_len, self.token_hop_len * self.strea
 - `test_guard_triggers_on_empty_history`：空历史拦截编造
 - `test_duplicate_turn_rejected`：防重复扣费
 - `test_time_context_clarifies_source`：时间来源必须说清
+- `test_server_script_applies_prefix_to_discovered_voices`：音色必须补 `<|endofprompt|>` 前缀
+- `test_elysia_reference_audio_format`：参考音频必须是 24kHz/单声道/3~12s
 
 ---
 
@@ -293,6 +300,8 @@ self.token_hop_len = min(self.token_max_hop_len, self.token_hop_len * self.strea
 | `tools/web_demo.py` | 网页对话演示 |
 | `tools/demo_report.py` | 生成 HTML 报告 |
 | `tools/dialogue_loop.py` | **完整语音闭环** |
+| `tools/prepare_voice_ref.py` | **音色参考音频挑选/导出** |
+| `tools/ws_client_sim.py` | **WebSocket 协议模拟器** |
 
 WSL 侧脚本：
 
@@ -326,6 +335,10 @@ WSL 侧脚本：
 | `docs/model-selection.md` | DeepSeek 模型选型 |
 | `docs/demo-guide.md` | 演示操作指南 |
 | `docs/stage3-dialogue-loop.md` | 阶段三验收 |
+| `docs/protocol.md` | WebSocket 协议与实测 |
+| `docs/esp32-board-report.md` | 开发板状况与固件备份 |
+| `docs/board-firmware-audit.md` | 固件不足审查（更正旧报告） |
+| `docs/voice-elysia.md` | **角色音色克隆（爱莉希雅）** |
 | `docs/development-log.md` | **本文件** |
 
 ---
@@ -362,7 +375,7 @@ WSL 侧脚本：
 - 真实麦克风录音（只用过官方示例 WAV）
 - 长音频（> 1 分钟）
 - 噪声环境
-- ASR + TTS 同时驻留显存的并发表现
+- ~~ASR + TTS 同时驻留显存的并发表现~~ → **已实测：7286 MiB，无泄漏**
 - 连续 10 轮以上对话的稳定性
 - 流式音频拼接处的音质
 - 打断/取消机制
@@ -380,8 +393,9 @@ WSL 侧脚本：
 | --- | --- | --- |
 | 端到端 4.2 秒 | 用户会明显感到等待 | 可接受，有优化空间 |
 | TTS 占 70% 延迟 | 瓶颈明确 | 流式可降 1.2 秒 |
-| 音色不是角色专属 | 角色感弱 | 需录参考音频 |
-| 文本正则化用了回退方案 | 中文数字读法可能不完美 | 需装 wetext 或 ttsfrd |
+| ~~音色不是角色专属~~ | ~~角色感弱~~ | ✅ 已解决：爱莉希雅音色克隆完成 |
+| 文本正则化用了回退方案 | 中文数字读法可能不完美 | ✅ 已解决：wetext 已安装 |
+| 音色主观听感未验证 | 不知道像不像 | 需人工试听 `logs/tts/*.wav` |
 
 ---
 
@@ -410,29 +424,30 @@ $env:PYTHONUTF8="1"
 ### 4. 跑测试
 
 ```powershell
-# LLM + TTS
-.\.venv\Scripts\python.exe -m pytest tests -q --ignore=tests/test_audio_utils.py --ignore=tests/test_asr_engine.py
+# 全部测试（conftest 会自动跳过缺 torch 的 ASR 测试）
+.\.venv\Scripts\python.exe -m pytest tests -q          # 208 passed
 
-# ASR
-.\.venv-asr\Scripts\python.exe -m pytest tests/test_audio_utils.py tests/test_asr_engine.py -q
+# 含 ASR 引擎测试
+.\.venv-asr\Scripts\python.exe -m pytest tests -q      # 218 passed
 ```
 
 ---
 
 ## 十二、下一步
 
-### 阶段四：WebSocket 通信
+### 阶段五：ESP32 固件
 
-按 V2 第十一节：
+前置条件已满足：ASR 已验证、协议已验证（10 轮连续对话通过）、
+角色与音色已就绪。
 
-1. 定义统一消息协议（17 种消息类型）
-2. 实现客户端模拟器
-3. 测试音频上传、文字返回、音频下载
-4. 测试重复消息、超时、取消、连接中断
+需要做：
 
-**前置条件**：需要先确定开发板音频采集格式。
+1. I2S 录音（ES7210 4 通道，布局 `RMNM`）
+2. WebSocket 客户端（协议见 `docs/protocol.md`）
+3. 音频播放（TTS 输出 24kHz，BSP 默认 22050 需确认）
+4. LCD 显示 ASR 文本与 LLM 流式回复
 
 ### 待决策
 
-- 音色：现在用官方示例音频，是否要录小满专属声音
-- 是否先做协议设计（不依赖硬件细节）
+- 是否做流式 TTS（可把首包从 2.98s 降到 1.74s）
+- 是否录更多参考音频提升克隆相似度

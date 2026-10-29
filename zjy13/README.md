@@ -1,167 +1,287 @@
-# AI-Role · 云端 LLM 模块（第五阶段切片）
+# AI-Role · ESP32-S3 智能角色语音交互系统
 
-> 本目录当前**只实现了方案文档第五节的云端 LLM 模块**，其余模块（ASR / TTS / WebSocket / 固件）尚未开始。
-> 所有测试结果均为本机真实执行记录，未在真实云端服务商上验证的部分已明确标注。
+> 架构：**本地 ASR + 云端 LLM + 本地 TTS**（V2 方案）
+> 当前角色：**爱莉希雅（Elysia）**，音色来自真实角色语音素材克隆。
+> 本文件记录的是**实际跑通的状态**，未验证的部分均明确标注。
 
-## 1. 本阶段交付范围
+---
 
-| 文档要求（第五节） | 实现位置 | 状态 |
+## 一、项目进度
+
+| 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 1. 地址/模型/密钥来自环境变量或本地配置 | `server/config.py` `LLMConfig.from_env()` | ✅ 已验证 |
-| 2. 支持角色卡注入 | `server/dialogue/character.py` | ✅ 已验证 |
-| 3. 支持最近对话历史 | `build_messages(max_history_messages=...)` | ✅ 已验证 |
-| 4. 支持多轮对话 | 无状态 messages 列表，由调用方维护 | ✅ 已验证 |
-| 5. 优先支持流式文本输出 | `LLMClient.chat(on_delta=...)` | ✅ 已验证（本地桩 + 真实 DeepSeek） |
-| 6. 记录首片段与完整回复时间 | `LLMResult.first_token_ms` / `total_ms` | ✅ 已验证 |
-| 7. 超时/限流/网络/API 错误处理 | `server/llm/base.py` 错误体系 | ✅ 已验证 |
-| 8. 日志不输出密钥 | `redacted()` + 测试断言 | ✅ 已验证 |
-| 9. 角色卡/历史/系统提示词不混为硬编码 | `SYSTEM_PROMPT_TEMPLATE` + `build_messages` | ✅ 已验证 |
-| 10. 支持取消当前轮次 | `LLMClient.cancel()` | ✅ 已验证 |
-| 11. 有限次重试 + 退避 | `_chat_with_retry` / `_backoff_delay` | ✅ 已验证 |
-| 12. 防同轮重复调用（避免重复扣费） | `turn_id` 去重 | ✅ 已验证 |
-| 13. 服务商返回格式适配 | `ChatAdapter` 注册表 | ✅ 已验证（OpenAI 兼容协议） |
+| — | 云端 LLM 模块 | ✅ 完成，真实 DeepSeek 验证 |
+| 一 | 本地 ASR（FunASR Paraformer） | ✅ 完成，RTF 0.009 |
+| 二 | 云端 LLM 选型与联调 | ✅ 完成，deepseek-flash |
+| 三 | 本地 TTS（CosyVoice3）+ 终端闭环 | ✅ 完成，端到端约 4~5 秒 |
+| 四 | WebSocket 通信 | ✅ 完成，10 轮连续对话通过 |
+| 四.五 | **角色音色克隆（爱莉希雅）** | ✅ 完成，多音色注册 + 全链路生效 |
+| 五 | ESP32 固件 | ✅ 代码完成、编译通过（196KB）、协议验证通过；**未烧录** |
+| 六 | 整机联调 | ⬜ 未开始 |
 
-**未实现（按文档要求延后）**：TTS 音色绑定、角色切换、记忆系统、WebSocket 协议、ESP32 固件。
+---
 
-> 真实服务商联调已完成：`deepseek-flash`，见 [docs/model-selection.md](docs/model-selection.md)。
+## 二、整体架构
 
-## 2. 环境（本机实测）
+```
+┌──────────────┐   WebSocket    ┌─────────────────────────────────┐
+│ ESP32-S3     │◄──────────────►│ Windows 电脑                     │
+│ 录音/显示/播放 │   JSON + 二进制 │                                 │
+└──────────────┘                │  ASR  FunASR Paraformer（GPU）   │
+                                │  LLM  DeepSeek 云端 API          │
+                                │  TTS  CosyVoice3（WSL2 / GPU）   │
+                                └─────────────────────────────────┘
+```
+
+| 模块 | 环境 | 依赖 |
+| --- | --- | --- |
+| ASR | Windows `.venv-asr` | torch 2.8.0+cu128、FunASR 1.4.16 |
+| LLM | Windows `.venv` | httpx、PyYAML |
+| TTS | WSL2 `~/cosyvoice-venv` | torch 2.8.0+cu128、CosyVoice3 |
+| WebSocket | Windows `.venv-asr` | websockets 12.0 |
+
+---
+
+## 三、角色与音色
+
+### 3.1 角色卡
+
+`server/characters/elysia.yaml` —— 爱莉希雅（《崩坏3》真我之律者）。
 
 | 项 | 值 |
 | --- | --- |
-| 操作系统 | Windows |
-| Python | 3.11.9（`C:\Users\user\AppData\Local\Programs\Python\Python311`） |
-| 虚拟环境 | `D:\xiangmudaima\zjy13\.venv` |
-| GPU | NVIDIA GeForce RTX 5070，12227 MiB |
-| 驱动 / CUDA UMD | 610.62 / 13.3 |
-| 依赖 | httpx 0.28.1、PyYAML 6.0.3、python-dotenv 1.2.4、pytest 9.1.1 |
+| 角色 | 爱莉希雅（Elysia） |
+| 对用户的称呼 | 舰长 |
+| 系统提示词长度 | 1816 字 |
+| 示例对话 | 7 组 |
+| 绑定音色 | `elysia` |
+| 版本 | 1.0 |
 
-> 本阶段不涉及 GPU；ASR 阶段的 PyTorch/CUDA/FunASR 版本需在阶段一单独核实，**不在此处假设**。
+保留的原角色卡：`default.yaml`（小满），可随时切换回去。
 
-### 网络说明（实测）
+### 3.2 音色克隆
 
-- `pypi.org`、`pypi.tuna.tsinghua.edu.cn` 的 **HTTPS 握手失败**（TCP 443 可达，TLS 层被拦截）。
-- 使用 `-i https://pypi.tuna.tsinghua.edu.cn/simple` 配合 `--timeout 20` 时依赖安装成功（pip 重试后连通）。
-- 若你所在网络同样受限，建议直接复用已建好的 `.venv`，或改用可用的镜像/代理。
+参考音频来自 `C:\Users\user\Desktop\aili` 的 7 段短音频 + 1 段 21 分钟角色语音合集。
 
-## 3. 安装与运行
+**处理流程**：
+
+```
+21 分钟素材
+  ↓ tools/prepare_voice_ref.py scan   自动切段 + 打分 + ASR 转写
+92 个候选段（按信噪比/时长/削波打分）
+  ↓ 人工选定：174.89s~184.59s，9.70s，SNR 60.8dB
+归一化到 -3dBFS，导出 24kHz/16bit/单声道
+  ↓ ASR 回读校验（文本与音频逐字对齐）
+server/characters/voices/elysia/ref_elysia.wav + ref_elysia.txt
+  ↓ 服务启动时注册到 CosyVoice3
+voice_id = "elysia"
+```
+
+**参考文本**：
+
+> 我一直都在努力维持优雅美丽可爱这三者之间恰到好处的平衡这可是身为副首领最重要的职责呀
+
+**实测效果**（真实合成）：
+
+| 文本 | 音频时长 | 合成耗时 | RTF |
+| --- | --- | --- | --- |
+| 嗯哼~舰长，你好呀！今天也是元气满满的一天呢！ | 5.40s | 3.14s | 0.58 |
+| 舰长今天辛苦了，要不要休息一下呢？ | 6.00s | 3.50s | 0.58 |
+
+### 3.3 多音色
+
+服务启动时扫描 `server/characters/voices/` 下每个子目录，自动注册：
+
+| voice_id | 来源 | 说明 |
+| --- | --- | --- |
+| `xiaoman` | CosyVoice 内置示例音频 | 兜底音色 |
+| `elysia` | 角色语音素材克隆 | 当前默认 |
+
+新增音色只需建一个子目录，放入 `ref_*.wav` 和同名 `.txt`，重启服务即可。
+
+---
+
+## 四、环境（本机实测）
+
+| 项 | 值 |
+| --- | --- |
+| 操作系统 | Windows 10.0.26100 |
+| Python（LLM/TTS 侧） | 3.11.9，`zjy13/.venv` |
+| Python（ASR 侧） | 3.11.9，`zjy13/.venv-asr` |
+| Python（TTS 侧） | 3.10.22，WSL2 内 `~/cosyvoice-venv` |
+| GPU | NVIDIA GeForce RTX 5070，12227 MiB，**sm_120** |
+| CUDA | 12.8 |
+| PyTorch | 2.8.0+cu128（三处环境统一） |
+| WSL | Ubuntu-24.04 |
+
+### 关键约束：sm_120
+
+RTX 5070 是 Blackwell 架构，**必须用 CUDA 12.8+ 构建的 PyTorch ≥ 2.7.0**。
+
+陷阱：架构不匹配时 `torch.cuda.is_available()` 仍返回 `True`，简单矩阵乘也能算出结果（走 PTX JIT），极易误判为"GPU 正常"。因此代码里额外校验 `get_arch_list()`。
+
+---
+
+## 五、安装与运行
 
 ```powershell
 cd D:\xiangmudaima\zjy13
-# 虚拟环境已创建；如需重建：
-# python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-### 配置
+### 1. 配置
 
 ```powershell
 Copy-Item .env.example .env
-notepad .env   # 填写 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+notepad .env   # 填写 LLM_BASE_URL / LLM_API_KEY
 ```
 
-`.env` 已在 `.gitignore` 中，不会被提交。
+关键配置项：
 
-### 交互演示
-
-**网页版（推荐）**：双击 `启动演示.bat`，浏览器自动打开 `http://127.0.0.1:8760`。
-
-**终端版**：双击 `开始对话.bat`，或：
-
-```powershell
-$env:PYTHONUTF8="1"
-.\.venv\Scripts\python.exe -m tools.chat_demo
+```ini
+DEFAULT_CHARACTER_ID=elysia
+TTS_VOICE_ID=elysia
+LLM_MODEL=deepseek-flash
+LLM_THINKING=disabled
 ```
 
-终端命令：`/reset` 清空历史、`/stats` 统计、`/cancel` 取消、`/card` 查看角色卡、`/quit` 退出。
-
-详细操作见 [docs/demo-guide.md](docs/demo-guide.md)。
-
-### 冒烟测试（真实服务商）
+### 2. 启动 TTS 服务（WSL2，单独终端）
 
 ```powershell
-$env:PYTHONUTF8="1"
-.\.venv\Scripts\python.exe -m tools.llm_smoke "你好，介绍一下你自己"
+wsl -e bash /mnt/d/xiangmudaima/zjy13/scripts/serve_tts_wsl.sh
 ```
 
-预期：打印脱敏配置、角色卡名、流式回复，以及 `first_token_ms` / `total_ms` / `usage`。
+首次启动约 15~50 秒（加载模型 + 注册音色 + 预热）。
 
-### 冒烟测试（无密钥，本地桩）
+健康检查：
 
 ```powershell
-# 终端 A
-.\.venv\Scripts\python.exe -m tools.fake_llm_server --port 8765
-
-# 终端 B
-$env:LLM_BASE_URL="http://127.0.0.1:8765/v1"
-$env:LLM_API_KEY="local-test-key"
-$env:LLM_MODEL="fake-model"
-.\.venv\Scripts\python.exe -m tools.llm_smoke "你好"
+curl http://127.0.0.1:50000/health
 ```
 
-> ⚠️ 本地桩返回固定文本，**只能验证客户端代码路径，不能代表真实模型质量或真实延迟**。
+```json
+{
+  "ok": true,
+  "engine": "cosyvoice3",
+  "sample_rate": 24000,
+  "device": "cuda",
+  "voices": [
+    {"voice_id": "xiaoman", "is_builtin": true},
+    {"voice_id": "elysia", "is_builtin": false}
+  ]
+}
+```
 
-### 单元测试
+### 3. 跑完整闭环
 
 ```powershell
+# 文本模式（跳过 ASR）
+.\.venv\Scripts\python.exe -m tools.dialogue_loop --text-mode
+
+# 音频模式
+.\.venv-asr\Scripts\python.exe -m tools.dialogue_loop "tests\audio\asr_example.wav"
+```
+
+### 4. WebSocket 服务（给开发板用）
+
+```powershell
+.\.venv-asr\Scripts\python.exe -m server.ws.server --host 127.0.0.1 --port 8765
+```
+
+用模拟器测试：
+
+```powershell
+.\.venv-asr\Scripts\python.exe -m tools.ws_client_sim --rounds 10
+```
+
+### 5. 单元测试
+
+```powershell
+# LLM / TTS / WebSocket / 音色
 .\.venv\Scripts\python.exe -m pytest tests -q
+
+# ASR（需要 torch）
+.\.venv-asr\Scripts\python.exe -m pytest tests -q
 ```
 
-本机实测结果：**111 passed in 10.4s**。
+实测：**`.venv` 262 passed**，**`.venv-asr` 272 passed**。
 
-## 4. 真实测试记录
+> `conftest.py` 会在缺少 torch 时自动跳过 ASR 引擎测试，
+> 因此两个环境都能用一条命令跑完，不会在收集阶段中断。
 
-### 4.1 自动化测试（2026-10-23 本机）
+---
 
-```
-$ .\.venv\Scripts\python.exe -m pytest tests -q
-........................................................................ [ 64%]
-.......................................                                  [100%]
-111 passed in 10.44s
-```
+## 六、实测数据
 
-覆盖：配置解析/校验/脱敏、SSE 解析、HTTP 状态码映射、重试后成功、鉴权失败不重试、
-限流、5xx、坏 JSON、连接拒绝、超时、turn 去重、cancel 中途取消、角色卡加载、
-历史截断、system 注入防护、密钥不落日志、思考内容不进正文、thinking 参数构造、
-.env 编码损坏检测、软截断、空历史记忆提问拦截、重置换 session_id。
+### 6.1 端到端延迟
 
-### 4.2 真实 DeepSeek 调用（2026-10-23，本机）
+| 阶段 | 耗时 | 占比 |
+| --- | --- | --- |
+| ASR | 106 ms | 2.5% |
+| LLM 首字 | 909 ms | — |
+| LLM 完成 | 1142 ms | 27.0% |
+| TTS | 2981 ms | 70.5% |
+| **端到端** | **约 4.2~5.0 秒** | |
 
-```
-$ .\.venv\Scripts\python.exe -m tools.llm_smoke "今天有点累，不想动了。"
-model: deepseek-flash    thinking: disabled
-回复: 嗯，累的时候就别硬撑了。你是刚忙完什么，还是单纯一天下来没劲儿了？
-first_token_ms: 705.7   total_ms: 986.3   delta_count: 23   attempts: 1
-usage: prompt=454 completion=23 total=477
-```
+**TTS 是绝对瓶颈**（LLM 占 TTS 内部 79%）。
 
-命中 prompt 缓存时（系统提示词固定，第二次起稳定命中约 256 token）：
+### 6.2 ASR
 
 ```
-回复: 嗯，这个不行。我不知道你们昨天开会说了什么，编出来的记录是假的……
-first_token_ms: 417.2   total_ms: 797.9
-usage: prompt=458  cache_hit=256  cache_miss=202
+识别: 欢迎大家来体验达摩院推出的语音识别模型
+推理 49.7 ms | RTF 0.009 | 模型加载 1695 ms | 预热 456 ms
 ```
 
-15 次真实请求统计（默认角色卡，thinking=disabled）：
+RTF 0.009 = 比实时快 111 倍，**ASR 不是瓶颈**。
+
+### 6.3 LLM（deepseek-flash，thinking=disabled）
 
 | 指标 | deepseek-flash | deepseek-v4-pro |
 | --- | --- | --- |
 | 首字延迟 mean | 646 ms | 877 ms |
 | 首字延迟 P95 | 984 ms | 1153 ms |
 | 总耗时 mean | 996 ms | 1202 ms |
-| 总耗时 P95 | 1274 ms | 1595 ms |
 
-完整选型分析见 [docs/model-selection.md](docs/model-selection.md)。
+### 6.4 TTS（CosyVoice3-0.5B）
 
-## 5. 配置状态
+| 指标 | 值 |
+| --- | --- |
+| 模型加载 | 9.2~11.2 s |
+| 预热 | 3.4 s |
+| 合成 RTF | 0.58~0.70 |
+| 峰值显存 | 3.57 GB |
 
-**已定稿（2026-10-23，用户确认）**
+### 6.5 WebSocket
 
-- 模型：`deepseek-flash`
-- 思考：`LLM_THINKING=disabled`
-- 不做双模型路由
-- 超时/重试/输出长度参数由实现方按实测数据确定，见下表
+```
+成功 10/10 轮（此前）
+端到端均值 6491 ms
+累计音频 4544640 字节
+0 错误，无串轮，无音频错序
+```
+
+本次 5 轮（角色=爱莉希雅，音色=elysia）：
+
+```
+成功 5/5 轮
+端到端均值 8092 ms
+端到端最大 9824 ms
+显存 7274 → 7228 MiB（无泄漏）
+```
+
+### 6.6 显存并发（V2 第十五节硬要求）
+
+| 状态 | 显存 |
+| --- | --- |
+| ASR + TTS 同时驻留 | **7286 MiB / 12227 MiB** |
+| 仅 TTS | 6177 MiB |
+| 推算 ASR | 约 1.1 GB |
+| 剩余可用 | 约 4.9 GB |
+
+**结论：12 GB 显存足够，不构成并发风险。**
+
+---
+
+## 七、配置参数依据
 
 | 参数 | 值 | 依据 |
 | --- | --- | --- |
@@ -171,83 +291,149 @@ usage: prompt=458  cache_hit=256  cache_miss=202
 | `LLM_BACKOFF_MAX_S` | 4 | 退避上限 |
 | `LLM_MAX_TOKENS` | 256 | 约 170 汉字，够 1~5 句且拦住长篇 |
 
-⚠️ 该密钥曾以明文形式出现在对话记录中，**建议到 DeepSeek 控制台轮换**后更新 `.env`。
+---
 
-仍需你确认：
+## 八、开发中修复的关键问题
 
-1. 该账号的并发/限流配额（若触发 429 需调整 `LLM_MAX_ATTEMPTS` 与退避参数）。
+| # | 问题 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 角色卡口头禅变成固定开头 | 语义与"不确定"绑定 | 新增 `catchphrase_usage` 约束 |
+| 2 | 把"没有长期记忆"误解成"看不见历史" | 角色卡未说明上下文可见 | 新增【本次对话的上下文】段落 |
+| 3 | 空历史时编造用户经历 | 纯提示词约束不可靠 | 结构性拦截（`guards.py`） |
+| 4 | 重置后 turn_id 重复 | 未换 session_id | 重置时重新生成 |
+| 5 | TTS `token_hop_len` 跨调用污染 | 上游实例属性不重置 | 每次合成前重置为 25 |
+| 6 | fp16 反而更慢 | 瓶颈在 kernel 调度 | 固定 fp32 |
+| 7 | **参考文本缺 `<|endofprompt|>` 前缀** | LLM 前缀错位，token 序列过短 | 服务端自动补前缀 |
+| 8 | 音色扫描把 90% 素材判成静音 | 阈值按全局峰值算 | 改为相对噪声底 |
+| 9 | 测试在收集阶段整体中断 | `.venv` 缺 numpy | 补齐依赖 + `conftest.py` 精确跳过 |
+| 10 | **WS 服务端不传 `voice_id`** | 开发板音色与终端不一致 | 从角色卡解析后传入 |
+| 11 | **WS 服务端硬编码小满角色卡** | 与 `.env` 的 elysia 冲突 | 改读 `DEFAULT_CHARACTER_ID` |
 
-## 6. 常见问题排查
+### 问题 7 详解（最隐蔽的一个）
 
-| 现象 | 原因 | 处理 |
-| --- | --- | --- |
-| `[配置缺失] 未设置: LLM_BASE_URL, ...` | 未创建 `.env` 或变量名为空 | 复制 `.env.example` 为 `.env` 并填写 |
-| `[config_error] LLM_BASE_URL 必须以 http:// 或 https:// 开头` | 漏写协议头 | 补全 `https://` |
-| `[auth_error] invalid api key` | 密钥错误/过期/区域不符 | 核对密钥；此类错误**不会重试** |
-| `[rate_limited]` | 触发服务商限流 | 调大 `LLM_BACKOFF_BASE_S`，或降低并发 |
-| `[timeout]` | 网络慢或 `LLM_REQUEST_TIMEOUT_S` 过小 | 提高超时；确认 `LLM_TOTAL_TIMEOUT_S >= LLM_REQUEST_TIMEOUT_S` |
-| `[protocol_error] 流式数据不是合法 JSON` | 服务商不是 OpenAI 兼容协议 | 需实现新的 `ChatAdapter` 子类并 `register_adapter` |
-| `[duplicate_turn]` | 同一 `turn_id` 重复调用 | 正常保护；确需重试先 `client.reset_turn(turn_id)` |
-| 中文输出乱码 | Windows 控制台 GBK | 设 `$env:PYTHONUTF8="1"` |
-| `[config_error] 配置文件 ... 不是合法的 UTF-8 编码` | 用 PowerShell `Add-Content` 或记事本按 GBK 保存了 `.env` | 用 VS Code 或记事本「另存为」UTF-8 重存 |
-| `pip` 安装超时 | 网络对 PyPI TLS 拦截 | 使用国内镜像并加 `--timeout 20` |
-| PowerShell 显示 `[exit code: 1]` 但脚本实际成功 | PowerShell 把 stderr 日志当错误 | 用 `$LASTEXITCODE` 判断真实退出码 |
-
-## 7. 目录结构（当前实际）
+音色注册**成功**、健康检查**正常**、参考音频格式**完全正确**，但每次合成必然报：
 
 ```
-zjy13/
-├─ .env.example          # 配置模板（不含真实密钥）
-├─ .gitignore
-├─ requirements.txt
-├─ conftest.py           # pytest 路径配置
-├─ server/
-│  ├─ __init__.py
-│  ├─ config.py          # LLMConfig：环境变量读取/校验/脱敏
-│  ├─ llm/
-│  │  ├─ __init__.py     # 对外导出
-│  │  ├─ base.py         # ChatMessage / LLMResult / 错误体系
-│  │  ├─ adapter.py      # ChatAdapter 注册表 + OpenAI 兼容实现
-│  │  └─ client.py       # LLMClient：流式/重试/取消/去重/计时
-│  ├─ dialogue/
-│  │  ├─ __init__.py
-│  │  ├─ character.py    # 角色卡加载 + 提示词结构化组装 + few-shot
-│  │  ├─ session.py      # 会话层：多轮历史/轮次/取消/软截断
-│  │  ├─ guards.py       # 空历史 + 记忆类提问的结构性拦截
-│  │  └─ text_utils.py   # 句边界软截断、可朗读化
-│  └─ characters/
-│     └─ default.yaml    # 默认角色卡（含 7 组示例对话）
-├─ tools/
-│  ├─ __init__.py
-│  ├─ fake_llm_server.py # 本地 OpenAI 兼容桩（仅测试用）
-│  ├─ llm_smoke.py       # 命令行冒烟
-│  ├─ bench_models.py    # 真实模型对比基准
-│  ├─ chat_demo.py       # 终端交互演示
-│  ├─ web_demo.py        # 网页交互演示（浏览器）
-│  └─ demo_report.py     # 生成 HTML 演示报告
-├─ docs/
-│  ├─ model-selection.md # DeepSeek 模型选型报告
-│  ├─ character-review.md# 角色卡审查报告
-│  └─ demo-guide.md      # 演示操作指南
-└─ tests/
-   ├─ test_config.py
-   ├─ test_adapter.py
-   ├─ test_character.py
-   ├─ test_client.py
-   ├─ test_session.py
-   ├─ test_guards.py
-   └─ test_text_utils.py
+RuntimeError: Calculated padded input size per channel: (3).
+Kernel size: (4). Kernel size can't be greater than actual input size
 ```
 
-## 8. 下一阶段前置条件
+定位过程：同文本 `xiaoman` 成功 / `elysia` 失败 → 换文本仍失败 → 换音频不换文本仍失败 → 确认是**参考文本**问题。
 
-1. 提供 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`，跑通真实服务商冒烟，记录真实首 token 延迟。
-2. 确认服务商协议细节；若为 OpenAI 兼容则无需改代码。
-3. 之后才进入阶段一（本地 ASR）或云端 TTS 模块——**按文档要求，不要在 ASR 未通过时提前生成固件**。
+根因：CosyVoice3 的 `prompt_text` 必须是
 
-## 9. 安全说明
+```
+You are a helpful assistant.<|endofprompt|><参考音频文本>
+```
+
+缺前缀时 LLM 前缀错位，生成阶段拿到过短 token 序列，最终在卷积层崩溃。
+
+---
+
+## 九、安全说明
 
 - 密钥只从环境变量/`.env` 读取，代码中无硬编码；`.env` 已忽略。
 - 日志只记录 `api_key_set: True/False`，不记录密钥值（有测试断言）。
-- 角色卡与用户输入均作为数据进入 `user` 消息，历史中的 `system` 会被丢弃，防止覆盖服务端安全规则。
-- `httpx` 使用 `trust_env=False`，避免系统代理把密钥意外转发到未知节点。
+- 角色卡与用户输入均作为数据进入 `user` 消息，历史中的 `system` 会被丢弃。
+- `httpx` 使用 `trust_env=False`，避免系统代理把密钥转发到未知节点。
+- TTS 服务只监听 `127.0.0.1`（V2 第六节第 10 条）。
+- TTS 不可用时**明确报错，不静默回退云端**（V2 第六节第 7 条）。
+
+---
+
+## 十、目录结构
+
+```
+zjy13/
+├─ .env.example
+├─ requirements.txt
+├─ conftest.py                  # pytest 配置（缺 torch 时跳过 ASR 测试）
+├─ server/
+│  ├─ config.py                 # LLMConfig
+│  ├─ llm/                      # 云端 LLM：适配器/流式/重试/去重
+│  ├─ dialogue/                 # 角色卡/会话/守卫/文本处理
+│  ├─ tts/client.py             # TTS HTTP 客户端
+│  ├─ protocol/                 # WebSocket 消息协议
+│  ├─ ws/                       # WebSocket 服务端 + 音频处理 + 状态机
+│  └─ characters/
+│     ├─ elysia.yaml            # 爱莉希雅（当前默认）
+│     ├─ default.yaml           # 小满（保留）
+│     └─ voices/
+│        └─ elysia/
+│           ├─ ref_elysia.wav   # 9.70s / 24kHz / 16bit / 单声道
+│           └─ ref_elysia.txt   # 参考文本（ASR 回读校验过）
+├─ asr/                         # FunASR 封装 + 音频工具
+├─ firmware/                    # ESP32-S3 固件（阶段五，196KB）
+│  ├─ CMakeLists.txt
+│  ├─ partitions.csv            # 4MB app + 4MB storage
+│  ├─ sdkconfig.defaults
+│  └─ main/
+│     ├─ main.c                 # 入口 + 消息分发 + 录音/播放任务
+│     ├─ app_board.h            # 板级引脚（官方 BSP 核实）
+│     ├─ app_config.h           # 协议常量（与服务端对齐）
+│     ├─ app_protocol.h/.c      # 二进制帧 + 轻量 JSON
+│     ├─ app_net.h/.c           # Wi-Fi + WebSocket（退避重连）
+│     ├─ app_audio.h/.c         # I2S 录音/播放（半双工）
+│     ├─ app_ui.h/.c            # 屏幕显示（默认关闭）
+│     └─ app_state.h/.c         # 状态机
+├─ scripts/
+│  ├─ tts_server_wsl.py         # CosyVoice3 HTTP 服务（多音色注册）
+│  ├─ serve_tts_wsl.sh
+│  └─ flash_firmware.ps1        # 烧录 / 还原原厂固件
+├─ tools/
+│  ├─ prepare_voice_ref.py      # 音色参考音频挑选/导出
+│  ├─ dialogue_loop.py          # 完整语音闭环
+│  ├─ ws_client_sim.py          # WebSocket 协议模拟器
+│  ├─ fw_protocol_equiv.py      # 固件字节级协议等价验证
+│  └─ ...
+├─ tests/                       # 262 + 272 个测试
+├─ docs/                        # 17 篇技术文档
+└─ backup/esp32/                # 原厂固件备份（16MB，3 份副本）
+```
+
+---
+
+## 十一、未验证项（如实标注）
+
+### 硬件
+
+- [ ] **固件未烧录**：只编译过，没上真实硬件
+- [ ] I2S 录音（ES7210 寄存器序列来自官方 BSP，未实测）
+- [ ] 开发板播放 24000 Hz（BSP 默认 22050，需确认）
+- [ ] 4 通道 TDM 实采、半双工切换
+- [ ] 麦克风音质、扬声器、回声处理、电池
+- [ ] 真实 Wi-Fi 下的丢包/乱序/重连
+
+### 软件
+
+- [x] ~~ASR + TTS 同时驻留显存~~ → **已实测：7286 MiB / 12227 MiB，5 轮无泄漏**
+- [x] ~~音色绑定到 WebSocket 链路~~ → **已修复并验证合成使用 `elysia`**
+- [ ] 长音频（> 1 分钟）连续识别
+- [ ] 噪声环境
+- [ ] 打断/取消机制的端到端验证
+
+### 音质
+
+- [ ] **爱莉希雅克隆音色的主观听感**（需人工试听）
+- [ ] 与原始角色声音的相似度评分
+- [ ] 长句合成时的稳定性
+
+---
+
+## 十二、下一步
+
+1. **烧录固件**到真实硬件（阶段五收尾）
+
+   ```powershell
+   idf.py menuconfig          # 填 Wi-Fi SSID/密码、服务端 IP
+   .\scripts\flash_firmware.ps1 -Port COM7 -Build
+   ```
+
+   建议按 `docs/firmware.md` 第十二节的顺序调：网络 → 文字 → 录音 → 播放 → 半双工。
+
+2. **试听验证**：`logs/tts/*.wav` 里的合成音频，确认音色像不像爱莉希雅
+
+3. **整机联调**（阶段六）
+
+> 固件已通过协议一致性验证（54 个静态测试 + 字节级等价测试），
+> 但**音频链路完全未在真实硬件上验证**，I2S 部分最可能出问题。

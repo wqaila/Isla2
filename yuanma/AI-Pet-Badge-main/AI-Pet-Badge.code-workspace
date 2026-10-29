@@ -1,0 +1,66 @@
+{
+  "folders": [
+    {
+      "name": "AI Pet Badge - Firmware",
+      "path": "firmware/ai_pet_badge"
+    },
+    {
+      "name": "AI Pet Badge - Project",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "${workspaceFolder:AI Pet Badge - Project}/.venv/Scripts/python.exe",
+    "files.encoding": "utf8",
+    "files.exclude": {
+      "**/__pycache__": true
+    },
+    "search.exclude": {
+      "**/build": true,
+      "**/managed_components": true,
+      "vendor": true,
+      ".venv": true
+    },
+    "terminal.integrated.profiles.windows": {
+      "PowerShell 7 - AI Pet Badge": {
+        "args": [
+          "-NoLogo",
+          "-NoProfile"
+        ],
+        "path": "C:\\Users\\34262\\AppData\\Local\\Microsoft\\WindowsApps\\Microsoft.PowerShell_8wekyb3d8bbwe\\pwsh.exe"
+      }
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell 7 - AI Pet Badge"
+  },
+  "extensions": {
+    "recommendations": [
+      "espressif.esp-idf-extension",
+      "ms-python.python",
+      "ms-vscode.cpptools"
+    ]
+  },
+  "tasks": {
+    "tasks": [
+      {
+        "type": "process",
+        "command": "C:\\Users\\34262\\AppData\\Local\\Microsoft\\WindowsApps\\Microsoft.PowerShell_8wekyb3d8bbwe\\pwsh.exe",
+        "label": "Build AI Pet Badge",
+        "args": [
+          "-NoProfile",
+          "-File",
+          "${workspaceFolder:AI Pet Badge - Project}/tools/Build-Badge.ps1",
+          "-Jobs",
+          "6"
+        ],
+        "problemMatcher": [
+          "$gcc"
+        ],
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        }
+      }
+    ],
+    "version": "2.0.0"
+  }
+}

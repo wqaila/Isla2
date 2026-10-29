@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Rebuild the badge's Chinese and icon font subsets",
+  "dependencies": {"lv_font_conv": "1.5.3"}
+}
