@@ -9,6 +9,8 @@
 import os
 import json
 import time
+import html
+import re as _re
 import urllib.request
 import urllib.parse
 import ssl
@@ -18,6 +20,28 @@ try:
     from .wbi import build_signed_query
 except ImportError:  # 直接以脚本方式运行本文件时回退
     from wbi import build_signed_query
+
+
+# 搜索接口在标题里插入的高亮标签：`<em class="keyword">Python</em>`
+_HIGHLIGHT_TAG = _re.compile(r"</?em\b[^>]*>", _re.I)
+
+
+def strip_keyword_highlight(title: str) -> str:
+    """去掉搜索标题里的**关键词高亮标签**（并还原 HTML 实体）。
+
+    【为什么必须做】
+    搜索接口返回的 title 是带高亮的 HTML 片段：
+        `最全的<em class="keyword">Python</em>教程`
+    原样当文件名会落成 `...em class=keywordPythonem....mp3` ——
+    本机实测真的这么存了。既难看，又让下游「按标题匹配」全部失效
+    （画面里的标题和磁盘上的文件名对不上）。
+
+    只删 `<em>` 开闭标签、不动其它尖括号：标题本身可能真含 `<`
+    （如「A<B 的证明」），无差别 scrub 会把正文也吃掉。
+    """
+    if not title:
+        return ""
+    return html.unescape(_HIGHLIGHT_TAG.sub("", title)).strip()
 
 
 # 搜索接口支持的排序值（**与频道接口不同**，别混用）。
@@ -105,6 +129,11 @@ class SearchCrawler:
             "order": order_value,
             "platform": "web",
             "web_location": "87153",
+            # ⚠️ search_type 不能省：不带它服务端返回 `-400 请求错误`
+            #    （2026-10-28 实测；带上 `video` 后同一签名立刻返回 code=0）。
+            #    这个错误文案极其含糊，看起来像签名 / 风控问题 ——
+            #    实际只是漏了一格参数，排查时容易被引到 WBI 上。
+            "search_type": "video",
         }
         
         # 该接口需要 WBI 签名（w_rid/wts），否则返回 -352
@@ -152,7 +181,12 @@ class SearchCrawler:
                         if item.get('type') == 'video':
                             videos.append({
                                 'video_id': item.get('bvid', item.get('aid', '')),
-                                'title': item.get('title', ''),
+                                # ⚠️ 搜索接口返回的 title 里带**关键词高亮标签**：
+                                #    `最全的<em class="keyword">Python</em>教程`。
+                                #    原样拿去当文件名会落成
+                                #    `...em class=keywordPythonem....mp3`（实测踩过），
+                                #    既难看又会让下游按标题匹配全部失效。
+                                'title': strip_keyword_highlight(item.get('title', '')),
                                 'author': item.get('author', ''),
                                 'duration': item.get('duration', '0:00'),
                                 'view_count': item.get('play', 0),

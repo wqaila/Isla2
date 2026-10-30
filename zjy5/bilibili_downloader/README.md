@@ -128,7 +128,7 @@ python -m bilibili_downloader --interactive
 |------|------|------|
 | `url` | | 视频 URL（位置参数） |
 | `-o`, `--output` | `-o` | 输出目录（默认：downloads） |
-| `-q`, `--quality` | `-q` | 视频质量（best/1080/720/480） |
+| `-q`, `--quality` | `-q` | 视频质量（best/2160/1440/1080/720/480/360） |
 | `-a`, `--audio`, `--audio-only` | `-a` | 仅下载音频 |
 | `-s`, `--sub`, `--subtitle` | `-s` | 下载字幕（同时下载视频） |
 | `--subtitle-only` | | 仅下载字幕（不下载视频） |
@@ -170,12 +170,57 @@ python -m bilibili_downloader --interactive
 | `--audio-format` | `mp3` | 音频格式：`mp3` / `m4a` / `opus` / `wav` / `flac` |
 | `--video-only` | 关 | **只要画面不要声音**（做 OCR / 视觉任务时有用） |
 | `--ffmpeg-location` | 自动探测 | ffmpeg 路径（PATH → 本 venv 的 imageio_ffmpeg 副本） |
+| `--no-playwright` | 关 | 字幕**只走 API**，不回退 Playwright（后者会弹浏览器 + 等人工回车，后台跑必挂死） |
 
 **画质档位**：`best` / `2160`(4K) / `1440`(2K) / `1080` / `720` / `480` / `360`
 
 > 💡 **网络差就调大 `--retries` / `--retry-sleep`；怕被风控就调大 `--sleep-interval`；
 > 想要小体积音频就调大 `--audio-quality`。**
 > 这些默认值与改动前**完全一致** —— 纯增量，不改变原有行为。
+
+### 网页界面（不想敲命令行时用）
+
+```bash
+# 在本目录（zjy5/bilibili_downloader 的上一级）跑：
+../启动B站采集服务.bat          # 或双击 zjy5/启动B站采集服务.bat
+# 等价于：
+python -m bilibili_downloader.web_service --port 8770
+```
+
+浏览器打开 <http://127.0.0.1:8770> ，页面上选模式、填链接、点「开始」，
+**实时看进度条和日志**，产物列表可直接点开下载。
+
+| 模式 | 对应 CLI |
+|------|---------|
+| 单个视频 | `python -m bilibili_downloader "<链接>" -q 1080` |
+| 仅音频 | 同上 `-a --audio-format mp3` |
+| 仅字幕 | 同上 `--subtitle-only`（**自动加 `--no-playwright`**，见下） |
+| UP 空间批量 | `--channel "<space.bilibili.com/xxx>" --max N --order hot` |
+| 搜索关键词 | `--search "关键词" --max N` |
+| 字幕收割 | `--harvest "<链接>" --max-count N [--probe-only]` |
+
+**它只是把 CLI 包了一层**，能力完全来自 CLI —— 所以下面的命令行文档全都适用。
+
+四个要点：
+
+- **只监听 `127.0.0.1`**：这是本机工具，且会用到你的 Cookie 凭据，
+  不要改成 `0.0.0.0` 暴露到局域网。
+- **只接受 B 站目标**：否则它会变成「拿本机 IP 和带宽去下载任意站点」的入口。
+- **最多 2 个任务并发**：B 站有风控，本地起一堆 yt-dlp 只会更快被拦、
+  而且互相抢带宽（表现是全都慢、没有一个完成）。
+- **取消会杀掉整棵进程树**：yt-dlp 会 fork ffmpeg，只 terminate 父进程
+  会把 ffmpeg 留在后台继续写文件。已下载的分片会保留，重跑能续传。
+
+> ⚠️ **字幕模式为什么强制 `--no-playwright`**
+> CLI 的 Playwright 兜底会**弹出浏览器并 `input()` 等你手点字幕按钮**。
+> 在后台服务 / CI 里没有交互终端，那等于**把任务永久挂住**
+> （不是失败、也不是超时，就是不动）。所以服务端固定传 `--no-playwright`，
+> 取不到就如实报「该视频没有 AI 字幕」。
+> 想用浏览器兜底就在终端里手动跑 CLI。
+
+> ⚠️ **裸 BV 号会自动补成链接**：页面上可以直接填 `BV1GJ411x7h7` 或 `av80433022`，
+> 服务会补成完整 URL 再交给 CLI。**不要**直接拿裸号跑 yt-dlp ——
+> 它只认 URL，会报 `'BV1...' is not a valid URL`。
 
 ### 批量下载失败了怎么补？（`--retry-downloads`）
 

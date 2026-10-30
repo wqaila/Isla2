@@ -298,6 +298,29 @@ def test_unknown_order_rejected_early():
            "参数非法时不该发起下载请求")
 
 
+def test_quality_choices_match_downloader_support():
+    """`-q` 可选档位必须覆盖 `downloader` 真正支持的全部画质。
+
+    ⚠️ 2026-10-28 实测缺陷：`downloader._build_download_args` 与 README 都支持
+    7 档（best/2160/1440/1080/720/480/360），但 CLI 的 `choices` 只有 4 档，
+    于是 `-q 2160` 被 argparse 直接拒掉 —— **文档承诺的能力 CLI 用不了**，
+    而且报错出在参数解析阶段，看起来像「用户填错了」。
+    """
+    import main as cli_mod
+
+    # 从 `_build_download_args` 的 height 列表反推「实现支持的档位」
+    src = inspect.getsource(cli_mod.BilibiliDownloader._build_download_args)
+    heights = [h for h in ("2160", "1440", "1080", "720", "480", "360")
+               if f'"{h}"' in src]
+    ok(heights, "没能在 _build_download_args 里找到画质档位，测试需同步")
+
+    # CLI 的 choices 写在同一文件的 add_argument("-q", ...) 里
+    cli_src = inspect.getsource(cli_mod.main_cli)
+    missing = [h for h in heights if f'"{h}"' not in cli_src]
+    ok(not missing,
+       f"CLI 的 -q 缺少实现已支持的档位：{missing}（会被 argparse 拒掉）")
+
+
 TESTS = [
     test_channel_order_map_exposed,
     test_search_order_map_exposed,
@@ -312,6 +335,7 @@ TESTS = [
     test_channel_failure_detected_by_empty_result,
     test_search_failure_detected_by_empty_result,
     test_success_still_returns_zero,
+    test_quality_choices_match_downloader_support,
 ]
 
 

@@ -111,7 +111,7 @@ class TTSConfig:
     timeout_s: float = 120.0
     connect_timeout_s: float = 5.0
     output_dir: Path = Path("logs/tts")
-    default_voice: str = "xiaoman"
+    default_voice: str = "elysia"
 
     @classmethod
     def from_env(cls) -> "TTSConfig":
@@ -127,7 +127,7 @@ class TTSConfig:
             timeout_s=float(env("TTS_TIMEOUT_S", "120")),
             connect_timeout_s=float(env("TTS_CONNECT_TIMEOUT_S", "5")),
             output_dir=Path(env("TTS_OUTPUT_DIR", "logs/tts")),
-            default_voice=env("TTS_VOICE_ID", "xiaoman"),
+            default_voice=env("TTS_VOICE_ID", "elysia"),
         )
 
     @property

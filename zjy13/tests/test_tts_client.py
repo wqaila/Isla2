@@ -53,7 +53,7 @@ def cfg(tmp_path: Path) -> TTSConfig:
         base_url="http://127.0.0.1:50000",
         timeout_s=5.0,
         output_dir=tmp_path,
-        default_voice="xiaoman",
+        default_voice="elysia",
     )
 
 

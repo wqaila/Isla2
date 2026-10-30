@@ -657,13 +657,18 @@ class SubtitleExtractor:
             return None
     
     def extract_subtitle(self, video_url: str, output_dir: str = None,
-                         output_format: str = "text", use_api_first: bool = True) -> Optional[str]:
+                         output_format: str = "text", use_api_first: bool = True,
+                         allow_playwright: bool = True) -> Optional[str]:
         """
         提取字幕
         :param video_url: 视频 URL
         :param output_dir: 输出目录
         :param output_format: 输出格式 (text/srt)
         :param use_api_first: 是否优先使用 API
+        :param allow_playwright: 是否允许回退到 Playwright。
+            它会**弹出浏览器 + `input()` 等人工点字幕按钮** —— 在没有交互终端
+            的环境里（CI、后台服务、守护子进程）必须传 False，否则任务会
+            永久挂住等一个永远不会来的回车。
         :return: 字幕文件路径
         """
         output_dir = output_dir or self.output_dir
@@ -680,6 +685,12 @@ class SubtitleExtractor:
                 output_path = os.path.join(output_dir, f"{safe_title}.{ext}")
                 if self._download_subtitle_file(subtitle_url, output_path, output_format):
                     return output_path
+        
+        if not allow_playwright:
+            # 非交互环境：如实返回「没有字幕」，而不是假装成功或挂住
+            print("  API 未取到字幕，且当前环境不允许打开浏览器（无交互），"
+                  "按「无字幕」处理")
+            return None
         
         # 使用 Playwright
         print("  使用 Playwright 提取字幕...")

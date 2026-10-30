@@ -47,11 +47,26 @@ python main.py --video ../downloads/xxx.mp4 --disable_voice
 
 ---
 
+## 网页界面（2026-10-28 新增）
+
+不想敲命令行时，双击 **`启动B站采集服务.bat`**（或 `python -m bilibili_downloader.web_service`），
+浏览器会自动打开 <http://127.0.0.1:8770>：
+
+- 左侧选模式：单个视频 / 仅音频 / 仅字幕 / UP 空间批量 / 搜索关键词 / 字幕收割
+- 填链接或关键词 → 点「开始」→ **实时进度条 + 逐行日志**
+- 底部产物列表可直接点开文件
+
+它**只是把现有 CLI 包了一层 HTTP**，能力完全来自 CLI（见
+[`bilibili_downloader/README.md`](bilibili_downloader/README.md) 的「网页界面」一节）。
+只监听 `127.0.0.1`、只接受 B 站目标、最多 2 个任务并发。
+
+---
+
 ## 跑测试
 
 ```bash
 cd zjy5
-./.venv/Scripts/python.exe tests/run_tests.py     # 19 个离线脚本，179 个用例，不联网、不需要 GPU
+./.venv/Scripts/python.exe tests/run_tests.py     # 20 个离线脚本，不联网、不需要 GPU
 ```
 
 ---
@@ -131,6 +146,6 @@ python -m chibtaici.term_fix                  # 审计 OCR 错写（引导模式
 python -m chibtaici.term_fix --wide           # 找全新类型的混淆（噪声大）
 ```
 
-测试：`./.venv/Scripts/python.exe tests/run_tests.py`（19 个离线脚本，179 个用例）。
+测试：`./.venv/Scripts/python.exe tests/run_tests.py`（20 个离线脚本）。
 
 详见 `chibtaici/README.md` 的「语气打标」与「OCR 术语校正」两节。

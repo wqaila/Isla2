@@ -23,6 +23,7 @@
 
 import os
 import sys
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -44,6 +45,27 @@ def eq(actual, expected, label):
 def ok(condition, label):
     if not condition:
         raise Missing(label)
+
+
+_TMPDIRS = []
+
+
+def _tmpdir() -> str:
+    """建一个临时目录并**登记**它，测试结束后统一删除。
+
+    ⚠️ 直接调 `tempfile.mkdtemp` 每跑一次测试就往**当前目录**泄漏一个
+    `zjy5_ck_xxxx`，本机实测攒了 32 个，还会作为未跟踪文件污染 `git status`。
+    `mkdtemp` 本身不会自动清理，所以这里必须自己记着删。
+    """
+    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    _TMPDIRS.append(d)
+    return d
+
+
+def _cleanup_tmpdirs() -> None:
+    for d in _TMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    _TMPDIRS.clear()
 
 
 COOKIE_HEAD = ("# Netscape HTTP Cookie File\n"
@@ -100,7 +122,7 @@ NAV_NOT_LOGGED_IN = {
 
 
 def test_missing_cookie_file():
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=str(Path(d) / "nope.txt"))
     ok_, msg = cm.check_cookie_online(opener=FakeOpener(NAV_LOGGED_IN))
     eq(ok_, False, "文件不存在应判失败")
@@ -108,7 +130,7 @@ def test_missing_cookie_file():
 
 
 def test_file_without_sessdata():
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=_write_cookie(d, names=("buvid3",)))
     ok_, msg = cm.check_cookie_online(opener=FakeOpener(NAV_LOGGED_IN))
     eq(ok_, False, "没有 SESSDATA 应判失败")
@@ -116,7 +138,7 @@ def test_file_without_sessdata():
 
 
 def test_valid_cookie_returns_username():
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=_write_cookie(d))
     ok_, msg = cm.check_cookie_online(opener=FakeOpener(NAV_LOGGED_IN))
     eq(ok_, True, "isLogin=true 应判有效")
@@ -128,7 +150,7 @@ def test_expired_cookie_detected():
 
     ⚠️ 旧实现（只查字符串）在这里会返回 True —— 这就是要修的问题。
     """
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=_write_cookie(d))
     ok_, msg = cm.check_cookie_online(opener=FakeOpener(NAV_NOT_LOGGED_IN))
     eq(ok_, False, "服务端说未登录应判失败")
@@ -142,7 +164,7 @@ def test_network_error_not_reported_as_invalid():
     否则用户会白白去重新登录 —— 而真实原因是网络不通。
     这是本功能最重要的一条设计约束。
     """
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=_write_cookie(d))
     ok_, msg = cm.check_cookie_online(
         opener=FakeOpener(fail=OSError("connection refused")))
@@ -154,7 +176,7 @@ def test_network_error_not_reported_as_invalid():
 
 def test_api_error_code_surfaced():
     """接口返回非 0 且不是未登录码时，应把原始信息带出来（便于排查）。"""
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=_write_cookie(d))
     payload = {"code": -352, "message": "风控校验失败", "data": None}
     ok_, msg = cm.check_cookie_online(opener=FakeOpener(payload))
@@ -164,7 +186,7 @@ def test_api_error_code_surfaced():
 
 def test_does_not_mutate_cookie_file():
     """检测是只读操作，不能改动 Cookie 文件（否则可能把凭据写坏）。"""
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     path = _write_cookie(d)
     before = Path(path).read_bytes()
     cm = CookieManager(cookie_path=path)
@@ -177,7 +199,7 @@ def test_offline_is_logged_in_still_string_only():
 
     它不做网络请求（离线可用），所以**不能**用它判断 Cookie 是否有效。
     """
-    d = tempfile.mkdtemp(prefix="zjy5_ck_")
+    d = _tmpdir()
     cm = CookieManager(cookie_path=_write_cookie(d))
     eq(cm.is_logged_in(), True, "本地判断：有 SESSDATA")
 
@@ -205,6 +227,11 @@ def run():
         except Exception as e:                      # 打印出来，别让失败悄悄过去
             print(f"  ✗ {test.__name__}：{type(e).__name__}: {e}")
             failed += 1
+        finally:
+            # ⚠️ 每个用例都会 mkdtemp 一个目录；不清的话**每跑一次测试就泄漏
+            #    几十个 `zjy5_ck_xxxx` 到项目根目录**（实测攒了 32 个，
+            #    还会以未跟踪文件的形式污染 `git status`）。
+            _cleanup_tmpdirs()
     print(f"\ntest_cookie_manager：通过 {passed}，失败 {failed}")
     return failed == 0
 

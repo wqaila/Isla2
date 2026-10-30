@@ -91,7 +91,7 @@ def test_character_selection_after_env_load() -> None:
 class _FakeTTS:
     """最小 TTS 替身，只用于验证 voice_id 传递。"""
 
-    def __init__(self, default_voice: str = "xiaoman") -> None:
+    def __init__(self, default_voice: str = "elysia") -> None:
         self.config = TTSConfig(default_voice=default_voice)
         self.calls: list[dict] = []
 
@@ -101,7 +101,7 @@ def test_dialogue_server_picks_card_voice() -> None:
     from server.ws.server import DialogueServer, ServerConfig
 
     card = CharacterCard.from_file(CHAR_DIR / "elysia.yaml")
-    fake_tts = _FakeTTS(default_voice="xiaoman")
+    fake_tts = _FakeTTS(default_voice="elysia")
 
     server = DialogueServer(
         ServerConfig(),
@@ -138,7 +138,7 @@ def test_dialogue_server_explicit_voice_wins() -> None:
     from server.ws.server import DialogueServer, ServerConfig
 
     card = CharacterCard.from_file(CHAR_DIR / "elysia.yaml")
-    fake_tts = _FakeTTS(default_voice="xiaoman")
+    fake_tts = _FakeTTS(default_voice="elysia")
 
     server = DialogueServer(
         ServerConfig(),

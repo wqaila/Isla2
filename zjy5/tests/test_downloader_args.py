@@ -254,6 +254,44 @@ def test_defaults_unchanged():
         eq(a[a.index("--audio-quality") + 1], "0", "默认音频质量仍是 0")
 
 
+def test_output_template_never_keeps_media_ext():
+    """输出模板必须是 `<base>.%(ext)s`，**不能保留调用方给的后缀**。
+
+    ⚠️ 这是 2026-10-28 实测的真实缺陷：音频模式 output_path 是 `xxx.mp3`，
+    旧实现只 replace 掉 .mp4/.mkv/.webm，模板于是成了 `xxx.mp3.%(ext)s`，
+    yt-dlp 落 `xxx.mp3.m4a`、转码后成 `xxx.mp3.mp3`（后缀翻倍），
+    而函数返回的 `xxx.mp3` 根本不存在 —— 网页服务据此对用户报了「已完成」。
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        for given, want in [("a.mp3", "a"), ("a.mp4", "a"), ("a.flac", "a"),
+                            ("a.m4a", "a"), ("a.wav", "a"), ("a.opus", "a")]:
+            out = os.path.join(tmp, given)
+            d = BilibiliDownloader(output_dir=tmp, audio_format="mp3")
+            args = d._build_download_args(
+                video_url="https://www.bilibili.com/video/BV1xx411c7mD",
+                output_path=out, download_audio=True)
+            tpl = args[args.index("-o") + 1]
+            eq(tpl, os.path.join(tmp, want + ".%(ext)s"),
+               f"{given} 的模板不该保留原后缀")
+
+
+def test_output_template_keeps_dot_in_title():
+    """标题里的点不是后缀 —— 不能被剥掉。
+
+    `os.path.splitext` 会无差别剥最后一个点：`3.5 版本介绍` 会残成 `3`。
+    所以剥后缀必须按**已知媒体后缀**白名单来做。
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        d = BilibiliDownloader(output_dir=tmp)
+        args = d._build_download_args(
+            video_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            output_path=os.path.join(tmp, "3.5 版本介绍.mp4"))
+        tpl = args[args.index("-o") + 1]
+        ok("3.5 版本介绍.%(ext)s" in tpl, f"标题里的点必须保留，实际 {tpl}")
+
+
 def test_tunable_audio_quality_and_merge_format():
     """音频质量与合并容器格式也应可配。"""
     import tempfile
@@ -286,6 +324,8 @@ TESTS = [
     test_tunable_sleep_and_retries,
     test_defaults_unchanged,
     test_tunable_audio_quality_and_merge_format,
+    test_output_template_never_keeps_media_ext,
+    test_output_template_keeps_dot_in_title,
 ]
 
 

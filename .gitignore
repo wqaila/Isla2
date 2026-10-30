@@ -74,3 +74,8 @@ $null
 
 # ===== 单个项目的大体积二进制 =====
 zjy6/android_app/app/*.zip
+# ===== 工具运行目录（非项目资料）=====
+.workbuddy-ai/
+deleted-branches.txt
+# 他人仓库克隆，有自己的远程，不并入本仓库
+zjy6/android_app/skill-festival-submissions/

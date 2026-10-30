@@ -37,6 +37,7 @@ TEST_MODULES = [
     "test_ffmpeg_locate.py",
     "test_cookie_flow.py",
     "test_param_validation.py",
+    "test_web_service.py",
     "test_cookie_gui_core.py",
     "test_cookie_backup_safety.py",
 ]

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """下载结果**真实性**校验的测试（不联网、不启动 yt-dlp）。
@@ -31,6 +31,7 @@
 import inspect
 import os
 import sys
+import shutil
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -53,12 +54,28 @@ def ok(condition, label):
         raise Missing(label)
 
 
+_TMPDIRS = []
+
+
+def _tmpdir(prefix: str) -> str:
+    """建临时目录并登记，测试结束后统一删除（理由见 run() 里的注释）。"""
+    d = tempfile.mkdtemp(prefix=prefix)
+    _TMPDIRS.append(d)
+    return d
+
+
+def _cleanup_tmpdirs() -> None:
+    for d in _TMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    _TMPDIRS.clear()
+
+
 def test_verify_download_rejects_missing_file():
     """目标文件不存在 → `_verify_download` 必须返回 False。
 
     这是核心回归：程序原来只看返回码，不看文件。
     """
-    d = BilibiliDownloader(output_dir=tempfile.mkdtemp(prefix="vr_"))
+    d = BilibiliDownloader(output_dir=_tmpdir("vr_"))
     with tempfile.TemporaryDirectory() as tmp:
         ok(not d._verify_download(os.path.join(tmp, "nope.mp4")),
            "文件不存在应判失败")
@@ -66,7 +83,7 @@ def test_verify_download_rejects_missing_file():
 
 def test_verify_download_rejects_empty_file():
     """0 字节文件也算失败（下载中断会留下空文件）。"""
-    d = BilibiliDownloader(output_dir=tempfile.mkdtemp(prefix="vr_"))
+    d = BilibiliDownloader(output_dir=_tmpdir("vr_"))
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "empty.mp4")
         open(p, "w").close()
@@ -75,7 +92,7 @@ def test_verify_download_rejects_empty_file():
 
 def test_verify_download_accepts_real_file():
     """正常有内容的文件应通过。"""
-    d = BilibiliDownloader(output_dir=tempfile.mkdtemp(prefix="vr_"))
+    d = BilibiliDownloader(output_dir=_tmpdir("vr_"))
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "ok.mp4")
         with open(p, "wb") as f:
@@ -90,7 +107,7 @@ def test_detect_leftover_fragments():
     也是用户最需要被提示的情况 —— 否则他会以为「下载失败了」，
     而实际上是**缺 ffmpeg**，装一个就能自动合并。
     """
-    d = BilibiliDownloader(output_dir=tempfile.mkdtemp(prefix="fr_"))
+    d = BilibiliDownloader(output_dir=_tmpdir("fr_"))
     with tempfile.TemporaryDirectory() as tmp:
         base = os.path.join(tmp, "BV1GJ411x7h7")
         for name in ("BV1GJ411x7h7.f100023.mp4", "BV1GJ411x7h7.f30280.m4a"):
@@ -102,7 +119,7 @@ def test_detect_leftover_fragments():
 
 def test_no_fragments_when_clean():
     """正常合并完成后不该误报分离流。"""
-    d = BilibiliDownloader(output_dir=tempfile.mkdtemp(prefix="fr_"))
+    d = BilibiliDownloader(output_dir=_tmpdir("fr_"))
     with tempfile.TemporaryDirectory() as tmp:
         with open(os.path.join(tmp, "BV1.mp4"), "wb") as f:
             f.write(b"z" * 512)
@@ -270,6 +287,11 @@ def run():
         except Exception as e:                      # 打印出来，别让失败悄悄过去
             print(f"  ✗ {test.__name__}：{type(e).__name__}: {e}")
             failed += 1
+        finally:
+            # ⚠️ 各用例都会 mkdtemp 出 `vr_*` / `fr_*` 目录；mkdtemp **不会**
+            #    自动清理，不收拾就是每跑一次泄漏一批到项目根目录，
+            #    还会以未跟踪文件的形式污染 `git status`。
+            _cleanup_tmpdirs()
     print(f"\ntest_download_result：通过 {passed}，失败 {failed}")
     return failed == 0
 

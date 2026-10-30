@@ -31,11 +31,10 @@ from pydantic import BaseModel, Field
 
 COSYVOICE_DIR = Path.home() / "CosyVoice"
 MODEL_DIR = Path.home() / "models" / "Fun-CosyVoice3-0.5B-2512"
-PROMPT_WAV = COSYVOICE_DIR / "asset" / "zero_shot_prompt.wav"
-PROMPT_TEXT = (
-    "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。"
-)
-SPK_ID = "xiaoman"
+
+# 默认音色：不再使用 CosyVoice 自带示例音频，只用角色专属音色。
+# 参考音频来自 server/characters/voices/<voice_id>/。
+DEFAULT_VOICE_ID = os.environ.get("TTS_VOICE_ID", "elysia")
 
 # CosyVoice3 的参考文本必须带这个前缀分隔符。
 # 实测教训：只写纯文本（不加前缀）时，注册能成功、健康检查也正常，
@@ -88,17 +87,8 @@ def discover_voices() -> dict[str, VoiceProfile]:
     """
     voices: dict[str, VoiceProfile] = {}
 
-    # 内置音色：CosyVoice 自带的示例参考音频
-    if PROMPT_WAV.is_file():
-        voices[SPK_ID] = VoiceProfile(
-            voice_id=SPK_ID,
-            ref_wav=PROMPT_WAV,
-            ref_text=PROMPT_TEXT,
-            is_builtin=True,
-        )
-
     if not VOICES_DIR.is_dir():
-        logger.warning("音色目录不存在，仅内置音色可用: %s", VOICES_DIR)
+        logger.error("音色目录不存在: %s", VOICES_DIR)
         return voices
 
     for sub in sorted(VOICES_DIR.iterdir()):
@@ -199,7 +189,7 @@ def load_model() -> None:
 
     # 预热：避免首句承担 CUDA kernel 初始化开销
     t0 = time.time()
-    warmup_voice = SPK_ID if SPK_ID in runtime.voices else next(iter(runtime.voices))
+    warmup_voice = DEFAULT_VOICE_ID if DEFAULT_VOICE_ID in runtime.voices else next(iter(runtime.voices))
     warmup_prof = runtime.voices[warmup_voice]
     for _ in range(2):
         list(model.inference_zero_shot(
@@ -221,7 +211,7 @@ app = FastAPI(title="CosyVoice3 TTS", lifespan=lifespan)
 
 class SynthRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
-    voice_id: str = SPK_ID
+    voice_id: str = DEFAULT_VOICE_ID
     speed: float = Field(1.0, ge=0.5, le=2.0)
 
 
@@ -258,7 +248,7 @@ async def health() -> JSONResponse:
         "load_s": round(runtime.load_s, 2),
         "warmup_s": round(runtime.warmup_s, 2),
         "prompt_cached": runtime.prompt_cached,
-        "voice_id": SPK_ID,
+        "voice_id": DEFAULT_VOICE_ID,
         "voices": [p.to_dict() for p in runtime.voices.values()],
     })
 
@@ -273,7 +263,7 @@ async def synthesize(req: SynthRequest) -> Response:
     if not text:
         raise HTTPException(status_code=400, detail="text is empty")
 
-    voice = req.voice_id or SPK_ID
+    voice = req.voice_id or DEFAULT_VOICE_ID
     if voice not in runtime.voices:
         raise HTTPException(
             status_code=400,

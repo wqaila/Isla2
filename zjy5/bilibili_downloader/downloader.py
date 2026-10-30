@@ -90,6 +90,33 @@ def find_ffmpeg(search_dirs: Optional[List[str]] = None) -> Optional[str]:
     return None
 
 
+_MEDIA_EXTS = (
+    ".mp4", ".mkv", ".webm", ".flv", ".mov",
+    ".mp3", ".m4a", ".opus", ".wav", ".flac", ".aac", ".ogg",
+)
+
+
+def _strip_media_ext(path: str) -> str:
+    """剥掉一个**已知媒体后缀**，给 yt-dlp 的 `%(ext)s` 模板让位。
+
+    【为什么不用 os.path.splitext】
+    `splitext` 会无差别剥掉最后一个点后缀 —— 标题里带点就出事：
+    「3.5 版本介绍.mp4」剥完变「3.5 版本介绍」，但要是调用方给的
+    output_path 是「3.5 版本介绍」（没有媒体后缀），splitext 会剥成「3」，
+    文件名直接残掉。所以只在**后缀确实是媒体格式**时才剥。
+
+    【为什么必须剥】
+    音频模式下 output_path 是 `xxx.mp3`；不剥的话模板拼成
+    `xxx.mp3.%(ext)s`，yt-dlp 先落 `xxx.mp3.m4a`、转码后成 `xxx.mp3.mp3`,
+    后缀翻倍，而函数返回的 `xxx.mp3` 根本不存在（本机实测踩过）。
+    """
+    low = path.lower()
+    for ext in _MEDIA_EXTS:
+        if low.endswith(ext):
+            return path[: -len(ext)]
+    return path
+
+
 def parse_info_json(path: Optional[str]) -> Optional[Dict]:
     """解析 yt-dlp 写出的 `.info.json`，取出对语料有用的元数据。
 
@@ -368,7 +395,13 @@ class BilibiliDownloader:
         
         # 输出模板
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
-        output_template = output_path.replace('.mp4', '').replace('.mkv', '').replace('.webm', '')
+        # ⚠️ 只剥掉**视频**容器后缀是不够的：音频模式下 output_path 是 `xxx.mp3`，
+        #    旧写法（只 replace .mp4/.mkv/.webm）会拼出 `xxx.mp3.%(ext)s`，
+        #    于是 yt-dlp 落盘成 `xxx.mp3.m4a` → 转码后 `xxx.mp3.mp3`（后缀翻倍），
+        #    而函数返回的 `xxx.mp3` **根本不存在** —— 调用方拿到一个假路径。
+        #    这里按「已知媒体后缀」精确剥一层：**不能用 splitext 无差别剥**，
+        #    否则标题里带点（如「3.5 版本」）会被当成后缀切掉，文件名残成「3」。
+        output_template = _strip_media_ext(output_path)
         args.extend([
             "-o", f"{output_template}.%(ext)s",
             "--no-playlist"  # 不下载整个播放列表
@@ -794,7 +827,11 @@ class BilibiliDownloader:
             title = self._extract_video_id(video_url)
         
         safe_title = self._sanitize_filename(title)
-        output_path = os.path.join(output_dir, f"{safe_title}.mp3")
+        # ⚠️ 后缀必须是**实际音频格式**，不能写死 .mp3：
+        #    `--audio-format flac` 落在 `xxx.flac`，而写死 .mp3 会让函数返回
+        #    一个不存在的路径，调用方（CLI / 网页服务）据此宣布「下载完成」。
+        ext = (self.audio_format or "mp3").lower()
+        output_path = os.path.join(output_dir, f"{safe_title}.{ext}")
         
         if os.path.exists(output_path):
             print(f"✓ 音频文件已存在：{safe_title}")
@@ -819,15 +856,22 @@ class BilibiliDownloader:
             
             process.wait()
             
-            if process.returncode == 0:
+            # 返回码 0 不等于文件存在（缺 ffmpeg 时转码会失败、留下分离流），
+            # 所以这里和 download_video 一样做存在性校验。
+            if process.returncode == 0 and self._verify_download(output_path):
                 print(f"✓ 音频下载完成：{output_path}")
                 return output_path
+            if process.returncode != 0:
+                print(f"✗ 下载失败，返回码：{process.returncode}")
+                self._record_failure(video_url, f"返回码 {process.returncode}",
+                                     safe_title)
             else:
-                print("✗ 下载失败")
-                return None
+                self._on_download_unverified(video_url, output_path, safe_title)
+            return None
                 
         except Exception as e:
             print(f"✗ 下载异常：{e}")
+            self._record_failure(video_url, f"{type(e).__name__}: {e}", safe_title)
             return None
     
     def download_playlist(self, playlist_url: str, output_dir: str = None,

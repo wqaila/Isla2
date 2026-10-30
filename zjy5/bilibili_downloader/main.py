@@ -427,9 +427,12 @@ def main_cli(args: Optional[list] = None):
     
     parser.add_argument(
         "-q", "--quality",
-        choices=["best", "1080", "720", "480"],
+        # ⚠️ 必须与 `downloader._build_download_args` 的 quality_format_map 对齐：
+        #    那边早就支持 2160/1440/360 七档（README 也写了），但这里只留了四档，
+        #    结果 `-q 2160` 会直接被 argparse 拒掉 —— 文档承诺的能力 CLI 用不了。
+        choices=["best", "2160", "1440", "1080", "720", "480", "360"],
         default="best",
-        help="视频质量 (默认：best)"
+        help="视频质量 (默认：best；另有 2160/1440/1080/720/480/360)"
     )
     
     parser.add_argument(
@@ -630,6 +633,12 @@ def main_cli(args: Optional[list] = None):
     )
     
     parser.add_argument(
+        "--no-playwright", dest="no_playwright", action="store_true",
+        help="字幕只走 API，**不回退到 Playwright**。Playwright 那条路会弹浏览器"
+             "并等人工点字幕按钮（`input()`），在后台服务 / CI 里会把任务挂死"
+    )
+    
+    parser.add_argument(
         "-v", "--version",
         action="store_true",
         help="显示版本信息"
@@ -812,7 +821,8 @@ def main_cli(args: Optional[list] = None):
             subtitle_file = extractor.extract_subtitle(
                 parsed_args.url,
                 output_dir=parsed_args.output,
-                output_format=parsed_args.format
+                output_format=parsed_args.format,
+                allow_playwright=not parsed_args.no_playwright
             )
             if subtitle_file:
                 print(f"字幕已保存：{subtitle_file}")
@@ -861,7 +871,8 @@ def main_cli(args: Optional[list] = None):
             subtitle_file = extractor.extract_subtitle(
                 parsed_args.url,
                 output_dir=parsed_args.output,
-                output_format=parsed_args.format
+                output_format=parsed_args.format,
+                allow_playwright=not parsed_args.no_playwright
             )
             if subtitle_file:
                 print(f"字幕已保存：{subtitle_file}")
