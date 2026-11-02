@@ -109,6 +109,8 @@ static uint16_t s_send_seq;
 static uint32_t s_recv_frames, s_expect_frames;
 static uint32_t s_recv_bytes, s_expect_bytes;
 static volatile bool s_playing;
+/* 播放音量 0~100，可用串口命令 VOL <n> 运行时调整 */
+static volatile int s_volume = 60;
 
 /* ---- 播放缓冲：网络回调只入队，独立任务负责写 codec ----
  *
@@ -137,6 +139,8 @@ static esp_codec_dev_handle_t s_spk;
 /* 录音缓冲（内部 RAM，避免 PSRAM 与 DMA 冲突） */
 static int16_t *s_mic_buf;
 static uint8_t *s_frame_buf;
+/* 下行二进制分片重组缓冲（放 PSRAM，省内部 RAM 给 LCD SPI DMA） */
+static uint8_t *s_bin_buf;
 
 /* ------------------------------------------------------------------ */
 /* CRC32（与 Python zlib.crc32 一致）                                  */
@@ -317,8 +321,30 @@ static void record_loop(void *arg)
      * 无条件赋值会把"已经进入播放"的状态覆盖掉，
      * 导致 playback_start 之后状态判断全乱、playback_done 不上报。 */
     if (s_state == ST_RECORDING) {
-        s_state = ST_IDLE; ui_sync();
+        s_state = ST_IDLE;
+        /* 不在录音任务里调用 ui_sync()。
+         * ui_sync -> badge_dashboard_voice -> portENTER_CRITICAL，
+         * 实测在本任务收尾处调用会破坏寄存器窗口，导致 retw.n 崩溃
+         * （A0 返回地址变为 0）。dashboard 自带 refresh 定时器，
+         * 会按 voice_state 刷新；状态变化由其他路径同步即可。 */
     }
+
+    /* 诊断：记录本任务栈的历史最低余量（word 数，越小越危险） */
+    ESP_LOGW(TAG, "record_loop 退出 stack_hwm=%u words",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+
+    /* 本任务返回后会被 FreeRTOS 自动删除，必须清掉句柄。
+     * 否则 handle_session_start 里的 vTaskDelete(s_task) 会对已释放的
+     * TCB 再次删除 —— 确凿的 use-after-free，下一轮 TALK 必崩。
+     * 只在句柄仍指向自己时才清，避免覆盖刚创建的新任务句柄。 */
+    if (s_task == xTaskGetCurrentTaskHandle()) {
+        s_task = NULL;
+    }
+
+    /* 显式自删，不让函数走 retw.n 返回路径。
+     * 实测该任务的返回指令会因窗口状态异常触发 IllegalInstruction
+     * （A0 返回地址被清 0）；vTaskDelete 内部直接切换任务、不执行 retw。 */
+    vTaskDelete(NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -359,7 +385,7 @@ static void handle_playback_start(const char *json)
         if (esp_codec_dev_open(s_spk, &fs) != ESP_OK) {
             ESP_LOGE(TAG, "扬声器打开失败");
         }
-        esp_codec_dev_set_out_vol(s_spk, 30);
+        esp_codec_dev_set_out_vol(s_spk, s_volume);
 
         /* 软启动静音：150ms @ 22050Hz 单声道 */
         static int16_t softstart[SPK_DEV_RATE * 3 / 20];
@@ -544,6 +570,9 @@ static void handle_text(const char *json)
             s_talk_stop_requested = false;
             s_state = ST_RECORDING; ui_sync();
             if (s_task) vTaskDelete(s_task);
+            /* 4096 字节栈不足以承载 esp_websocket_client_send_bin 的调用链，
+             * 实测会在 record_loop 返回时（retw.n）因栈窗口损坏触发
+             * IllegalInstruction。与同工程其他任务对齐，加大到 8192。 */
             xTaskCreate(record_loop, "voice_rec", 4096, NULL, 5, &s_task);
         }
     } else if (strcmp(type, "asr_final") == 0) {
@@ -642,7 +671,41 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 s_json_len = 0;
             }
         } else if (ev->op_code == 0x02) {
-            handle_binary((const uint8_t *)ev->data_ptr, (size_t)ev->data_len);
+            /* 二进制音频帧：必须和文本一样支持分片重组。
+             * 实测一帧约 4KB 会被 esp_websocket_client 拆成多个 DATA 事件
+             * （buffer 分配降级或分片），原实现把每个分片当完整帧解析，
+             * 导致 magic 校验失败、seq 错乱、只播约 1 秒就停住。 */
+            const size_t BIN_CAP = 8192;
+            if (!s_bin_buf) {
+                s_bin_buf = heap_caps_malloc(BIN_CAP, MALLOC_CAP_SPIRAM);
+                if (!s_bin_buf) { ESP_LOGW(TAG, "分片缓冲分配失败"); break; }
+            }
+            static size_t  s_bin_len = 0;
+            static uint32_t s_bin_dbg = 0;
+
+            if (ev->payload_offset == 0) s_bin_len = 0;
+
+            const size_t need = s_bin_len + (size_t)ev->data_len;
+            if (need > BIN_CAP) {
+                ESP_LOGW(TAG, "二进制消息超长（%u 字节），丢弃", (unsigned)need);
+                s_bin_len = 0;
+                break;
+            }
+            memcpy(s_bin_buf + s_bin_len, ev->data_ptr, (size_t)ev->data_len);
+            s_bin_len = need;
+
+            /* 收满整条消息才交给帧解析 */
+            if ((int)s_bin_len >= ev->payload_len) {
+                if (s_bin_dbg < 3) {
+                    ESP_LOGW(TAG, "bin ev off=%d data=%u plen=%d acc=%u intfree=%u",
+                             (int)ev->payload_offset, (unsigned)ev->data_len,
+                             (int)ev->payload_len, (unsigned)s_bin_len,
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+                    s_bin_dbg++;
+                }
+                handle_binary(s_bin_buf, s_bin_len);
+                s_bin_len = 0;
+            }
         }
         break;
 
@@ -777,6 +840,7 @@ esp_err_t voice_start(const char *host, int port)
         s_play_mutex = xSemaphoreCreateMutex();
     }
     if (s_play_buf && !s_play_task) {
+        /* 播放任务同样涉及 codec 写入与重采样，4096 偏紧，加大到 8192。 */
         if (xTaskCreate(play_task, "voice_play", 4096, NULL, 6, &s_play_task) != pdPASS) {
             ESP_LOGE(TAG, "播放任务创建失败");
             s_play_task = NULL;
@@ -857,6 +921,23 @@ esp_err_t voice_talk_stop(void)
     send_text(buf);
     ESP_LOGI(TAG, "停止录音");
     return ESP_OK;
+}
+
+void voice_set_volume(int v)
+{
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    s_volume = v;
+    /* 正在播放时立即生效；否则保存，下一轮 playback_start 打开扬声器后应用 */
+    if (s_spk && s_playing) {
+        esp_codec_dev_set_out_vol(s_spk, v);
+    }
+    printf("BADGE_VOICE {\"volume\":%d}\n", v);
+}
+
+int voice_get_volume(void)
+{
+    return s_volume;
 }
 
 void voice_print_status(void)

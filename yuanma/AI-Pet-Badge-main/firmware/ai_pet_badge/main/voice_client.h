@@ -42,3 +42,9 @@ esp_err_t voice_talk_stop(void);
 
 /** @brief 打印当前状态（供串口命令使用）。 */
 void voice_print_status(void);
+
+/** @brief 设置播放音量 0~100（串口命令 VOL <n>）。 */
+void voice_set_volume(int v);
+
+/** @brief 读取当前播放音量。 */
+int voice_get_volume(void);

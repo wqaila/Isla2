@@ -118,6 +118,19 @@ static void on_touch(lv_event_t *event)
     uint32_t selected = request_next_action();
     if (selected != BADGE_NO_ACTION) ESP_LOGI(TAG,"Touch -> queued %s",clips[selected].name);
 }
+/* 长按屏幕说话、松开发送：短按仍走上面的动画逻辑，不会误触录音 */
+static void on_voice_hold(lv_event_t *event)
+{
+    (void)event;
+    if (!voice_connected()) { ESP_LOGW(TAG,"语音未连接服务端（发 VOICE <ip> 连接）"); return; }
+    esp_err_t r = voice_talk_start();
+    ESP_LOGI(TAG,"长按说话 -> start=%d",(int)r);
+}
+static void on_voice_release(lv_event_t *event)
+{
+    (void)event;
+    if (voice_talk_stop() == ESP_OK) ESP_LOGI(TAG,"松开发送");
+}
 static void print_status(void)
 {
     badge_imu_state_t imu; badge_imu_get(&imu);
@@ -271,6 +284,10 @@ static void command_task(void *arg)
                 int secs = 5;
                 if (line[5]) secs = atoi(line + 5);
                 usb_bandwidth_test(secs);
+            } else if (!strcmp(line,"VOL")) {
+                printf("BADGE_VOICE {\"volume\":%d}\n", voice_get_volume());
+            } else if (!strncmp(line,"VOL ",4)) {
+                voice_set_volume(atoi(line + 4));
             } else if (!strncmp(line,"VOICE",5)) {
                 if (!strncmp(line,"VOICE STOP",10)) {
                     voice_stop();
@@ -430,6 +447,8 @@ void app_main(void)
     lv_obj_set_style_bg_color(screen,lv_color_hex(0xFFF0F5),0);
     lv_obj_remove_flag(screen,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(screen,on_touch,LV_EVENT_CLICKED,NULL);
+    lv_obj_add_event_cb(screen,on_voice_hold,LV_EVENT_LONG_PRESSED,NULL);
+    lv_obj_add_event_cb(screen,on_voice_release,LV_EVENT_RELEASED,NULL);
     badge_scene_init(background);
     bsp_display_unlock();
     badge_dashboard_start(); badge_imu_start();
