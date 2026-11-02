@@ -79,3 +79,12 @@ zjy6/android_app/app/*.zip
 deleted-branches.txt
 # 他人仓库克隆，有自己的远程，不并入本仓库
 zjy6/android_app/skill-festival-submissions/
+# 根目录临时脚本/输出（下划线前缀）
+_*.py
+_*.txt
+_*.bin
+_*.log
+# 根目录一次性调试脚本
+/check_encoding.py
+/count_lines.py
+/fix_encoding.py
