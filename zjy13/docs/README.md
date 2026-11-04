@@ -8,11 +8,11 @@
 |---|---|
 | [`WORKLOG-2026-11-04.md`](WORKLOG-2026-11-04.md) | **最新**：无线直连改造、语音链路稳定性、24kHz 音质修复；含 7 个 Bug 与 7 条弯路 |
 | [`WORKLOG-2026-11-02.md`](WORKLOG-2026-11-02.md) | 仓库同步、固件崩溃与分片缺陷修复、字库缺字、音量与长按交互 |
-| [`development-log.md`](development-log.md) | 开发全记录（模块清单、关键决策、已知问题）。**截至 2026-10-28** |
-| [`PROJECT-SUMMARY.md`](PROJECT-SUMMARY.md) | 完成情况总览、踩坑与修复、当前阻塞。**截至 2026-10-29** |
+| [`development-log.md`](development-log.md) | 开发全记录（模块清单、关键决策、已知问题）。正文截至 2026-10-28，已追加「后续进展」章节 |
+| [`PROJECT-SUMMARY.md`](PROJECT-SUMMARY.md) | 完成情况总览、踩坑与修复、当前阻塞。正文截至 2026-10-29，第六/七/十节已按现状改写 |
 
-> `development-log.md` 与 `PROJECT-SUMMARY.md` 停留在 10 月底，
-> 10-30 之后的最新进展请看两份 `WORKLOG`。
+> 两份文档都已标注 2026-11-04 更新：补充了后续进展、订正了已过时的「未验证项 / 当前阻塞 / 下一步」。
+> 10-30 之后的逐日细节仍以两份 `WORKLOG` 为准。
 
 ## 🐞 故障与审查
 
