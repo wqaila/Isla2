@@ -48,3 +48,6 @@ void voice_set_volume(int v);
 
 /** @brief 读取当前播放音量。 */
 int voice_get_volume(void);
+
+/** @brief 语音客户端是否已启动（供自动连接去重使用）。 */
+bool voice_is_started(void);

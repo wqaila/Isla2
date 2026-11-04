@@ -868,6 +868,11 @@ bool voice_connected(void)
     return s_connected;
 }
 
+bool voice_is_started(void)
+{
+    return s_ws != NULL;
+}
+
 esp_err_t voice_talk_start(void)
 {
     /* 只要求"已连接"，不再强制要求 state==IDLE。

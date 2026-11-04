@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include "badge_dashboard.h"
+#include "voice_client.h"
 #include "wifi_config.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -109,6 +110,7 @@ static void run_network(void *arg)
     (void)arg;
     bool sntp_started = false;
     int64_t next_connect = 0, next_weather = 0;
+    int64_t next_voice = 0;
     while (true) {
         int64_t now = esp_timer_get_time();
         if (!connected) {
@@ -117,7 +119,21 @@ static void run_network(void *arg)
                 next_connect = now + 10000000;
             }
             next_weather = 0;
+            next_voice = 0;
         } else {
+            /* 上电自动连接语音服务端（仅当已配置且尚未启动时）。
+             * 失败则每 5 秒重试；用户手动发 VOICE 命令也能生效，
+             * 因为 voice_is_started() 为真后这里就不再介入。 */
+            if (strlen(BADGE_VOICE_AUTOCONNECT_HOST) && !voice_is_started() &&
+                now >= next_voice) {
+                esp_err_t r = voice_start(BADGE_VOICE_AUTOCONNECT_HOST,
+                                          BADGE_VOICE_AUTOCONNECT_PORT);
+                ESP_LOGI(TAG, "自动连接语音服务端 %s:%d -> %s",
+                         BADGE_VOICE_AUTOCONNECT_HOST,
+                         BADGE_VOICE_AUTOCONNECT_PORT,
+                         esp_err_to_name(r));
+                next_voice = now + (r == ESP_OK ? 0 : 5000000);
+            }
             if (!sntp_started) {
                 esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
                 esp_sntp_setservername(0, "ntp.aliyun.com");
@@ -154,5 +170,10 @@ void badge_network_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* 关闭 WiFi 省电（modem sleep）。
+     * 默认 WIFI_PS_MIN_MODEM 在 Windows 移动热点（WiFi Direct）下会导致
+     * 上行发送卡住：表现为 esp_transport_write() 超时、音频只上传几块就断，
+     * 而手机热点正常。关掉省电后可显著改善吞吐与稳定性。 */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     assert(xTaskCreate(run_network, "dashboard_net", 8192, NULL, 2, &network_task) == pdPASS);
 }
