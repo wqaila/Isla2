@@ -211,15 +211,69 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 
 ---
 
-## 📚 归档文档
+## 📚 文档索引
 
-根目录的 [`docs/`](docs/) 里是跨项目的分析报告：
+### 跨项目分析（根目录 [`docs/`](docs/)）
 
 | 文档 | 内容 |
 |---|---|
 | [`代码审查报告.md`](docs/代码审查报告.md) | 全部项目静态审查，**70 项问题**（高危 18 / 中危 30 / 低危 22） |
 | [`功能完善与升级分析.md`](docs/功能完善与升级分析.md) | zjy5~zjy9 功能升级分析与实施记录 |
 | [`改进与功能规划建议.md`](docs/改进与功能规划建议.md) | 全工作区改进建议，每条标注证据位置 |
+
+### zjy13 技术文档（[`zjy13/docs/`](zjy13/docs/)，共 23 篇）
+
+**🗓 工作记录**
+
+| 文档 | 内容 |
+|---|---|
+| [`WORKLOG-2026-11-04.md`](zjy13/docs/WORKLOG-2026-11-04.md) | **最新**：无线直连改造、语音链路稳定性、24kHz 音质修复；含 7 个 Bug 与 7 条弯路 |
+| [`WORKLOG-2026-11-02.md`](zjy13/docs/WORKLOG-2026-11-02.md) | 仓库同步、固件崩溃与分片缺陷修复、字库缺字、音量与长按交互 |
+| [`development-log.md`](zjy13/docs/development-log.md) | 开发全记录（模块清单、关键决策、已知问题） |
+| [`PROJECT-SUMMARY.md`](zjy13/docs/PROJECT-SUMMARY.md) | 完成情况总览、踩坑与修复、当前阻塞 |
+
+**🐞 故障与审查**
+
+| 文档 | 内容 |
+|---|---|
+| [`FAULT-blackout-and-playback.md`](zjy13/docs/FAULT-blackout-and-playback.md) | 故障报告：黑屏与播放中断；**5.0 节记录已证实的三个真实根因** |
+| [`character-review.md`](zjy13/docs/character-review.md) | 角色卡审查：已修复 3 个缺陷 + 6 个待决策设计缺陷 |
+| [`board-firmware-audit.md`](zjy13/docs/board-firmware-audit.md) | 板子与现有固件的不足审查 |
+| [`firmware-flash-audit-plan.md`](zjy13/docs/firmware-flash-audit-plan.md) | 烧录前检查方案与问题清单 |
+
+**🔌 协议与固件**
+
+| 文档 | 内容 |
+|---|---|
+| [`protocol.md`](zjy13/docs/protocol.md) | WebSocket 通信协议（消息类型、时序、状态机、错误码） |
+| [`firmware.md`](zjy13/docs/firmware.md) | ESP32-S3 固件说明（职责边界、数据流、编译烧录） |
+| [`hardware-verification.md`](zjy13/docs/hardware-verification.md) | 1.85B 硬件资料核实（音频引脚、I2S 格式、4 声道采集） |
+| [`esp32-board-report.md`](zjy13/docs/esp32-board-report.md) | 板子状况报告与固件备份 |
+
+**✅ 分阶段验收**
+
+| 文档 | 内容 |
+|---|---|
+| [`asr-plan.md`](zjy13/docs/asr-plan.md) / [`asr-report.md`](zjy13/docs/asr-report.md) | 阶段一：本地 ASR 方案与验收（RTF 0.009） |
+| [`stage3-dialogue-loop.md`](zjy13/docs/stage3-dialogue-loop.md) | 阶段三：终端语音对话闭环 |
+| [`tts-report.md`](zjy13/docs/tts-report.md) | 本地 TTS 验收报告（CosyVoice 3.0） |
+| [`tts-performance.md`](zjy13/docs/tts-performance.md) | CosyVoice3 性能优化实测（含 `token_hop_len` 污染 Bug） |
+| [`model-selection.md`](zjy13/docs/model-selection.md) | DeepSeek 模型选型报告 |
+
+**🎨 音色与环境**
+
+| 文档 | 内容 |
+|---|---|
+| [`voice-elysia.md`](zjy13/docs/voice-elysia.md) | 角色音色克隆：素材筛选、`<|endofprompt|>` 前缀坑 |
+| [`v2-direction.md`](zjy13/docs/v2-direction.md) | V2 方案转向分析（本地 TTS 版） |
+| [`wsl2-cosyvoice-guide.md`](zjy13/docs/wsl2-cosyvoice-guide.md) | WSL2 验证与 CosyVoice 部署指南 |
+| [`wsl2-gpu-verified.md`](zjy13/docs/wsl2-gpu-verified.md) | WSL2 GPU 验证结果与网络配置 |
+
+**📖 操作指南**
+
+| 文档 | 内容 |
+|---|---|
+| [`demo-guide.md`](zjy13/docs/demo-guide.md) | 演示操作指南（网页 / 终端 / 报告三种方式 + 故障排查） |
 
 ---
 
@@ -254,6 +308,23 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 ---
 
 ## 🗓 最近更新
+
+### 2026-11-04 — 无线直连 + 稳定性与音质修复
+
+- **摆脱手机热点**：改用主机自带无线网卡开 Windows 移动热点（`Isla2Badge`，强制 2.4GHz），
+  板子直连主机，网关固定 `192.168.137.1`，IP 不再漂移
+- **开机自动连接**：WiFi 拿到 IP 后 **18ms** 自动连上服务端，板子插电即用，无需串口命令
+- **修复上行卡死**：ESP32 默认 WiFi 省电在 WiFi Direct 热点下导致发送挂起，
+  录音只上传 3 块即断 → 关闭省电后恢复 **68~72 块**
+- **修复长音频断连**：服务端音频下发改为按播放进度节流（领先 2 秒），
+  播放缓冲 20s→8s，16s+ 长音频 5 轮 0 失败
+- **音质修复**：播放采样率 16kHz → **24kHz 直通**，消除降采样导致的
+  8~12kHz 频段丢失、无抗混叠滤波的折返失真、重采样相位重置毛刺
+- **内存优化**：回收三个超配静态缓冲，内部可用内存 **50.4KB → 79.2KB**，
+  LCD 的 `ESP_ERR_NO_MEM` 报错从每轮 21~42 次降为 **0**
+- **交互**：音量上屏（「语音待命 60」）、`VOL` 命令、长按阈值 400ms→300ms
+
+> 详见 [`WORKLOG-2026-11-04.md`](zjy13/docs/WORKLOG-2026-11-04.md)
 
 ### 2026-10-30 — zjy13 语音链路打通 + 原厂固件复现
 
