@@ -449,6 +449,12 @@ void app_main(void)
     lv_obj_add_event_cb(screen,on_touch,LV_EVENT_CLICKED,NULL);
     lv_obj_add_event_cb(screen,on_voice_hold,LV_EVENT_LONG_PRESSED,NULL);
     lv_obj_add_event_cb(screen,on_voice_release,LV_EVENT_RELEASED,NULL);
+    /* 长按阈值：LVGL 默认 400ms 偏长，按住说话要等太久。
+     * 缩到 300ms——仍能区分"短按切换动画"与"长按说话"，但响应更跟手。
+     * 注意别设太小（<250ms 时短按容易误判成长按，导致误触发录音）。 */
+    for (lv_indev_t *indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
+        lv_indev_set_long_press_time(indev, 300);
+    }
     badge_scene_init(background);
     bsp_display_unlock();
     badge_dashboard_start(); badge_imu_start();

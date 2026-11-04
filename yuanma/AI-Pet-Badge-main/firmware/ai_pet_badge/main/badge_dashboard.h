@@ -12,6 +12,8 @@ uint32_t badge_dashboard_revision(void); /* Atomic hint; widget reads still requ
 void badge_dashboard_connection(bool connected);
 /* 语音状态：0 未启用 / 1 连接中 / 2 待命 / 3 录音 / 4 播放 */
 void badge_dashboard_voice(int voice_state);
+/* 播放音量（0~100），显示在语音状态行 */
+void badge_dashboard_volume(int volume);
 void badge_dashboard_weather(float temperature, int code, bool day, time_t observed);
 void badge_dashboard_set_time(time_t epoch);
 bool badge_dashboard_time_valid(void);

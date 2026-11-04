@@ -35,7 +35,9 @@ static struct {
     time_t observed;
     /* 语音状态：0 未启用 / 1 连接中 / 2 待命 / 3 录音 / 4 播放 */
     int voice_state;
-} state;
+    /* 播放音量 0~100，随 VOL 命令更新；-1 表示未设置（不显示） */
+    int volume;
+} state = { .volume = -1 };
 
 static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
 {
@@ -111,9 +113,11 @@ static void refresh(lv_timer_t *timer)
     text_if_changed(motion_label, recovering ? "恢复中" : dizzy ? "头晕中" : moving ? "动作中" : "陪伴中");
     text_if_changed(hint_label, dizzy ? "稍后互动" : pending ? "已记下" : "轻触互动");
 
-    /* 语音状态：没启用时不显示任何字样，保持原界面干净 */
+    /* 语音状态：没启用时不显示任何字样，保持原界面干净。
+     * 已启用时在状态后追加音量，例如「语音待命 60」。 */
     {
         int vs = state.voice_state;
+        int vol = state.volume;
         const char *vt = NULL;
         uint32_t vc = 0xB8A1B8;
         switch (vs) {
@@ -124,7 +128,13 @@ static void refresh(lv_timer_t *timer)
         default: vt = ""; break;    /* 0 = 未启用 */
         }
         if (vt && voice_label) {
-            text_if_changed(voice_label, vt);
+            char buf[32];
+            if (vt[0] && vol >= 0) {
+                snprintf(buf, sizeof(buf), "%s %d", vt, vol);
+                text_if_changed(voice_label, buf);
+            } else {
+                text_if_changed(voice_label, vt);
+            }
         }
     }
     if (valid) {
@@ -242,6 +252,17 @@ void badge_dashboard_voice(int voice_state)
     portENTER_CRITICAL(&state_mux);
     if (state.voice_state != voice_state) {
         state.voice_state = voice_state;
+        ++revision;
+    }
+    portEXIT_CRITICAL(&state_mux);
+}
+
+/* 播放音量（0~100）。由 VOL 命令调用，屏幕会在 100ms 内刷新出 "音量 xx"。 */
+void badge_dashboard_volume(int volume)
+{
+    portENTER_CRITICAL(&state_mux);
+    if (state.volume != volume) {
+        state.volume = volume;
         ++revision;
     }
     portEXIT_CRITICAL(&state_mux);

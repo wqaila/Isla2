@@ -672,7 +672,22 @@ class DialogueServer:
         )
 
         seq = 0
+        # 按播放进度节流下发。
+        # 一次性全速推送会让长音频（15s+ / 700KB+）在几秒内灌满链路，
+        # 实测在移动热点/WiFi Direct 上会触发 transport 写超时并断连。
+        # 这里限制为「已播放进度 + 2 秒提前量」，峰值带宽降到约 1/8，
+        # 同时保证板子缓冲里始终有数据、不会播空。
+        # 板子侧环形缓冲已缩到 8 秒，2 秒提前量留足抖动余量且不会溢出。
+        sample_rate = tts_result.sample_rate or 24000
+        bytes_per_sec = sample_rate * 2          # 16bit 单声道
+        lead_sec = 2.0                            # 允许领先播放进度 2 秒
+        play_start = time.perf_counter()
         for off in range(0, len(pcm), step):
+            played_sec = time.perf_counter() - play_start
+            sent_sec = (off + step) / bytes_per_sec
+            ahead = sent_sec - played_sec
+            if ahead > lead_sec:
+                await asyncio.sleep(ahead - lead_sec)
             await self.send_audio(client, pcm[off:off + step], seq)
             seq += 1
 

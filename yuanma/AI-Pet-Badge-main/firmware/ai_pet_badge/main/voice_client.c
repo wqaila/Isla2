@@ -122,7 +122,11 @@ static volatile int s_volume = 60;
  * 因此改为：DATA 回调把 PCM 写入有界环形缓冲，
  * 播放任务异步取数据写 codec，二者互不阻塞。
  */
-#define PLAY_MAX_SECONDS  20                     /* 单轮音频上限（服务端约 12s） */
+/* 单轮音频上限。服务端已改为按播放进度节流下发（领先约 1 秒），
+ * 缓冲不再需要容纳整段音频，8 秒足够吸收抖动，同时降低 PSRAM 占用与
+ * 长音频时的高水位（20 秒缓冲曾导致 LCD 的 SPI DMA 抢不到内存而报
+ * ESP_ERR_NO_MEM）。 */
+#define PLAY_MAX_SECONDS  8
 #define PLAY_BUF_BYTES    (SPK_SAMPLE_RATE * 2 * PLAY_MAX_SECONDS)
 #define PLAY_RESAMPLE_MAX (PLAY_MAX_SECONDS * 3) /* 重采样后略长，留余量 */
 
@@ -322,16 +326,13 @@ static void record_loop(void *arg)
      * 导致 playback_start 之后状态判断全乱、playback_done 不上报。 */
     if (s_state == ST_RECORDING) {
         s_state = ST_IDLE;
-        /* 不在录音任务里调用 ui_sync()。
-         * ui_sync -> badge_dashboard_voice -> portENTER_CRITICAL，
-         * 实测在本任务收尾处调用会破坏寄存器窗口，导致 retw.n 崩溃
-         * （A0 返回地址变为 0）。dashboard 自带 refresh 定时器，
-         * 会按 voice_state 刷新；状态变化由其他路径同步即可。 */
+        /* 直接写 dashboard 的 voice_state（等价于 ui_sync 对 ST_IDLE 的映射），
+         * 让屏幕在 100ms 内由 refresh 定时器刷成"语音待命"。
+         * 这里刻意不走 ui_sync()：它是 switch 内联版本，历史上曾在函数尾部
+         * 触发 retw.n 崩溃；改为独立的单次函数调用更稳。
+         * 调用位置也放在 close 之前，远离函数尾部。 */
+        badge_dashboard_voice(2);
     }
-
-    /* 诊断：记录本任务栈的历史最低余量（word 数，越小越危险） */
-    ESP_LOGW(TAG, "record_loop 退出 stack_hwm=%u words",
-             (unsigned)uxTaskGetStackHighWaterMark(NULL));
 
     /* 本任务返回后会被 FreeRTOS 自动删除，必须清掉句柄。
      * 否则 handle_session_start 里的 vTaskDelete(s_task) 会对已释放的
@@ -681,7 +682,6 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 if (!s_bin_buf) { ESP_LOGW(TAG, "分片缓冲分配失败"); break; }
             }
             static size_t  s_bin_len = 0;
-            static uint32_t s_bin_dbg = 0;
 
             if (ev->payload_offset == 0) s_bin_len = 0;
 
@@ -696,13 +696,6 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
             /* 收满整条消息才交给帧解析 */
             if ((int)s_bin_len >= ev->payload_len) {
-                if (s_bin_dbg < 3) {
-                    ESP_LOGW(TAG, "bin ev off=%d data=%u plen=%d acc=%u intfree=%u",
-                             (int)ev->payload_offset, (unsigned)ev->data_len,
-                             (int)ev->payload_len, (unsigned)s_bin_len,
-                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-                    s_bin_dbg++;
-                }
                 handle_binary(s_bin_buf, s_bin_len);
                 s_bin_len = 0;
             }
@@ -764,6 +757,10 @@ esp_err_t voice_start(const char *host, int port)
 
     snprintf(s_host, sizeof(s_host), "%s", host ? host : "");
     s_port = port;
+
+    /* 启动时把当前音量同步到屏幕，避免状态行只显示"语音连接中"、
+     * 看不出实际音量。 */
+    badge_dashboard_volume(s_volume);
 
     if (!s_host[0]) {
         ESP_LOGE(TAG, "未指定服务端地址");
@@ -873,6 +870,11 @@ bool voice_is_started(void)
     return s_ws != NULL;
 }
 
+bool voice_playing_now(void)
+{
+    return s_playing;
+}
+
 esp_err_t voice_talk_start(void)
 {
     /* 只要求"已连接"，不再强制要求 state==IDLE。
@@ -937,6 +939,8 @@ void voice_set_volume(int v)
     if (s_spk && s_playing) {
         esp_codec_dev_set_out_vol(s_spk, v);
     }
+    /* 同步到屏幕（dashboard 的 refresh 定时器 100ms 内刷新） */
+    badge_dashboard_volume(v);
     printf("BADGE_VOICE {\"volume\":%d}\n", v);
 }
 

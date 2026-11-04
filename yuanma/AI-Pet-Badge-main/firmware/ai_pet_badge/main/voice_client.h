@@ -51,3 +51,6 @@ int voice_get_volume(void);
 
 /** @brief 语音客户端是否已启动（供自动连接去重使用）。 */
 bool voice_is_started(void);
+
+/** @brief 是否正在播放 TTS 音频（供动画任务避让 DMA 内存）。 */
+bool voice_playing_now(void);
