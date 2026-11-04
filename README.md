@@ -42,8 +42,8 @@
 | 7 | [`zjy10`](zjy10/) | **Anime Voice Lab** · 角色声线复刻 | 文档（规划）/ GPT-SoVITS | 📝 规划 |
 | 8 | [`zjy11`](zjy11/) | **ESP32-S3 云端角色对话原型** | Python 网关 / ESP-IDF | ⚠️ 网关可用 |
 | 9 | [`zjy12`](zjy12/) | **设计决策台账 + LLM 基准** | 文档 / 标准库 bench | ✅ 文档+基准 |
-| 10 | [`zjy13`](zjy13/) | **ESP32-S3 语音交互系统**（最新） | FunASR + DeepSeek + CosyVoice3 + ESP-IDF | 🚧 联调中 |
-| 11 | [`yuanma`](yuanma/) | **原厂固件源码**（逆向恢复） | ESP-IDF 5.5.5 / LVGL / ES7210+ES8311 | ✅ 可编译 |
+| 10 | [`zjy13`](zjy13/) | **ESP32-S3 语音交互系统**（最新，板子已烧录联调通过） | FunASR + DeepSeek + CosyVoice3 + ESP-IDF | ✅ 可用 |
+| 11 | [`yuanma`](yuanma/) | **原厂固件源码**（板子上实际运行的 `ai_pet_badge`） | ESP-IDF 5.5.5 / LVGL / ES7210+ES8311 | ✅ 可编译 |
 
 状态图例：✅ 可运行 · ⚠️ 部分可用 · 📝 仅文档 · 🚧 开发中
 
@@ -215,11 +215,21 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 
 ### 跨项目分析（根目录 [`docs/`](docs/)）
 
+> 该目录的说明与「审查范围已过时」提示见 [`docs/README.md`](docs/README.md)。
+
 | 文档 | 内容 |
 |---|---|
-| [`代码审查报告.md`](docs/代码审查报告.md) | 全部项目静态审查，**70 项问题**（高危 18 / 中危 30 / 低危 22） |
+| [`代码审查报告.md`](docs/代码审查报告.md) | 全部项目静态审查，**70 项问题**（高危 18 / 中危 30 / 低危 22）。⚠️ 写于 2026-09-21，只覆盖当时 6 个项目，且无修复状态跟踪 |
 | [`功能完善与升级分析.md`](docs/功能完善与升级分析.md) | zjy5~zjy9 功能升级分析与实施记录 |
 | [`改进与功能规划建议.md`](docs/改进与功能规划建议.md) | 全工作区改进建议，每条标注证据位置 |
+
+### 其他目录入口
+
+| 目录 | 说明 |
+|---|---|
+| [`yuanma/README.md`](yuanma/README.md) | 原厂固件源码说明（板子上实际运行的 `ai_pet_badge` 固件来源） |
+| [`zjy12/README.md`](zjy12/README.md) | 设计决策与问题台账索引 |
+| [`zjy13/docs/README.md`](zjy13/docs/README.md) | zjy13 技术文档本地索引（23 篇） |
 
 ### zjy13 技术文档（[`zjy13/docs/`](zjy13/docs/)，共 23 篇）
 
