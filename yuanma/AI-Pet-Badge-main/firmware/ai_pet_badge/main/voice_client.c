@@ -47,13 +47,17 @@ static const char *TAG = "voice";
 #define CHUNK_MS          40
 #define CHUNK_BYTES       (MIC_SAMPLE_RATE * MIC_CHANNELS * (MIC_BITS / 8) * CHUNK_MS / 1000)
 
-/* 播放格式：服务端下发 24000 Hz mono 16bit，这里统一按 16000 设备播放。
- * 设备侧与录音同用 16000（原厂 TONE 验证过的唯一可用值），
- * 播放任务里做 24k -> 16k 线性重采样。 */
+/* 播放格式：服务端下发 24000 Hz mono 16bit。
+ * 设备侧直接以 24000 播放，不做重采样。
+ * 原先设备跑 16000 需要 24k->16k 降采样，带来三个问题：
+ *   1) 8~12kHz 频段被整体丢弃 → 声音发闷、缺高频细节（音色不像的主因之一）
+ *   2) 线性插值无抗混叠滤波 → 8kHz 以上折返成谐波失真，听感发毛
+ *   3) 重采样相位每块重置（src 从 0 重算）→ 每约 43ms 一个断点
+ * ES8311 支持 8k~48k；录音/播放是半双工，各自 open 时重配 I2S，互不冲突。 */
 #define SPK_SAMPLE_RATE   24000
 #define SPK_CHANNELS      1
 
-#define SPK_DEV_RATE      16000
+#define SPK_DEV_RATE      SPK_SAMPLE_RATE
 
 /* 单轮音频上限 60 秒 */
 #define MAX_TURN_SECONDS   60
@@ -388,8 +392,10 @@ static void handle_playback_start(const char *json)
         }
         esp_codec_dev_set_out_vol(s_spk, s_volume);
 
-        /* 软启动静音：150ms @ 22050Hz 单声道 */
-        static int16_t softstart[SPK_DEV_RATE * 3 / 20];
+        /* 软启动静音：42ms @24k 单声道。
+         * 原先按 SPK_DEV_RATE*3/20 开（24k 下 3600 采样 = 7.2KB 静态 RAM），
+         * 内部 RAM 紧张时会挤掉 LCD 的 SPI DMA，改为固定 1024 采样足够。 */
+        static int16_t softstart[1024];
         memset(softstart, 0, sizeof(softstart));
         esp_codec_dev_write(s_spk, softstart, (int)sizeof(softstart));
     }
@@ -399,12 +405,14 @@ static void handle_playback_start(const char *json)
              (unsigned)frames, (unsigned)bytes, SPK_SAMPLE_RATE, SPK_DEV_RATE);
 }
 
-/* 播放任务：从环形缓冲取 PCM，重采样后写 codec。
- * 独立于网络回调，避免阻塞收包与心跳。 */
+/* 播放任务：从环形缓冲取 PCM，直接写 codec。
+ * 独立于网络回调，避免阻塞收包与心跳。
+ * 设备采样率与 TTS 一致（24k），无需重采样，频响完整保留。 */
 static void play_task(void *arg)
 {
     (void)arg;
-    static int16_t out_buf[SPK_DEV_RATE * 2 / 4];   /* 每次 250ms */
+    /* 每次最多取 1024 采样；原先按 SPK_DEV_RATE*2/4 开，白占 16KB 内部 RAM */
+    static int16_t out_buf[1024];
 
     while (true) {
         /* 取数据 */
@@ -412,7 +420,7 @@ static void play_task(void *arg)
         if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
         avail = s_play_count;
         if (avail > 0) {
-            const size_t take = (avail > 1024) ? 1024 : avail;   /* 512 采样 */
+            const size_t take = (avail > 1024) ? 1024 : avail;
             for (size_t i = 0; i < take; ++i) {
                 out_buf[i] = s_play_buf[s_play_head];
                 s_play_head = (s_play_head + 1) % (PLAY_BUF_BYTES / sizeof(int16_t));
@@ -423,20 +431,8 @@ static void play_task(void *arg)
         if (s_play_mutex) xSemaphoreGive(s_play_mutex);
 
         if (avail > 0 && s_spk) {
-            /* 24k -> 22.05k 线性重采样（比例 22050/24000） */
-            const size_t out_n = (size_t)((double)avail * SPK_DEV_RATE / SPK_SAMPLE_RATE);
-            static int16_t resamp[1024];
-            for (size_t i = 0; i < out_n && i < 1024; ++i) {
-                const double src = (double)i * SPK_SAMPLE_RATE / SPK_DEV_RATE;
-                const size_t idx = (size_t)src;
-                const double frac = src - (double)idx;
-                const int16_t a = out_buf[idx < avail ? idx : avail - 1];
-                const int16_t b = out_buf[(idx + 1 < avail) ? idx + 1 : avail - 1];
-                resamp[i] = (int16_t)(a + (b - a) * frac);
-            }
-            if (out_n > 0) {
-                esp_codec_dev_write(s_spk, resamp, (int)(out_n * 2));
-            }
+            /* 采样率一致：原样写出，保留 24kHz 完整频响 */
+            esp_codec_dev_write(s_spk, out_buf, (int)(avail * 2));
             continue;
         }
 
@@ -455,10 +451,10 @@ static void finish_playback(void)
     if (!s_playing) return;
     s_playing = false;
 
-    /* 关闭前先写 80ms 静音并稍作等待，让功放电流平滑回落。
+    /* 关闭前先写 42ms 静音并稍作等待，让功放电流平滑回落。
      * 直接 close 会在信号高峰处切断，产生电流突变并加剧掉电风险。 */
     if (s_spk) {
-        static int16_t fadeout[SPK_DEV_RATE * 2 / 25];   /* 80ms */
+        static int16_t fadeout[1024];   /* 42ms @24k */
         memset(fadeout, 0, sizeof(fadeout));
         esp_codec_dev_write(s_spk, fadeout, (int)sizeof(fadeout));
         vTaskDelay(pdMS_TO_TICKS(50));
