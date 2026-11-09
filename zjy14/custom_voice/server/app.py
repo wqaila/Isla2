@@ -23,7 +23,7 @@ from ..db.migrate import migrate
 from ..db.session import Database
 from ..inference.engine import TTSEngine
 from .middleware import RequestIdMiddleware
-from .routes import health, synthesis, system
+from .routes import characters, health, speakers, synthesis, system
 from .state import AppState
 
 logger = get_logger("app")
@@ -131,7 +131,15 @@ def build_app(config: GPUConfig | None = None) -> FastAPI:
         engine = create_engine(cfg)
         engine.load()
 
-        app.state.zjy14 = AppState(cfg, engine, db)
+        # speaker 条件缓存（决策：实测省 16.5% 合成耗时）
+        from ..speaker.cache import SpeakerConditionCache
+
+        speaker_cache = SpeakerConditionCache(
+            max_items=cfg.speaker_cache_max_items,
+            enabled=cfg.speaker_cache_enabled,
+        )
+
+        app.state.zjy14 = AppState(cfg, engine, db, speaker_cache)
         try:
             yield
         finally:
@@ -179,6 +187,8 @@ def build_app(config: GPUConfig | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(system.router)
     app.include_router(synthesis.router)
+    app.include_router(characters.router)
+    app.include_router(speakers.router)
 
     return app
 

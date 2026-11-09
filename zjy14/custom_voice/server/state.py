@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from ..config.schema import GPUConfig
 from ..db.session import Database
@@ -15,10 +16,17 @@ from ..inference.engine import TTSEngine
 class AppState:
     """应用级共享状态。挂在 ``app.state.zjy14`` 上。"""
 
-    def __init__(self, config: GPUConfig, engine: TTSEngine, db: Database) -> None:
+    def __init__(
+        self,
+        config: GPUConfig,
+        engine: TTSEngine,
+        db: Database,
+        speaker_cache: Any | None = None,
+    ) -> None:
         self.config = config
         self.engine = engine
         self.db = db
+        self.speaker_cache = speaker_cache
         self.started_at = time.time()
 
 

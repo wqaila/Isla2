@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：Phase 1 完成（工程骨架）**
+**当前阶段：Phase 3 完成（角色与声音管理）**
 
 ---
 
@@ -37,14 +37,20 @@ API 文档：<http://127.0.0.1:50001/docs>
 ### 测试
 
 ```bash
-# 单元测试（81 个）
+# 单元测试（145 个）
 wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/run_tests.sh
 
-# 端到端验收（需服务已启动）
+# Phase 1 端到端验收（需服务已启动）
 wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/verify_phase1.sh
+
+# Phase 3 端到端验收（需服务已启动）
+wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/verify_phase3.sh
 
 # 硬性约束验证（安全守门 / 配置登记 / 分层）
 wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/verify_constraints.sh
+
+# 从 zjy13 迁移现有角色与声音（幂等）
+wsl -e bash -lc "cd /mnt/d/xiangmudaima/zjy14 && source ~/cosyvoice-venv/bin/activate && PYTHONPATH=. python scripts/migrate_elysia.py"
 ```
 
 ---
@@ -92,6 +98,35 @@ wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/verify_constraints.sh
 
 服务状态与 GPU 实时信息。
 
+### 角色与声音管理
+
+```text
+GET    /api/v1/characters          列出角色
+POST   /api/v1/characters          创建角色（201）
+GET    /api/v1/characters/{id}     取单个
+PATCH  /api/v1/characters/{id}     局部更新
+DELETE /api/v1/characters/{id}     删除（204）
+
+GET    /api/v1/speakers            列出声音
+POST   /api/v1/speakers            导入声音（含质量检测）
+GET    /api/v1/speakers/{id}       取单个
+PATCH  /api/v1/speakers/{id}       局部更新（改音频/文本会重算缓存 key）
+DELETE /api/v1/speakers/{id}       删除（被角色引用时拒绝）
+POST   /api/v1/speakers/{id}/validate   重新做质量检测
+```
+
+**导入声音时的质量检测**（不合格直接拒绝，并说明原因）：
+
+| 检测 | 拒绝条件 |
+|---|---|
+| 时长 | < 3 秒 |
+| 削波 | > 1% 样本 |
+| 静音 | > 60% |
+| 信噪比 | < 15dB（动态范围足够时才判） |
+| 音量 | RMS < -35 dBFS |
+
+**安全校验**：路径必须绝对、不含 `..`、文件存在、扩展名在白名单内。
+
 ---
 
 ## 配置
@@ -122,13 +157,16 @@ zjy14/
 │  ├─ config/      # 配置模型与加载（含消费登记校验）
 │  ├─ core/        # 异常、结构化日志、路径解析
 │  ├─ db/          # SQLite 表结构与迁移
+│  ├─ audio/       # 音频读写、重采样、PCM 转换
+│  ├─ speaker/     # 声音档案、质量检测、版本化缓存
+│  ├─ character/   # 角色档案仓储
 │  ├─ inference/   # 引擎抽象 + Stub 实现 + GPU 探测
 │  ├─ schemas/     # 请求/响应模型
 │  └─ server/      # FastAPI 应用与路由
 ├─ configs/        # gpu.yaml
-├─ tests/          # 81 个测试
-├─ scripts/        # 启动、测试、验收脚本
-├─ docs/           # 方案、决策、阶段任务
+├─ tests/          # 145 个测试
+├─ scripts/        # 启动、测试、验收、迁移脚本
+├─ docs/           # 方案、决策、阶段报告
 └─ probe/          # Phase 0 环境探测脚本（可复现）
 ```
 
@@ -161,24 +199,25 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | Phase 0 审计 | ✅ 完成 | 环境探测 + 情绪可行性验证（含重大发现） |
-| **Phase 1 骨架** | ✅ **完成** | 81 测试全绿，20 项端到端验收通过 |
+| Phase 1 骨架 | ✅ 完成 | 81 测试全绿，20 项端到端验收通过 |
+| **Phase 3 角色声音** | ✅ **完成** | 145 测试全绿，17 项端到端验收通过；elysia 已迁移 |
 | Phase 2 表达控制 | ⬜ 待开始 | **需先给 D1 盲听结论** |
-| Phase 3 角色声音 | ⬜ 待开始 | |
 | Phase 4 GPU/流式 | ⬜ 待开始 | |
 | Phase 5 ESP32 桥接 | ⬜ 待开始 | 复用 zjy13 固件 |
 | Phase 6 Web 界面 | ⬜ 待开始 | React + TS 8 页 |
 | Phase 7 稳定发布 | ⬜ 待开始 | |
 
-详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md) 和 [docs/04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md)。
+详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)。
 
 ---
 
 ## 已知限制
 
-- **Phase 1 用 StubEngine**，产出正弦波而非真实语音。真实模型在 Phase 2 接入。
+- **Phase 1–3 用 StubEngine**，产出正弦波而非真实语音。真实模型在 Phase 2 接入。
 - **情绪表达效果未验证** —— 需要人工盲听 `_audio_probe/` 的样本。客观指标不能证明情绪被表达。
 - **仅 1 个角色素材**（elysia），无法验证"跨角色不串音色"（决策 D9）。
 - 复用 `~/cosyvoice-venv`，与 CosyVoice 环境耦合；升级依赖前需跑 CosyVoice 冒烟测试。
+- 声音档案只记录音频路径，不复制原始文件；外部移动文件会导致校验失败。
 
 ---
 
@@ -189,4 +228,5 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [02_IMPLEMENTATION_PLAN.md](docs/02_IMPLEMENTATION_PLAN.md) | 落地方案：环境审计、关键技术发现、架构、风险 |
 | [03_DECISIONS.md](docs/03_DECISIONS.md) | 10 项决策记录 |
 | [04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md) | Phase 1 详细任务与验收标准 |
+| [05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md) | Phase 3 交付报告 |
 | [原始提示词](Fun-CosyVoice3.0_RTX5070_12GB_完整优化开发提示词.md) | 需求来源 |
