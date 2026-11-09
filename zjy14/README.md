@@ -200,14 +200,15 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 |---|---|---|
 | Phase 0 审计 | ✅ 完成 | 环境探测 + 情绪可行性验证（含重大发现） |
 | Phase 1 骨架 | ✅ 完成 | 81 测试全绿，20 项端到端验收通过 |
-| **Phase 3 角色声音** | ✅ **完成** | 145 测试全绿，17 项端到端验收通过；elysia 已迁移 |
-| Phase 2 表达控制 | ⬜ 待开始 | **需先给 D1 盲听结论** |
+| Phase 3 角色声音 | ✅ 完成 | 145 测试全绿，17 项端到端验收通过；elysia 已迁移 |
+| **音色诊断与修复** | ⏳ **进行中** | 相似度 0.9208，音节CV +0.091；主观听感仍"不够" |
+| Phase 2 表达控制 | ⬜ 待开始 | 音色收尾后启动 |
 | Phase 4 GPU/流式 | ⬜ 待开始 | |
 | Phase 5 ESP32 桥接 | ⬜ 待开始 | 复用 zjy13 固件 |
 | Phase 6 Web 界面 | ⬜ 待开始 | React + TS 8 页 |
 | Phase 7 稳定发布 | ⬜ 待开始 | |
 
-详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)。
+详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md)。
 
 ---
 
@@ -215,9 +216,13 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 
 - **Phase 1–3 用 StubEngine**，产出正弦波而非真实语音。真实模型在 Phase 2 接入。
 - **情绪表达效果未验证** —— 需要人工盲听 `_audio_probe/` 的样本。客观指标不能证明情绪被表达。
+- **音色仍被认为"不够"** —— 客观相似度 0.9208（超官方基准 0.7559），但用户主观听感未达标。已定位并修复三项（静音裁剪、文本长度比、文本前端），剩余可能是模型能力上限。
+- **采样随机性大** —— 同一文本重复合成，时长波动最大 46%（`top_p=0.8/top_k=25`）。评估必须多次采样取中位数。
 - **仅 1 个角色素材**（elysia），无法验证"跨角色不串音色"（决策 D9）。
 - 复用 `~/cosyvoice-venv`，与 CosyVoice 环境耦合；升级依赖前需跑 CosyVoice 冒烟测试。
 - 声音档案只记录音频路径，不复制原始文件；外部移动文件会导致校验失败。
+
+> 完整的成果与不足清单见 [docs/11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md)。
 
 ---
 
@@ -225,8 +230,14 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 
 | 文档 | 内容 |
 |---|---|
+| [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | **当日完整总结（成果 + 不足）** |
 | [02_IMPLEMENTATION_PLAN.md](docs/02_IMPLEMENTATION_PLAN.md) | 落地方案：环境审计、关键技术发现、架构、风险 |
 | [03_DECISIONS.md](docs/03_DECISIONS.md) | 10 项决策记录 |
 | [04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md) | Phase 1 详细任务与验收标准 |
 | [05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md) | Phase 3 交付报告 |
+| [06_TIMBRE_DIAGNOSIS.md](docs/06_TIMBRE_DIAGNOSIS.md) | 音色诊断：定位"像机器人"的根因 |
+| [07_TIMBRE_FIX_PLAN.md](docs/07_TIMBRE_FIX_PLAN.md) | 音色修复方案（三个真根因） |
+| [08_REFERENCE_SUFFICIENCY.md](docs/08_REFERENCE_SUFFICIENCY.md) | 参考音频是否够（相似度量化） |
+| [09_FIXED_TEXT_RESULT.md](docs/09_FIXED_TEXT_RESULT.md) | 补全文本后复测 |
+| [10_TEXT_FRONTEND.md](docs/10_TEXT_FRONTEND.md) | 文本前端启用（无需 token） |
 | [原始提示词](Fun-CosyVoice3.0_RTX5070_12GB_完整优化开发提示词.md) | 需求来源 |
