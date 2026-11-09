@@ -1,0 +1,16 @@
+# zjy14 Custom Voice Engine —— 运行依赖
+#
+# 全部锁定为 WSL ~/cosyvoice-venv 中已存在的版本，
+# 避免 pip 触发依赖升级而污染 CosyVoice 运行环境。
+# 决策依据：docs/04_PHASE1_TASKS.md 的 P1-1。
+
+fastapi==0.115.6
+uvicorn==0.30.0
+pydantic==2.7.0
+PyYAML==6.0.3
+soundfile==0.12.1
+numpy==1.26.4
+httpx==0.28.1
+
+# 测试
+pytest==9.2.0
