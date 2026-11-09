@@ -113,6 +113,7 @@ async def run_turn(
     asr: ASRRunner | None,
     turn_no: int,
     voice_id: str | None = None,
+    speaking_rate: float = 1.0,
 ) -> DialogueResult:
     """跑一轮完整链路。"""
     timing = TurnTiming()
@@ -163,6 +164,7 @@ async def run_turn(
             reply,
             turn_id=f"tts-{turn_no}-{int(time.time()*1000)}",
             voice_id=voice_id,
+            speed=speaking_rate,
         )
     except TTSError as exc:
         print(f" 失败: {exc.code}: {exc.message}")
@@ -215,11 +217,22 @@ async def main_async(args: argparse.Namespace) -> int:
     card_voice = (card.tts_settings() or {}).get("tts_voice_id")
     voice_id = card_voice or tts_cfg.default_voice
 
+    # 语速同样取自角色卡；非法值（非数字）回退 1.0 并提示。
+    _rate = (card.tts_settings() or {}).get("speaking_rate")
+    speaking_rate = float(_rate) if isinstance(_rate, (int, float)) else 1.0
+    if not 0.5 <= speaking_rate <= 2.0:
+        print(
+            f"[警告] 角色卡 speaking_rate={speaking_rate} 超出 TTS 支持范围 0.5~2.0，"
+            "已按 1.0 处理",
+            file=sys.stderr,
+        )
+        speaking_rate = 1.0
+
     print("=" * 60)
     print("  本地语音对话闭环")
     print("=" * 60)
     print(f"  角色  : {card.name} (v{card.prompt_version()})")
-    print(f"  音色  : {voice_id}")
+    print(f"  音色  : {voice_id}  (语速 {speaking_rate})")
     print(f"  LLM   : {llm_cfg.model}")
     print(f"  TTS   : {tts_cfg.base_url}")
 
@@ -277,7 +290,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     session=session, tts_client=tts_client,
                     user_text=line, wav_path=None, asr=None,
                     turn_no=len(results) + 1,
-                    voice_id=voice_id,
+                    voice_id=voice_id, speaking_rate=speaking_rate,
                 )
                 results.append(r)
                 print()
@@ -295,7 +308,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 r = await run_turn(
                     session=session, tts_client=tts_client,
                     user_text="", wav_path=wav, asr=asr, turn_no=i,
-                    voice_id=voice_id,
+                    voice_id=voice_id, speaking_rate=speaking_rate,
                 )
                 results.append(r)
                 print()

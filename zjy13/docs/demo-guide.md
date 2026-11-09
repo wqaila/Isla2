@@ -11,23 +11,22 @@
 
 ### 前置条件
 
-1. **电脑侧三个服务在跑**（顺序建议按此）：
+1. **一键启动电脑侧两个服务**（推荐）：
 
    ```powershell
-   # ① Clash 代理（LLM 必需：api.deepseek.com 直连不通）
-   Start-Process 'D:\Clash Verge\clash-verge.exe'
-
-   # ② TTS（WSL2）
-   wsl -e bash /mnt/d/xiangmudaima/zjy13/scripts/serve_tts_wsl.sh
-
-   # ③ WebSocket 服务端
    cd D:\xiangmudaima\zjy13
-   .\.venv-asr\Scripts\python.exe -m server.ws.server --host 0.0.0.0 --port 8765
+   .\一键启动.bat
    ```
+
+   它会依次：检查 Clash 代理与热点 → 启动 WSL2 的 TTS 并等 `/health` 就绪 →
+   启动 WS 服务端并确认端口监听 → 打印地址。
+
+   > 顺序很重要：WS 启动时会做 TTS 健康检查，TTS 没起来会直接退出码 2。
+   > 手工分两个终端启动的写法见下方「手动启动」。
 
 2. **电脑开着移动热点**（板子连它，不依赖手机热点）
 
-   - SSID `Isla2Badge` / 密码 `isla2badge2026`
+   - SSID `Isla2Badge` / 密码见本机私有记录（**已从文档移除，不要写回仓库**）
    - **必须强制 2.4GHz**（ESP32 不支持 5GHz，否则板子报 `reason 201` 扫不到）
    - 电脑在热点上的地址固定为 `192.168.137.1`
 
@@ -35,6 +34,27 @@
 
    固件会**自动连 WiFi、自动连服务端**，无需任何串口命令。
    串口日志里看到 `server_hello` 即表示已就绪。
+
+### 手动启动（一键脚本不可用时）
+
+```powershell
+# ① Clash 代理（LLM 必需：api.deepseek.com 直连不通）
+Start-Process 'D:\Clash Verge\clash-verge.exe'
+
+# ② TTS（WSL2，单独终端）
+wsl -e bash /mnt/d/xiangmudaima/zjy13/scripts/serve_tts_wsl.sh
+
+# ③ WebSocket 服务端（另一个终端）
+cd D:\xiangmudaima\zjy13
+.\.venv-asr\Scripts\python.exe -m server.ws.server --host 0.0.0.0 --port 8765
+```
+
+查看状态 / 停止服务：
+
+```powershell
+.\scripts\start_all.ps1 -Status
+.\scripts\start_all.ps1 -Stop
+```
 
 ### 怎么操作
 

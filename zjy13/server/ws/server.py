@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import websockets
-from websockets.server import ServerConnection
 
 from ..config import LLMConfig, load_env_file
 from ..dialogue.character import CharacterCard
@@ -34,10 +33,8 @@ from ..dialogue.session import ConversationSession
 from ..llm import LLMClient, LLMError
 from ..protocol import (
     ASR_FINAL,
-    BINARY_HEADER_SIZE,
     CANCEL,
     DEVICE_HELLO,
-    ERROR,
     HEARTBEAT,
     HEARTBEAT_ACK,
     LLM_DELTA,
@@ -46,7 +43,6 @@ from ..protocol import (
     MAX_JSON_BYTES,
     PLAYBACK_DONE,
     PLAYBACK_START,
-    PROTOCOL_VERSION,
     RECORDING_START,
     RECORDING_STOP,
     SERVER_HELLO,
@@ -62,7 +58,6 @@ from ..protocol import (
     make_error,
     make_hello_ack,
     validate_inbound,
-    validate_text,
 )
 from ..tts import TTSClient, TTSConfig, TTSError, TTSUnavailableError
 from .audio import AudioFormat, TurnAudio, encode_pcm16_wav
@@ -75,6 +70,17 @@ HEARTBEAT_TIMEOUT_S = 30.0
 
 #: 单轮处理总超时
 TURN_TIMEOUT_S = 60.0
+
+#: 播放看门狗：在「音频时长 + 该余量」内没收到 playback_done 就强制收尾。
+#:
+#: 为什么必须有：``_run_pipeline`` 发完音频就返回，``TURN_TIMEOUT_S`` 的
+#: ``asyncio.timeout`` 也随之失效。若开发板因断连/卡死没回 playback_done，
+#: 状态会永久停在 PLAYING，之后所有 recording_start 都被判 turn_busy，
+#: 只能人工发 ``VOICE STOP`` 复位（WORKLOG-2026-11-04 第 3 条已知限制）。
+PLAYBACK_GRACE_S = 15.0
+
+#: 看门狗最小超时（短音频也要留足播放 + 上报的时间）
+PLAYBACK_MIN_TIMEOUT_S = 20.0
 
 
 @dataclass(slots=True)
@@ -106,12 +112,21 @@ class ClientSession:
     turn_seq: int = 0
     #: 当前轮次的处理任务，用于取消
     task: asyncio.Task | None = None
+    #: 播放看门狗任务：PLAYING 状态下等不到 playback_done 时强制收尾
+    playback_timer: asyncio.Task | None = None
     last_heartbeat: float = field(default_factory=time.perf_counter)
     device_id: str = ""
     hello_done: bool = False
     #: 本轮应下发的音频字节数与帧数（用于 playback_done 校验）
     expect_audio_bytes: int = 0
     expect_audio_frames: int = 0
+    #: 整条连接共用的对话会话。
+    #:
+    #: 必须挂在连接上复用，不能每轮新建：``ConversationSession`` 持有历史，
+    #: 每轮 new 一个等于"每轮都是全新对话"，板子上问"你记得我刚才说什么吗"
+    #: 会被 ``guards.py`` 按空历史拦截，答"我们刚开始聊"。
+    #: （终端 dialogue_loop / 网页 demo 都是长会话，只有 WS 链路曾漏掉这点。）
+    dialogue: ConversationSession | None = None
 
     def next_seq(self) -> int:
         self.turn_seq += 1
@@ -143,12 +158,29 @@ class DialogueServer:
         self.asr = asr_engine
         # 音色必须跟着角色卡走，否则开发板听到的声音和终端演示不一致。
         # 优先取角色卡绑定的 tts_voice_id，其次回退到 TTSConfig 的默认音色。
+        tts_settings = card.tts_settings() or {}
         self.voice_id = (
             voice_id
-            or (card.tts_settings() or {}).get("tts_voice_id")
+            or tts_settings.get("tts_voice_id")
             or tts_client.config.default_voice
         )
+        # 语速同理：角色卡写了 speaking_rate 就必须真的生效。
+        # docs/character-review.md 缺陷 4 要求「角色卡里 TTS 不支持的参数
+        # 必须明确提示或忽略，不能声称已生效」——此前只是透传，从未传给 TTS。
+        rate = tts_settings.get("speaking_rate")
+        self.speaking_rate = float(rate) if isinstance(rate, (int, float)) else 1.0
         self._clients: dict[str, ClientSession] = {}
+
+    def _dialogue_for(self, client: ClientSession) -> ConversationSession:
+        """取本连接共用的对话会话，没有就建一个。
+
+        关键：**整条 WebSocket 连接复用同一个 session**，历史才能跨轮累积。
+        此前每轮 ``ConversationSession(self.card, self.llm)`` 新建，
+        导致板子上完全没有多轮上下文（终端与网页演示则是正常的）。
+        """
+        if client.dialogue is None:
+            client.dialogue = ConversationSession(self.card, self.llm)
+        return client.dialogue
 
     # ------------------------------------------------------------------
     # 发送辅助
@@ -203,11 +235,35 @@ class DialogueServer:
 
     async def handler(self, ws: Any) -> None:
         session_id = uuid.uuid4().hex[:12]
+        peer = getattr(ws, "remote_address", None)
+
+        # 连接数上限（docs/protocol.md 第九节写了「最大连接数 4（可配）」，
+        # 此前 ServerConfig.max_connections 定义后从未校验，属于文档承诺未实现）。
+        if len(self._clients) >= self.config.max_connections:
+            logger.warning(
+                "连接数超限 %d/%d，拒绝 session=%s peer=%s",
+                len(self._clients), self.config.max_connections, session_id, peer,
+            )
+            try:
+                await ws.send(json.dumps(
+                    make_error(
+                        "too_many_connections",
+                        f"连接数已达上限 {self.config.max_connections}",
+                        fatal=True,
+                    ),
+                    ensure_ascii=False,
+                ))
+                await ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
         client = ClientSession(ws=ws, session_id=session_id)
         self._clients[session_id] = client
-        peer = getattr(ws, "remote_address", None)
         logger.info("连接建立 session=%s peer=%s", session_id, peer)
 
+        # 心跳超时监控（协议第九节：30 秒无消息则断开）
+        watchdog = asyncio.create_task(self._heartbeat_watchdog(client))
         try:
             await self._recv_loop(client)
         except websockets.exceptions.ConnectionClosed:
@@ -215,10 +271,40 @@ class DialogueServer:
         except Exception as exc:  # noqa: BLE001
             logger.exception("连接异常 session=%s: %s", session_id, exc)
         finally:
+            if not watchdog.done():
+                watchdog.cancel()
+                try:
+                    await watchdog
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             await self._cleanup(client)
+
+    async def _heartbeat_watchdog(self, client: ClientSession) -> None:
+        """超时未收到任何消息就断开连接。
+
+        注意：``last_heartbeat`` 在 ``_recv_loop`` 里对**每条消息**刷新
+        （音频帧也算），所以活跃连接的计时器不会误杀。
+        """
+        interval = max(1.0, HEARTBEAT_TIMEOUT_S / 3)
+        while True:
+            await asyncio.sleep(interval)
+            idle = time.perf_counter() - client.last_heartbeat
+            if idle <= HEARTBEAT_TIMEOUT_S:
+                continue
+            logger.warning(
+                "心跳超时 session=%s 已 %.0fs 无消息，断开连接",
+                client.session_id, idle,
+            )
+            try:
+                await client.ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
 
     async def _cleanup(self, client: ClientSession) -> None:
         """断开时释放资源（V2 第十二节第 8 条）。"""
+        self._cancel_playback_timer(client)
         if client.task and not client.task.done():
             client.task.cancel()
             try:
@@ -226,9 +312,57 @@ class DialogueServer:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         client.audio = None
+        client.dialogue = None
         client.state.reset()
         self._clients.pop(client.session_id, None)
         logger.info("资源已释放 session=%s", client.session_id)
+
+    # ------------------------------------------------------------------
+    # 播放看门狗
+    # ------------------------------------------------------------------
+
+    def _cancel_playback_timer(self, client: ClientSession) -> None:
+        """取消未触发的播放看门狗。"""
+        timer = client.playback_timer
+        client.playback_timer = None
+        if timer is not None and not timer.done():
+            timer.cancel()
+
+    def _arm_playback_timer(
+        self, client: ClientSession, my_turn: str, duration_s: float
+    ) -> None:
+        """在 PLAYING 状态下启动看门狗。
+
+        超时仍没收到 playback_done，就认为板子侧已断连或卡死，
+        主动把状态复位回 IDLE 并下发 turn_done，避免连接永久不可用。
+        """
+        self._cancel_playback_timer(client)
+        timeout_s = max(duration_s + PLAYBACK_GRACE_S, PLAYBACK_MIN_TIMEOUT_S)
+        client.playback_timer = asyncio.create_task(
+            self._playback_watchdog(client, my_turn, timeout_s)
+        )
+
+    async def _playback_watchdog(
+        self, client: ClientSession, my_turn: str, timeout_s: float
+    ) -> None:
+        try:
+            await asyncio.sleep(timeout_s)
+        except asyncio.CancelledError:
+            return
+
+        # 只有仍然停在 PLAYING 且还是同一轮时才强制收尾，
+        # 否则说明板子已正常回报，或已进入新一轮。
+        if client.state.state != State.PLAYING or client.turn_id != my_turn:
+            return
+
+        logger.warning(
+            "播放看门狗触发 turn=%s %.0fs 内未收到 playback_done，强制回到 IDLE",
+            my_turn, timeout_s,
+        )
+        client.expect_audio_bytes = 0
+        client.expect_audio_frames = 0
+        await self._finish_turn(client, reason="playback_timeout")
+
 
     async def _recv_loop(self, client: ClientSession) -> None:
         async for raw in client.ws:
@@ -412,6 +546,7 @@ class DialogueServer:
 
     async def _on_cancel(self, client: ClientSession, msg: dict[str, Any]) -> None:
         turn_id = str(msg.get("turn_id", client.turn_id))
+        self._cancel_playback_timer(client)
         if client.task and not client.task.done():
             client.task.cancel()
             try:
@@ -440,6 +575,9 @@ class DialogueServer:
                 f"当前状态 {client.state.state.value} 不是播放中",
             )
             return
+
+        # 板子已正常回报，撤销看门狗
+        self._cancel_playback_timer(client)
 
         # 校验客户端报告的接收量，防止提前退出导致丢帧而不被发现
         reported = msg.get("received_bytes")
@@ -555,7 +693,7 @@ class DialogueServer:
             ).to_dict(),
         )
 
-        session = ConversationSession(self.card, self.llm)
+        session = self._dialogue_for(client)
         deltas: list[str] = []
 
         def on_delta(chunk: str) -> None:
@@ -625,7 +763,10 @@ class DialogueServer:
 
         try:
             tts_result = await self.tts.synthesize(
-                reply, turn_id=f"{my_turn}-tts", voice_id=self.voice_id
+                reply,
+                turn_id=f"{my_turn}-tts",
+                voice_id=self.voice_id,
+                speed=self.speaking_rate,
             )
         except TTSUnavailableError as exc:
             await self.send_error(
@@ -647,6 +788,9 @@ class DialogueServer:
         # 下发音频（按帧切分，单帧不超过协议上限）
         pcm = _wav_to_pcm16(tts_result.audio_path)
         client.state.to(State.PLAYING)
+        # 进入 PLAYING 就启动看门狗：万一板子不回 playback_done，
+        # 也能自动回到 IDLE，不至于把整条连接卡死。
+        self._arm_playback_timer(client, my_turn, tts_result.duration_s)
 
         step = 4096  # 4096 字节 ≈ 128ms @ 16kHz16bit，兼顾延迟与开销
         total_frames = (len(pcm) + step - 1) // step
@@ -720,6 +864,13 @@ class DialogueServer:
     async def _finish_turn(self, client: ClientSession, *, reason: str) -> None:
         """结束一轮，回到 IDLE（V2 第十二节第 9 条）。"""
         turn_id = client.turn_id
+        # 收尾时撤掉看门狗。注意看门狗自己也会调用本函数，
+        # 此时不能 cancel 当前任务（会给自己抛 CancelledError）。
+        timer = client.playback_timer
+        if timer is not None and timer is not asyncio.current_task():
+            self._cancel_playback_timer(client)
+        else:
+            client.playback_timer = None
         client.audio = None
         try:
             client.state.to(State.IDLE)

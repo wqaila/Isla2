@@ -164,7 +164,38 @@ LLM_MODEL=deepseek-flash
 LLM_THINKING=disabled
 ```
 
-### 2. 启动 TTS 服务（WSL2，单独终端）
+### 2. 一键启动 TTS + WebSocket（推荐）
+
+```powershell
+.\一键启动.bat
+```
+
+等价于：
+
+```powershell
+.\scripts\start_all.ps1 -BindHost 0.0.0.0
+```
+
+脚本会依次完成：前置检查（Python 环境 / `.env` / Clash 代理 / 热点）→
+在独立窗口启动 WSL2 的 TTS 并轮询 `/health` 直到就绪 → 启动 WS 服务端并确认端口监听 →
+打印访问地址。**顺序不能颠倒**：WS 启动时会做 TTS 健康检查，TTS 没起来会直接退出码 2。
+
+常用参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `-BindHost 0.0.0.0` | 让板子能连（默认 `127.0.0.1` 仅本机） |
+| `-Status` | 只查看当前状态，不启动 |
+| `-Stop` | 停止 TTS 与 WS 进程 |
+| `-SkipTTS` / `-SkipWS` | 跳过其中一步（TTS 已在跑时用 `-SkipTTS`） |
+| `-TTSTimeout 300` | 首次下载模型时放宽等待（默认 120 秒） |
+
+> 若 TTS 首次启动需要下载文本前端模型（`wetext`），会额外耗时，此时把
+> `-TTSTimeout` 调大即可；下载只在第一次发生。
+
+手动启动方式（分两个终端）见下面 3、4 节。
+
+### 3. 手动启动 TTS 服务（WSL2，单独终端）
 
 ```powershell
 wsl -e bash /mnt/d/xiangmudaima/zjy13/scripts/serve_tts_wsl.sh
@@ -191,7 +222,7 @@ curl http://127.0.0.1:50000/health
 }
 ```
 
-### 3. 跑完整闭环
+### 4. 跑完整闭环
 
 ```powershell
 # 文本模式（跳过 ASR）
@@ -201,7 +232,7 @@ curl http://127.0.0.1:50000/health
 .\.venv-asr\Scripts\python.exe -m tools.dialogue_loop "tests\audio\asr_example.wav"
 ```
 
-### 4. WebSocket 服务（给开发板用）
+### 5. 手动启动 WebSocket 服务（给开发板用）
 
 ```powershell
 .\.venv-asr\Scripts\python.exe -m server.ws.server --host 127.0.0.1 --port 8765
@@ -213,7 +244,7 @@ curl http://127.0.0.1:50000/health
 .\.venv-asr\Scripts\python.exe -m tools.ws_client_sim --rounds 10
 ```
 
-### 5. 单元测试
+### 6. 单元测试
 
 ```powershell
 # LLM / TTS / WebSocket / 音色
@@ -223,7 +254,7 @@ curl http://127.0.0.1:50000/health
 .\.venv-asr\Scripts\python.exe -m pytest tests -q
 ```
 
-实测：**`.venv` 262 passed**，**`.venv-asr` 272 passed**。
+实测：**`.venv` 392 passed**，**`.venv-asr` 402 passed**。
 
 > `conftest.py` 会在缺少 torch 时自动跳过 ASR 引擎测试，
 > 因此两个环境都能用一条命令跑完，不会在收集阶段中断。
@@ -332,6 +363,13 @@ RTF 0.009 = 比实时快 111 倍，**ASR 不是瓶颈**。
 | 9 | 测试在收集阶段整体中断 | `.venv` 缺 numpy | 补齐依赖 + `conftest.py` 精确跳过 |
 | 10 | **WS 服务端不传 `voice_id`** | 开发板音色与终端不一致 | 从角色卡解析后传入 |
 | 11 | **WS 服务端硬编码小满角色卡** | 与 `.env` 的 elysia 冲突 | 改读 `DEFAULT_CHARACTER_ID` |
+| 12 | **板子侧完全没有多轮上下文** | 每轮 `ConversationSession()` 新建，历史为空 | 会话挂到连接上复用（`_dialogue_for`） |
+| 13 | **播放卡死需人工 `VOICE STOP`** | 发完音频后超时保护失效 | PLAYING 看门狗，超时自动回 IDLE |
+| 14 | **2 通道上行丢掉第二支麦克风** | 降混按 4 通道 `RMNM` 筛通道 | 按实际声道数选通道（`voice_channel_indices`） |
+| 15 | **新机器装完 WS 服务起不来** | `requirements.txt` 缺 websockets / numpy | 补齐并锁版本 |
+| 16 | **照抄 `.env.example` 复现旧缺陷** | 缺 TTS 键、角色还是 default、token 还是 256 | 对齐 elysia / 128 / 补全 TTS 键 |
+| 17 | **心跳超时与连接上限只写在文档里** | 常量定义后从未校验 | 真正实现并加测试 |
+| 18 | **`speaking_rate` 只透传不生效** | 从未传给 `synthesize()` | 服务端与终端闭环都传 `speed` |
 
 ### 问题 7 详解（最隐蔽的一个）
 
@@ -371,6 +409,7 @@ You are a helpful assistant.<|endofprompt|><参考音频文本>
 zjy13/
 ├─ .env.example
 ├─ requirements.txt
+├─ 一键启动.bat                 # 双击启动 TTS + WS（内部调 scripts/start_all.ps1）
 ├─ conftest.py                  # pytest 配置（缺 torch 时跳过 ASR 测试）
 ├─ server/
 │  ├─ config.py                 # LLMConfig
@@ -401,6 +440,7 @@ zjy13/
 │     ├─ app_ui.h/.c            # 屏幕显示（默认关闭）
 │     └─ app_state.h/.c         # 状态机
 ├─ scripts/
+│  ├─ start_all.ps1             # 一键启动 TTS + WS（含 -Status / -Stop）
 │  ├─ tts_server_wsl.py         # CosyVoice3 HTTP 服务（多音色注册）
 │  ├─ serve_tts_wsl.sh
 │  └─ flash_firmware.ps1        # 烧录 / 还原原厂固件
@@ -410,8 +450,8 @@ zjy13/
 │  ├─ ws_client_sim.py          # WebSocket 协议模拟器
 │  ├─ fw_protocol_equiv.py      # 固件字节级协议等价验证
 │  └─ ...
-├─ tests/                       # 262 + 272 个测试
-├─ docs/                        # 17 篇技术文档
+├─ tests/                       # 392 + 402 个测试
+├─ docs/                        # 26 篇技术文档
 └─ backup/esp32/                # 原厂固件备份（16MB，3 份副本）
 ```
 
@@ -435,9 +475,12 @@ zjy13/
 
 - [x] ~~ASR + TTS 同时驻留显存~~ → **已实测：7286 MiB / 12227 MiB，5 轮无泄漏**
 - [x] ~~音色绑定到 WebSocket 链路~~ → **已修复并验证合成使用 `elysia`**
+- [x] ~~板子侧多轮上下文~~ → **已修复**：会话挂在连接上复用，
+  端到端验证第 2 轮带上 `system + user + assistant + user`（此前只有 `system + user`）
+- [x] ~~播放卡死需人工复位~~ → **已修复**：PLAYING 看门狗超时自动回 IDLE
 - [ ] 长音频（> 1 分钟）连续识别
 - [ ] 噪声环境
-- [ ] 打断/取消机制的端到端验证
+- [ ] 打断/取消机制的端到端验证（服务端已支持 `cancel`，固件尚不主动发）
 
 ### 音质
 

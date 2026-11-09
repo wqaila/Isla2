@@ -2,7 +2,7 @@
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
-title Xiaoman LLM Demo
+title Elysia LLM Demo
 if not exist ".venv\Scripts\python.exe" goto noenv
 if not exist ".env" goto noenvfile
 ".venv\Scripts\python.exe" -m tools.web_demo

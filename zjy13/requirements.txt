@@ -1,9 +1,37 @@
-# 云端 LLM 模块依赖（阶段二·LLM 部分）
-# 说明：仅包含 LLM 模块所需依赖；ASR/TTS 阶段的依赖在对应阶段再追加，
-# 避免一次性引入未验证的包。
+# 运行依赖（Windows 侧 .venv / .venv-asr 都适用）
+#
+# 历史说明：本文件早期只列了 LLM 模块的依赖，导致按 README 装完新机器后
+# `server.ws.server` 因缺 websockets、`server.ws.audio` 因缺 numpy 直接起不来。
+# 现在补齐到「跑通 WS 服务 + 测试」所需的最小集合。
+
+# ---- LLM / 配置 ----
 httpx==0.28.1
 PyYAML==6.0.3
 python-dotenv==1.2.4
 
-# 测试依赖
+# ---- WebSocket 服务端 ----
+# server/ws/server.py、tools/ws_client_sim.py、tools/fw_protocol_equiv.py
+websockets==12.0
+
+# ---- 音频处理 ----
+# server/ws/audio.py、asr/audio_utils.py、tests/test_ws_audio.py
+numpy==2.0.1
+
+# ---- 测试 ----
 pytest==9.1.1
+
+# ===== 以下依赖按需单独安装（体积大或有平台限制，不放进默认清单）=====
+#
+# ASR 引擎（阶段一）—— 必须 cu128 构建的 torch，见 asr/README.md：
+#   torch==2.8.0+cu128   （--index-url https://download.pytorch.org/whl/cu128）
+#   funasr>=1.4.16
+#   modelscope
+#
+# TTS 服务端（WSL2 内 ~/cosyvoice-venv，不在 Windows venv）：
+#   fastapi / uvicorn / pydantic / torch（cu128）
+#
+# 音色素材处理（tools/prepare_voice_ref.py）：
+#   miniaudio
+#
+# 屏幕抓拍（tools/capture_screen.py）：
+#   Pillow / pyserial

@@ -22,7 +22,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Callable, Iterable
 
 import httpx
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -56,7 +57,11 @@ async def run(args: argparse.Namespace) -> int:
         print(f"[配置错误] {exc}", file=sys.stderr)
         return 2
 
-    card_path = PROJECT_ROOT / "server" / "characters" / f"{args.character}.yaml"
+    # 角色卡默认跟随 .env 的 DEFAULT_CHARACTER_ID，命令行显式指定时以命令行为准。
+    # 历史问题：argparse 默认值写死 "default"，与 .env 的 elysia 冲突，
+    # 导致「终端是小满、板子是爱莉希雅」。
+    character_id = args.character or os.environ.get("DEFAULT_CHARACTER_ID", "default")
+    card_path = PROJECT_ROOT / "server" / "characters" / f"{character_id}.yaml"
     try:
         card = CharacterCard.from_file(card_path)
     except LLMConfigError as exc:
@@ -122,7 +127,8 @@ async def run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="云端 LLM 终端对话演示")
-    parser.add_argument("--character", default="default", help="角色卡 ID（不含 .yaml）")
+    parser.add_argument("--character", default=None,
+                        help="角色卡 ID（不含 .yaml），默认取 .env 的 DEFAULT_CHARACTER_ID")
     parser.add_argument("--history", type=int, default=20, help="携带的历史消息条数上限")
     args = parser.parse_args()
     return asyncio.run(run(args))

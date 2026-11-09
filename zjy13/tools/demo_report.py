@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import html
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -199,8 +200,10 @@ async def main_async(args: argparse.Namespace) -> int:
         print(f"[配置错误] {exc}", file=sys.stderr)
         return 2
 
+    # 角色卡默认跟随 .env 的 DEFAULT_CHARACTER_ID（同 chat_demo / web_demo 的修法）
+    character_id = args.character or os.environ.get("DEFAULT_CHARACTER_ID", "default")
     card = CharacterCard.from_file(
-        PROJECT_ROOT / "server" / "characters" / f"{args.character}.yaml"
+        PROJECT_ROOT / "server" / "characters" / f"{character_id}.yaml"
     )
 
     names = [args.scenario] if args.scenario else list(SCENARIOS)
@@ -240,7 +243,8 @@ async def main_async(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="云端 LLM 演示报告生成")
-    parser.add_argument("--character", default="default")
+    parser.add_argument("--character", default=None,
+                        help="角色卡 ID，默认取 .env 的 DEFAULT_CHARACTER_ID")
     parser.add_argument("--scenario", default="", help="只跑指定剧本")
     args = parser.parse_args()
     return asyncio.run(main_async(args))

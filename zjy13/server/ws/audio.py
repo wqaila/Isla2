@@ -39,8 +39,34 @@ CHANNEL_MIC1 = 1
 CHANNEL_UNKNOWN = 2
 CHANNEL_MIC2 = 3
 
-#: 用于合成人声的通道
+#: 用于合成人声的通道（4 通道布局下）
 VOICE_CHANNELS = (CHANNEL_MIC1, CHANNEL_MIC2, CHANNEL_UNKNOWN)
+
+
+def voice_channel_indices(channels: int) -> list[int]:
+    """按实际声道数返回应当参与降混的通道下标。
+
+    为什么不能直接用 ``VOICE_CHANNELS``：
+    它按 4 通道 ``RMNM`` 布局写的（0=回采、1=Mic1、2=未知、3=Mic2）。
+    而实际固件（``yuanma/.../voice_client.c``）发的是 **2 通道双麦**，
+    此时 ``[c for c in VOICE_CHANNELS if c < 2]`` 只剩 ``[1]``——
+    **第二支麦克风被整体丢掉**，等于白白浪费一半信噪比，
+    实测上行识别质量明显偏差（logs/ws_demo.log 里大量重复字/幻觉）。
+
+    规则：
+    - 2 通道：两支都是麦克风，全用（固件确认无回采通道）
+    - 4 通道：按 RMNM，跳过 0 号回采通道
+    - 其它：全部参与，避免又丢通道
+    """
+    if channels <= 0:
+        return []
+    if channels == 2:
+        return [0, 1]
+    if channels >= 4:
+        usable = [c for c in VOICE_CHANNELS if c < channels]
+        # 排序只是为了让返回值稳定可断言；降混求均值与顺序无关
+        return sorted(usable) or list(range(channels))
+    return list(range(channels))
 
 
 @dataclass(slots=True)
@@ -152,8 +178,8 @@ class TurnAudio:
         data = np.frombuffer(raw[:usable], dtype="<i2").astype(np.float32) / 32768.0
         frames = data.reshape(-1, fmt.channels)
 
-        # 提取人声通道
-        usable_ch = [c for c in VOICE_CHANNELS if c < fmt.channels]
+        # 提取人声通道（按实际声道数决定，不能一律套 4 通道布局）
+        usable_ch = voice_channel_indices(fmt.channels)
         if not usable_ch:
             usable_ch = list(range(fmt.channels))
         mono = frames[:, usable_ch].mean(axis=1)
@@ -206,5 +232,6 @@ __all__ = [
     "CHANNEL_MIC1",
     "CHANNEL_MIC2",
     "VOICE_CHANNELS",
+    "voice_channel_indices",
     "encode_pcm16_wav",
 ]

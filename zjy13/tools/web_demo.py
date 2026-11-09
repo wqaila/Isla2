@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import threading
 import webbrowser
@@ -197,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>小满 · 云端 LLM 演示</title>
+<title>云端 LLM 演示</title>
 <style>
   * { box-sizing: border-box; }
   body { margin:0; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
@@ -239,7 +240,7 @@ PAGE = """<!doctype html>
 </style></head><body>
 
 <header>
-  <h1>小满 · 云端 LLM 演示</h1>
+  <h1 id="pTitle">云端 LLM 演示</h1>
   <span class="pill" id="pModel">-</span>
   <span class="pill gray" id="pThink">-</span>
   <span class="pill gray" id="pChar">-</span>
@@ -252,7 +253,7 @@ PAGE = """<!doctype html>
 <div class="hint">Enter 发送 · Shift+Enter 换行 · 真实调用云端 API，每轮会计费</div>
 
 <footer>
-  <textarea id="input" placeholder="跟小满说点什么……" autofocus></textarea>
+  <textarea id="input" placeholder="说点什么……" autofocus></textarea>
   <button class="primary" id="sendBtn" onclick="send()">发送</button>
 </footer>
 
@@ -269,6 +270,11 @@ const sendBtn = document.getElementById('sendBtn');
 let busy = false;
 
 fetch('/api/info').then(r=>r.json()).then(info => {
+  // 标题与占位符跟着角色卡走，不要硬编码角色名。
+  // 历史问题：页面写死「小满」，切到爱莉希雅后标题仍是小满。
+  document.title = info.character + ' · 云端 LLM 演示';
+  document.getElementById('pTitle').textContent = info.character + ' · 云端 LLM 演示';
+  document.getElementById('input').placeholder = '跟' + info.character + '说点什么……';
   document.getElementById('pModel').textContent = info.model;
   document.getElementById('pThink').textContent = '思考: ' + info.thinking;
   document.getElementById('pChar').textContent = info.character + ' v' + info.prompt_version;
@@ -384,7 +390,16 @@ def main() -> int:
         print(f"[配置错误] {exc}")
         return 2
 
-    card = CharacterCard.from_file(PROJECT_ROOT / "server" / "characters" / "default.yaml")
+    # 角色卡跟随 .env 的 DEFAULT_CHARACTER_ID，不要硬编码 default.yaml。
+    # 历史问题：这里写死 default.yaml（小满），与 .env 的 elysia 冲突，
+    # 导致网页演示是「小满」而终端/板子是「爱莉希雅」。
+    # WS 服务端曾有同样缺陷（README 问题 11），网页端漏改了。
+    char_id = os.environ.get("DEFAULT_CHARACTER_ID", "default").strip() or "default"
+    card_path = PROJECT_ROOT / "server" / "characters" / f"{char_id}.yaml"
+    if not card_path.is_file():
+        print(f"[警告] 角色卡 {card_path.name} 不存在，回退到 default.yaml")
+        card_path = PROJECT_ROOT / "server" / "characters" / "default.yaml"
+    card = CharacterCard.from_file(card_path)
     app = DemoApp(cfg, card)
 
     handler = type("BoundHandler", (Handler,), {"app": app})
@@ -392,7 +407,7 @@ def main() -> int:
     url = f"http://{HOST}:8760"
 
     print("=" * 52)
-    print("  小满 · 网页演示已启动")
+    print(f"  {card.name} · 网页演示已启动")
     print("=" * 52)
     print(f"  地址: {url}")
     print(f"  模型: {cfg.model}   思考: {cfg.thinking}")

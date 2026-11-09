@@ -93,7 +93,7 @@ Kernel size: (4).
 | 项 | 说明 |
 |---|---|
 | 协议 | 12 字节帧头 + PCM，CRC32 与 Python `zlib.crc32` 一致 |
-| 录音 | `esp_codec_dev_read()`，22050 Hz 立体声 |
+| 录音 | `esp_codec_dev_read()`，16000 Hz 双声道 |
 | 播放 | `esp_codec_dev_write()`，24000 Hz 单声道 |
 | 屏幕状态 | 五种状态显示（连接中/待命/在听你说/正在回应） |
 | 串口命令 | `VOICE <ip> <port>`、`TALK`、`TALK STOP`、`VOICE STATUS` |
@@ -118,6 +118,10 @@ Kernel size: (4).
 | 10 | I2S 切换不改时钟 | 只改 codec 寄存器 | 用 `reconfig_*_clock()` |
 | 11 | USB 传输音频全失败 | `tx_buffer_size=1024` < 块 5120 | **确认不可行，改走 Wi-Fi** |
 | 12 | 组件清单写死旧路径 | `dependencies.lock` 残留原作者路径 | 运行 `normalize_lock_paths.py` |
+| 13 | **板子侧完全没有多轮上下文** | 每轮新建 `ConversationSession`，历史为空 | 会话挂到连接上复用 |
+| 14 | **播放卡死需人工 `VOICE STOP`** | 发完音频后轮次超时保护已失效 | PLAYING 看门狗超时自动回 IDLE |
+| 15 | **2 通道上行丢掉第二支麦克风** | 降混按 4 通道 `RMNM` 筛通道，只剩 `[1]` | 按实际声道数选通道 |
+| 16 | **新机器装完 WS 服务起不来** | `requirements.txt` 缺 websockets / numpy | 补齐并锁版本 |
 
 ---
 
@@ -207,6 +211,9 @@ Kernel size: (4).
 - 无 OTA（仅 USB 重烧）
 - 明文 `ws://`，无 TLS
 - [x] ~~触摸仍走串口命令触发录音，未做屏幕按键~~ → 已接入：长按屏幕说话、松开发送
+- [x] ~~播放中连接中断会卡在 `PLAYING`~~ → **已修复**：新增播放看门狗，
+  `音频时长 + 15s` 内收不到 `playback_done` 就自动回 IDLE（此前需人工 `VOICE STOP`）
+- [ ] 固件不主动发 `cancel`：服务端已支持打断，板子侧长按打断尚未接入
 
 ---
 
@@ -218,7 +225,7 @@ Kernel size: (4).
 |---|---|
 | `zjy13/` | 电脑侧服务端：ASR、LLM、TTS、WebSocket、角色卡、音色 |
 | `zjy13/firmware/` | 第一阶段独立固件（已被 `yuanma` 版本取代，保留作参考） |
-| `zjy13/docs/` | 18 篇技术文档，含审查清单与实测记录 |
+| `zjy13/docs/` | 26 篇技术文档，含审查清单与实测记录 |
 | `zjy13/tools/` | 音色选段、协议模拟器、固件等价验证等 |
 | `yuanma/AI-Pet-Badge-main/` | **原固件完整源码**（含 Elysia 动画、触摸、IMU、天气） |
 | `yuanma/*.mp4` | 3 个绿幕动画源素材（walk/jump/sit） |

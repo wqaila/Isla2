@@ -137,6 +137,101 @@ class Runtime:
 runtime = Runtime()
 
 
+def _patch_wetext_offline() -> None:
+    """让 wetext 文本前端走本地 fst，不再联网下载。
+
+    背景（2026-11-09 实测）：
+    CosyVoice 的 ``frontend.py`` 用 try/except 依次尝试 ttsfrd → wetext → 无前端。
+    wetext 的 ``Normalizer()`` 在不传路径时**必定调用**
+    ``snapshot_download("pengzhendong/wetext")``，这需要 ModelScope 鉴权。
+    本机没有 token，于是抛 ``HTTPError: Authentication token does not exist``，
+    该异常又被外层 bare ``except`` 吞掉，最终 ``text_frontend = ''``——
+    **服务能启动，但中文数字不会被正则化**（"128" 读成 "一二八" 而不是"一百二十八"）。
+
+    更糟的是：``snapshot_download`` 会先尝试联网鉴权，在弱网下表现为
+    「启动卡在 Downloading Model ... 很久」，看起来像在下模型，实际是在等鉴权。
+
+    模型文件本身是完整的（53 项 / 66MB，已验证）。
+    ``Normalizer`` 支持直接传 ``tagger_path`` / ``verbalizer_path``，
+    这样完全跳过 ``snapshot_download``：实测加载 **0.02s**，不联网。
+
+    实现：给 ``wetext.Normalizer`` 套一层，把 None 的路径参数替换成默认缓存里的
+    本地 fst。CosyVoice 那边 ``ZhNormalizer(remove_erhua=False)`` 与
+    ``EnNormalizer()`` 都保持原样调用，无需改第三方代码。
+    """
+    try:
+        import wetext
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("wetext 未安装，文本前端将不可用: %s", exc)
+        return
+
+    base = Path(os.environ.get(
+        "WETEXT_MODEL_DIR",
+        str(Path.home() / ".cache" / "modelscope" / "hub" / "pengzhendong" / "wetext"),
+    ))
+
+    zh_tagger = base / "zh" / "tn" / "tagger.fst"
+    zh_verbalizer = base / "zh" / "tn" / "verbalizer.fst"
+    en_tagger = base / "en" / "tn" / "tagger.fst"
+    en_verbalizer = base / "en" / "tn" / "verbalizer.fst"
+
+    if not (zh_tagger.is_file() and zh_verbalizer.is_file()):
+        logger.warning(
+            "本地 wetext 模型不完整（%s），文本前端仍会尝试联网下载", base
+        )
+        return
+
+    original = wetext.Normalizer
+
+    class OfflineNormalizer(original):  # type: ignore[misc, valid-type]
+        """路径参数缺省时自动填本地 fst，避免 snapshot_download。
+
+        约束（读 wetext 源码得知）：
+        一旦传了 ``tagger_path`` / ``verbalizer_path``，``lang`` 就必须是
+        ``"en"`` 或 ``"zh"``，不能是默认的 ``"auto"``——否则触发
+        ``AssertionError: Language must be 'en' or 'zh'``。
+
+        CosyVoice 的 ``frontend.py`` 是这么调的：
+            self.zh_tn_model = ZhNormalizer(remove_erhua=False)   # 中文
+            self.en_tn_model = EnNormalizer()                      # 英文
+        两次调用都不带 lang，靠这里的推断区分：
+        第一次（带 remove_erhua）判为 zh，第二次判为 en。
+        """
+
+        def __init__(self, *args, **kwargs):
+            tagger = kwargs.get("tagger_path")
+            verbalizer = kwargs.get("verbalizer_path")
+            if len(args) >= 1 and tagger is None:
+                tagger = args[0]
+            if len(args) >= 2 and verbalizer is None:
+                verbalizer = args[1]
+
+            if tagger is None or verbalizer is None:
+                lang = kwargs.get("lang", "auto")
+                # 带 remove_erhua / enable_0_to_9 的只可能是中文调用
+                zh_hint = ("remove_erhua" in kwargs) or ("enable_0_to_9" in kwargs)
+                if lang in ("auto", ""):
+                    lang = "zh" if zh_hint else "en"
+                elif lang not in ("zh", "en"):
+                    lang = "zh" if zh_hint else "en"
+
+                if lang == "zh":
+                    t, v = zh_tagger, zh_verbalizer
+                else:
+                    t, v = en_tagger, en_verbalizer
+
+                if tagger is None:
+                    kwargs["tagger_path"] = str(t)
+                if verbalizer is None:
+                    kwargs["verbalizer_path"] = str(v)
+                kwargs["lang"] = lang
+
+            super().__init__(*args, **kwargs)
+
+    wetext.Normalizer = OfflineNormalizer
+    logger.info("wetext 文本前端已切到本地模型: %s", base)
+
+
 def load_model() -> None:
     """加载模型、缓存参考音频、预热。"""
     # 必须先切到仓库目录并加入 sys.path，否则 import cosyvoice 会失败
@@ -147,6 +242,10 @@ def load_model() -> None:
     matcha = str(COSYVOICE_DIR / "third_party" / "Matcha-TTS")
     if matcha not in sys.path:
         sys.path.insert(0, matcha)
+
+    # 必须在 import cosyvoice 之前打好补丁：
+    # frontend.py 在模块导入/实例化时就会构造 Normalizer。
+    _patch_wetext_offline()
 
     from cosyvoice.cli.cosyvoice import CosyVoice3
 
