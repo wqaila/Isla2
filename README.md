@@ -10,7 +10,8 @@
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-5.5-E7352C?logo=espressif&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-Kotlin-3DDC84?logo=kotlin&logoColor=white)
 ![CUDA](https://img.shields.io/badge/CUDA-12.8-76B900?logo=nvidia&logoColor=white)
-![Projects](https://img.shields.io/badge/子项目-11_个-blue)
+![Projects](https://img.shields.io/badge/子项目-12_个-blue)
+![Tests](https://img.shields.io/badge/单元测试-262+272+145-brightgreen)
 
 </div>
 
@@ -18,14 +19,17 @@
 
 ## 📖 这是什么
 
-这是一份持续了近两个月的个人开发记录。目标很具体：**让一个动漫角色活在一块小屏幕上** —— 能听、能说、有声音、有性格。
+这是一份持续了约两个月的个人开发记录。目标很具体：**让一个动漫角色活在一块小屏幕上** —— 能听、能说、有声音、有性格。
 
-围绕着这个目标拆出了 11 个子项目，各自解决一个环节：
+围绕着这个目标拆出了 12 个子项目，各自解决一个环节：
 
 ```
 想法/方案  →  本地大模型  →  角色人设  →  声音克隆  →  硬件端交互
  zjy2/zjy12    zjy6/zjy7/zjy8    zjy9      zjy10/zjy13      zjy11/zjy13
+                                              └→ zjy14（引擎升级）
 ```
+
+> **已完成**：板子插电即连、长按说话、爱莉希雅音色回放，整轮对话 7~12 秒。
 
 ---
 
@@ -42,8 +46,9 @@
 | 7 | [`zjy10`](zjy10/) | **Anime Voice Lab** · 角色声线复刻 | 文档（规划）/ GPT-SoVITS | 📝 规划 |
 | 8 | [`zjy11`](zjy11/) | **ESP32-S3 云端角色对话原型** | Python 网关 / ESP-IDF | ⚠️ 网关可用 |
 | 9 | [`zjy12`](zjy12/) | **设计决策台账 + LLM 基准** | 文档 / 标准库 bench | ✅ 文档+基准 |
-| 10 | [`zjy13`](zjy13/) | **ESP32-S3 语音交互系统**（最新，板子已烧录联调通过） | FunASR + DeepSeek + CosyVoice3 + ESP-IDF | ✅ 可用 |
-| 11 | [`yuanma`](yuanma/) | **原厂固件源码**（板子上实际运行的 `ai_pet_badge`） | ESP-IDF 5.5.5 / LVGL / ES7210+ES8311 | ✅ 可编译 |
+| 10 | [`zjy13`](zjy13/) | **ESP32-S3 语音交互系统**（板子已烧录联调通过） | FunASR + DeepSeek + CosyVoice3 + ESP-IDF | ✅ 可用 |
+| 11 | [`zjy14`](zjy14/) | **Custom Voice Engine** · zjy13 的引擎升级 | CosyVoice3 + FastAPI（WSL2 / RTX 5070） | 🚧 Phase 3 |
+| 12 | [`yuanma`](yuanma/) | **原厂固件源码**（板子上实际运行的 `ai_pet_badge`） | ESP-IDF 5.5.5 / LVGL / ES7210+ES8311 | ✅ 可编译 |
 
 状态图例：✅ 可运行 · ⚠️ 部分可用 · 📝 仅文档 · 🚧 开发中
 
@@ -76,6 +81,10 @@
 | 显存并发 | ASR+TTS 同时驻留 **7286 / 12227 MiB**，5 轮无泄漏 |
 | 单元测试 | `.venv` **262 passed** / `.venv-asr` **272 passed** |
 | WebSocket | 录音上传 170 块 / 599760 字节，**乱序 0 重复 0** |
+| 下行音频 | 修复分片后 **134/134 帧、547200 字节**与服务端完全一致 |
+| 长音频稳定性 | 16s+ 音频 **5 轮 0 失败**（下发按播放进度节流，领先 2 秒） |
+| 上行稳定性 | 关闭 WiFi 省电后 **68~72 块 / transport 错误 0 次** |
+| 内存 | 内部可用内存 **50.4KB → 79.2KB**，LCD 的 `ERR_NO_MEM` 每轮 21~42 次 → **0** |
 
 > ⚠️ 两个「端到端」不是一回事：4~5 秒是**电脑终端闭环**，
 > 板子链路多了上传、下发节流与播放，实测 **7~12 秒**。
@@ -96,7 +105,15 @@
 | 明文 `ws://` 报 TLS 错误 `errno=118` | 组件 `transport` 默认 UNKNOWN 落入 SSL 分支 | 显式指定 `OVER_TCP` |
 | 连接 29 秒后必断 | 缺心跳，服务端 30s 空闲超时 | 补 20 秒周期心跳 |
 | 录音零上传 | `session_start` 未切 `ST_RECORDING`，循环条件立即为假 | 先置状态再建任务 |
-| 板子音频下发瞬间黑屏重启 | 供电/热点稳定性（详见故障报告） | 排查中 |
+| 下行音频「只播约 1 秒就停」 | 434 字节帧被拆成多个 `DATA` 事件，未做分片重组 | 按 `payload_offset` 累积重组 |
+| `IllegalInstruction` 崩溃 | `record_loop` 返回路径 `retw.n` 时 `A0=0` | 显式 `vTaskDelete(NULL)` + 清理悬空句柄 |
+| 录音只上传 3 块即断 | ESP32 默认 WiFi 省电在 Windows 热点下挂起上行 | `esp_wifi_set_ps(WIFI_PS_NONE)` |
+| 音质发闷、高频丢失 | 24k→16k 降采样无抗混叠滤波、相位每块重置 | 改为 **24kHz 直通**播放 |
+
+> 💡 关于「黑屏」，最重要的结论是：**它一度被误判为供电不足**，
+> 后来用 `addr2line` 反查崩溃地址 + 补分片诊断日志，才确认是**上面三个代码/配置缺陷**
+> （崩溃返回路径、分片未重组、WiFi 省电），与供电裕量无关。
+> 这段误判与纠正的完整过程保留在故障报告里。
 
 完整记录见 [`zjy13/docs/FAULT-blackout-and-playback.md`](zjy13/docs/FAULT-blackout-and-playback.md)
 
@@ -119,6 +136,35 @@
 ---
 
 ## 🧩 其他项目速览
+
+<details>
+<summary><b>zjy14 —— Custom Voice Engine（zjy13 的引擎升级，Phase 3 完成）</b></summary>
+
+CosyVoice3 角色音色与情绪表达控制引擎，目标硬件 RTX 5070 12GB（WSL2）。
+复用 zjy13 已验证的固件、WebSocket 协议与角色卡，**只替换语音合成引擎**。
+
+要解决的三个问题：
+
+1. **情绪表达** —— 官方 `inference_instruct2` 在带缓存音色时**会静默丢弃指令**，
+   且音频拉长 3.5 倍；zjy14 用混合调用模式绕过
+2. **音色一致性** —— 跨文本、跨情绪、跨会话保持可辨识的声音身份
+3. **12GB 显存优化** —— 基于实测基线，不做未验证的假设
+
+实测取舍：`precision=fp32`（**fp16 更慢 7.1%、显存 +27%**）。
+
+```bash
+# 全部命令在 WSL 中执行
+wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/run_server.sh
+wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/verify_phase3.sh   # 端到端验收
+```
+
+**145 个单元测试全绿 + 17 项端到端验收通过，elysia 音色已迁移**。
+
+诊断报告见 [`zjy14/docs/`](zjy14/docs/)：
+音色「像机器人」的三个真根因、参考音频是否足够的量化回答、wetext 文本前端接入
+（`text_frontend=''` 时「128」会念成「一二八」）。
+
+</details>
 
 <details>
 <summary><b>zjy9 —— 爱莉希雅 AI 聊天系统（功能最完整，README 约 1250 行）</b></summary>
@@ -328,6 +374,18 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 
 ## 🗓 最近更新
 
+### 2026-11-09 — zjy13 修复盘查发现的 12 项问题 + 一键启动与 CI
+
+- 按审查台账逐条修复 12 项，含固件崩溃与协议边界问题
+- 新增**一键启动脚本**，降低复现门槛
+- 新增 GitHub Actions CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)），自动跑单元测试
+
+### 2026-11-09 — zjy14 当日完整总结
+
+- 新增 [`zjy14/docs/`](zjy14/docs/) 当日工作记录（成果与不足都写了）
+- 启用 **wetext 文本前端**（无需 modelscope token）
+- 复测结论如实记录：**补全参考文本后语速修正，但相似度未提升**
+
 ### 2026-11-09 — 高危项逐条复核
 
 - **15 条高危全部按文件行号读过代码**：1 条误报、1 条已修、1 条部分修复、12 条仍存在
@@ -335,8 +393,7 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
   `struct.pack("<BBHII", ...)`——`seq` 一直是 2 字节，初版把第二个 `H` 看漏了。**不必修**
 - **H7 已修**：播放任务改为自删（`vTaskDelete(NULL)`），不再被外部删除
 - **H5 部分修复**：已加 `s_ws_lock` 互斥量，但 `destroy` 后仍不等待发送方退出
-- **中危抽查 8 条（M2/M3/M4/M5/M6/M9/M20/M23）全部仍存在**，含
-  `max_connections` 声明后从未使用、共享 `LLMClient` 跨连接互相取消
+- **中危抽查 8 条（M2/M3/M4/M5/M6/M9/M20/M23）全部仍存在**
 - 结论与证据全部写入 [`docs/代码审查修复台账.md`](docs/代码审查修复台账.md)
 
 ### 2026-11-09 — 补充审计：补齐缺失的 8 项中危，新增 36 条
