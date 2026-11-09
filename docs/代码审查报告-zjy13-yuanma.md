@@ -1,17 +1,26 @@
-# zjy13 / yuanma 补充代码审查报告（2026-11-05）
+# zjy13 / yuanma 补充代码审查报告
 
 > 背景：原 [`代码审查报告.md`](代码审查报告.md) 写于 2026-09-21，只覆盖当时 6 个项目，
 > **未覆盖 `zjy13` 与 `yuanma`**。本报告补齐这两个项目。
 >
-> 审查方式：按模块拆成 5 个独立审计单元并行静态阅读，
+> 审查方式：按模块拆成独立审计单元并行静态阅读，
 > 逐行阅读 Python 与 C 源码，关键结论到 ESP-IDF 5.5.5 与 `esp_websocket_client` 源码交叉验证。
 >
-> 结论：**共记录 63 项问题**（高危 10 / 中危 27 / 低危 26）。
+> **统计（2026-11-09，含补充审计）**：
 >
-> ⚠️ **2026-11-09 核对：63 项里只有 29 项在正文可逐条追溯**——
-> 高危 10 项（`H1`–`H10`）有完整段落，中危只列到 `M19`，**`M20`–`M27` 共 8 项缺失**，
-> 低危 26 项**没有任何编号**，只有 6 行类别概述。详见第三、四节开头的说明。
-> 另有 3 项跨文件核对后判定"不是问题"，见文末。
+> | 级别 | 2026-11-05 初版 | 2026-11-09 补充 | 合计 |
+> |---|---:|---:|---:|
+> | 高危 | 10 | 5 | **15**（`H1`–`H15`） |
+> | 中危 | 27（仅 19 项可追溯） | +14 | **41**（`M1`–`M41`） |
+> | 低危 | 26（无编号） | 15 条编号化 | **15 条编号**（`L1`–`L15`）+ 6 类线索 |
+> | 判定"不是问题" | 3 | 18 | — |
+>
+> 初版的问题在于：中危 `M20`–`M27` 共 8 项**丢失了位置与描述**，低危 26 项只有类别概述，
+> `yuanma` 审计单元输出被截断。2026-11-09 按模块重跑 4 个单元补上了这些缺口，
+> 完整回溯见 [`代码审查报告-补充审计-2026-11-09.md`](代码审查报告-补充审计-2026-11-09.md)。
+>
+> ⚠️ 补充审计条目为**自动审计产出**，抽样复核 5 条中 4 条成立、1 条误报已剔除；
+> 修复前请按文件行号自行确认。修复状态见 [`代码审查修复台账.md`](代码审查修复台账.md)。
 
 ---
 
@@ -81,6 +90,34 @@
   整轮录音/播放不可用，状态机停在 `RECORDING`/`PLAYING`
 - **建议**：检查 `disable` 返回值（`INVALID_STATE` 可忽略），封装 `disable → reconfig → enable`
 
+#### H11. 下行音频帧按「声明长度」写入，未与实收字节核对 → 读越界 PSRAM
+
+- **位置**：`zjy13/firmware/main/app_protocol.c:111-117`（`app_proto_decode_audio`）、
+  `zjy13/firmware/main/main.c:532-541`（`handle_binary_message`）
+- **证据**：解码只校验「实收 ≥ 声明」——`if (len - APP_BINARY_HEADER_SIZE < hdr->payload_len)`；
+  调用方却按**声明值**取长度去写 I2S：
+  ```c
+  const uint8_t *pcm = data + APP_BINARY_HEADER_SIZE;
+  const size_t pcm_len = hdr.payload_len;   /* len=3000，payload_len=4000 时越界 1000 */
+  ```
+- **影响**：声明长度大于实收长度时，`app_audio_play_write` 会读取缓冲外的 PSRAM。
+  小帧读到邻近堆内存（杂音），大帧越过分配边界 → `Cache disabled but cached memory region accessed`
+  或 LoadStoreError 硬复位。分片重组按实收长度判定「收满」，恰好放过了这个不一致
+- **建议**：解码强制 `len == APP_BINARY_HEADER_SIZE + hdr->payload_len`，
+  或让调用方用 `len - APP_BINARY_HEADER_SIZE` 作为写入长度；并校验 `pcm_len % 2 == 0`
+
+#### H12. 心跳超时用「最后收到服务端消息的时间」，空闲 30 秒即误判断线
+
+- **位置**：`zjy13/firmware/main/main.c:459, 626-632`；`app_net.c:472-475, 498-499`
+- **证据**：`last_msg_ms` 只在收到**服务端**消息时刷新，本地发出的心跳不计入；
+  `heartbeat_task` 用它判定超时。`app_main` 不检查 `app_net_wifi_init` 的返回值
+- **影响**：用户长按说话前静置 30 秒，心跳任务就判定断线并尝试 `app_ws_restart()`；
+  而 `s_ws == NULL`/未连上时 `restart` 静默返回，既不重连也不报错。若又在 Wi-Fi 22 秒超时前
+  发 `R`，`record_task` 因 `!app_ws_connected()` 直接退出，**从头到尾没产生任何鉴权记录**，
+  设备永久离线直到手动复位
+- **建议**：发心跳时同样刷新 `last_msg_ms`；超时后周期性重试 `app_ws_restart()`；
+  `app_net_wifi_init` 失败要走显式重试路径
+
 ### 2.3 yuanma 固件（板子上实际运行的 `ai_pet_badge`）
 
 > 已知历史问题（`record_loop` 返回路径崩溃、下行分片未重组、WiFi 省电卡死、静态缓冲超配）已修复，不再重复报告。
@@ -117,13 +154,46 @@
 - **影响**：同局域网任何主机可冒充设备；语音音频与 LLM 回复全程明文可嗅探
 - **建议**：增加共享密钥/一次性 token（NVS 或配网下发），提供 `wss://` + `crt_bundle` 分支
 
+> 以下 H13–H15 为 2026-11-09 补充审计新增（原审计单元输出被截断，未覆盖到）。
+
+#### H13. 二进制分片超长被丢弃后，后续分片从缓冲区头部继续拼 → 该连接此后帧全错
+
+- **位置**：`yuanma/.../main/voice_client.c`（`ws_event` 的二进制分片处理）
+- **证据**：超长丢弃分支只 `s_bin_len = 0` 就 `break`，没有标记「本条消息作废」；
+  下一个分片仍按 `payload_offset` 写入 `s_bin_buf[0]` 起
+- **影响**：一次超长帧之后，该连接收到的所有音频帧都按错误偏移拼接，整轮音频错位/杂音，
+  直到断开重连才恢复；用户感知为「说着说着声音就乱了」
+- **建议**：超长时置 `s_bin_bad = true` 并丢弃该消息的**全部**后续分片，直到 offset 归零
+
+#### H14. `voice_start` 失败不清 `s_ws`，自动重连永久失效；缓冲分配失败则永久卡在 `ST_RECORDING`
+
+- **位置**：`yuanma/.../main/voice_client.c:745-790`（`voice_start`）、`:274`（`record_loop` 开头）
+- **证据**：`voice_start` 开头 `if (s_ws) return ESP_OK;`，而连接/启动失败后 `s_ws` 未必被清空；
+  `record_loop` 第一行 `if (!s_mic_buf || !s_frame_buf) return;` —— 缓冲为 NULL 时直接退出且
+  不改状态机
+- **影响**：服务端没起或首次连接失败时，`badge_network` 认为「已经启动」，此后不再尝试重连；
+  缓冲分配失败（PSRAM 碎片）时状态停在 `ST_RECORDING` 且没有录音任务，界面显示「在听你说」，
+  实际零采集，且再次触发会复用失效缓冲区
+- **建议**：失败路径显式 `s_ws = NULL`；`record_loop` 分配失败时置错误状态并上报，
+  不要静默 return
+
+#### H15. `voice_stop` 可能在发送线程仍阻塞时销毁 WS 客户端 → use-after-free
+
+- **位置**：`yuanma/.../main/voice_client.c`（`voice_stop`）
+- **证据**：`voice_stop` 直接 `esp_websocket_client_destroy(s_ws)` 并置 `s_ws = NULL`，
+  不等待正在 `send_bin` 的 `record_loop` 退出；发送侧只判 `s_ws` 非空就调用组件 API
+- **影响**：USB 串口 `VOICE STOP` 或长按结束时销毁与发送并发，发送侧持有已释放句柄 →
+  LoadProhibited 崩溃（与 H5 同类，但触发路径是主动 stop 而非断线）
+- **建议**：置 `stop_requested` 标志并等待录音任务退出（带超时）后再 destroy；
+  或与 H5 一并纳入统一的连接生命周期管理
+
 ---
 
-## 三、中危问题（27 项摘要）
+## 三、中危问题（41 项）
 
-> ⚠️ **本节只收录 19 项（`M1`–`M19`）。** 原始审计产出 27 项，其余 8 项（`M20`–`M27`）
-> 在汇总时丢失，**本报告没有它们的编号、位置和描述**，无法据此修复。
-> 若要用这 8 项，需要重新审计 zjy13 服务端与固件模块——不要凭数量差异臆测内容。
+> **2026-11-09 补齐**：本节原先只有 19 项（`M1`–`M19`），缺失的 `M20`–`M27` 没有任何记录。
+> 本轮按模块拆 4 个审计单元重跑（见 [`代码审查报告-补充审计-2026-11-09.md`](代码审查报告-补充审计-2026-11-09.md)），
+> 补齐了 8 项中危并新增 14 项，现共 41 项。新增条目的**来源单元与复核状态**见该补充报告。
 
 ### 3.1 zjy13 服务端
 
@@ -159,13 +229,76 @@
 | --- | --- | --- |
 | M19 | `voice_client.c` | `s_mic`/`s_spk` 多任务无锁 check-then-act，且跨任务 close，可能重复 init 或互关句柄 |
 
+### 3.4 zjy13 服务端 · 2026-11-09 补充（WS / 协议）
+
+| # | 位置 | 问题 | 来源 |
+| --- | --- | --- | --- |
+| M20 | `ws/server.py:320-342,747` | `max_connections=4` 只有声明从未被读取；`access_token` 为空时握手完全不校验 → 局域网内任何主机都能驱动整条链路（真实调用 LLM/TTS，产生费用与显存占用）。`protocol.md` 把「最大连接数 4」列为已实现 | A |
+| M21 | `ws/server.py:413-432, 286, 411` | `client.task` 只覆盖不取消 + `_recv_loop` 串行处理 → 旧轮 `_finish_turn` 可在新录音期间把 `state` 写回 IDLE。`_on_cancel` 的 `state.reset()` 无差别清掉进行中的录音/播放 | A |
+| M22 | `ws/server.py:518, 475-489` | `asyncio.to_thread` 调 FunASR，超时/取消后底层线程仍在跑（`to_thread` 不随取消停止），下一轮立刻再次 `generate` → 同一 `AutoModel` 实例并发推理，显存翻倍/串扰 | A |
+| M23 | `llm/client.py:170-173, 196-203` | `_current_task` / `_cancel_event` 是进程级单例，`LLMClient` 被所有连接共享 → **A 连接的 cancel 会掐掉 B 连接的轮次**，被取消方停在 `LLM_PROCESSING` 永久 `turn_busy` | A+B |
+| M24 | `ws/server.py:157-165` | `send_json` 超过 `MAX_JSON_BYTES` 时静默丢弃且不回报调用方 → `server_hello`/`llm_final` 丢失时上层仍按成功继续，无可观测错误码 | A |
+| M25 | `protocol/messages.py:349-356` | `validate_inbound` 用 `int(ver)` 转版本号，`"1.0"`/`"v1"` 抛 `ValueError` 而非 `ProtocolError`，`_on_json` 只捕获后者 → **连接被直接断开**而非回 `bad_message` | A |
+
+### 3.5 zjy13 服务端 · 2026-11-09 补充（LLM / TTS）
+
+| # | 位置 | 问题 | 来源 |
+| --- | --- | --- | --- |
+| M26 | `tts/client.py:290-293` | 输出文件名直接拼 `turn_key`/`output_name`，只对 `voice_id` 做了清洗 → 路径穿越/越界覆盖（当前调用方尚安全，接口是公开的） | B |
+| M27 | `tts/client.py:252-284` | TTS 无状态码分类：503（模型热加载）与真 500 一视同仁；且**整个合成无重试/退避**（对比 LLM 层有 `max_attempts`） | B |
+| M28 | `llm/client.py:187, 205-207` | `_completed_turns` 只对**成功轮**登记，失败轮不写 → 同一 `turn_id` 可无限重复提交、重复计费；TTS 侧相反（成功即永久登记）。两客户端幂等语义不一致 | B |
+| M29 | `llm/adapter.py:189-192` | 流中错误对象一律判为不可重试的 `LLMProtocolError` → 服务商的 `rate_limit_exceeded`/`overloaded` 本可重试却被直接判死 | B |
+| M30 | `ws/server.py:120-123` + `tts/client.py:237-240` | `turn_id = ...{int(time.time()*1000)%100000}`，约 100 秒回绕 → 同 session 撞号触发 `TTSDuplicateError`，表现为「100 秒后整轮 tts_failed」（与 M1 的磁盘残留是不同根因） | A |
+
+### 3.6 zjy13 对话层 + 固件 · 2026-11-09 补充
+
+| # | 位置 | 问题 | 来源 |
+| --- | --- | --- | --- |
+| M31 | `main.c:469-474` | `protocol_version` 缺失/为浮点/为 null 时**整条控制消息被静默丢弃**（含 `session_start`），设备端在 5 秒等待上白等，界面只显示「识别中...」 | C |
+| M32 | `main.c:326-345, 356-372` | `llm_delta` 被丢弃、`seq` 不连续性完全未检测 → 流式 UI 失效（只在 `llm_final` 一次性出全文）；丢帧不计入 `recv_bytes`，表现为偶发 `audio_mismatch` 断音 | C |
+| M33 | `dialogue/session.py:165, 212` | `turn_id` 用 `len(_turns)+1` 生成，失败轮与取消轮都占位 → 编号跳跃且被 `.ok` 过滤后留下历史空洞，服务端日志无法对齐（与 H3 的 turn_id 混淆同源但切入点不同） | C |
+| M34 | `dialogue/session.py:176` + `guards.py:21` | 空历史守卫触发条件错了：只要上一轮失败/被兜底，`history` 就为空 → 用户问「刚才说到哪」被硬编成「我们刚开始聊」，与事实矛盾；正则 `.` 不跨行，遇换行反而漏判 | C |
+| M35 | `character.py:316-322` + `session.py:198-203` | 历史裁剪按**消息条数**（默认 20 条）而非字符预算，单条可达 512 token → 长会话 prompt 无上界；`soft_truncate` 的 `max_chars` 路径从未被传入 | C |
+
+### 3.7 yuanma 固件 · 2026-11-09 补充
+
+| # | 位置 | 问题 | 来源 |
+| --- | --- | --- | --- |
+| M36 | `voice_client.c`（`play_task` / `finish_playback`） | 播放任务只查 `s_spk` 指针非空、不查是否 open；与新 `playback_start` 的 `head/tail/count` 清零交错 → 跨任务写已 close 的 codec，新旧轮采样混流吞字 | D |
+| M37 | `voice_client.c`（`record_loop` / `handle_playback_start`） | 录音与播放共用一条 I2S（16k vs 24k）但 open/close 无互斥；`read` 失败分支是 `continue` 不退出 → 时钟被重配、录音任务空转 | D |
+| M38 | `voice_client.c`（`ws_event` 二进制分片） | 分片超长丢弃时只置 `s_bin_len=0` 就 break，后续分片从 `s_bin_buf[0]` 继续拼 → 该连接此后帧错位、整轮音频丢失 | D |
+| M39 | `voice_client.c:745-790, 274` | `voice_start` 失败路径不清 `s_ws`，`voice_is_started()` 恒为真 → `badge_network` 自动连接永久不再重试（弱网/服务端未起时极常见）；`record_loop` 缓冲为 NULL 时直接 return，`s_state` 永久停在 `ST_RECORDING` | D |
+| M40 | `voice_client.c`（`voice_stop`） | `voice_stop` 可能在 `record_loop` 仍阻塞于 `send_bin` 时 destroy WS 并置 `s_ws=NULL` → use-after-free（USB `VOICE STOP` 可复现） | D |
+| M41 | `badge_network.c`（`network_event` / `run_network`） | Wi-Fi 事件回调内同步 `esp_wifi_connect`，与每 10 秒的定时重连重入；无返回值检查、无退避 | D |
+
 ---
 
-## 四、低危问题（26 项摘要）
+## 四、低危问题
 
-> ⚠️ **本节没有逐条记录。** 下表的 6 行是按类别归纳的**代表项举例**，
-> 既不是 26 条的完整清单，也无法一一对应到具体编号。
-> 要逐条驱动修复，需要按这 6 个类别重新枚举。
+> **2026-11-09**：本节原先是 6 行类别概述、无任何编号。本轮补充审计产出 15 条可编号条目（`L1`–`L15`），
+> 原 6 类概述保留在下半部分，作为**尚未逐条展开**的线索。
+
+### 4.1 可编号条目（2026-11-09 补充）
+
+| # | 位置 | 问题 | 来源 |
+| --- | --- | --- | --- |
+| L1 | `ws/server.py:434-464` | `_on_playback_done` 只校验 `received_bytes`，`expect_audio_frames` 从未被读取 → 协议文档所称「帧/字节双重校验」只实现一半 | A |
+| L2 | `ws/server.py:411, 220-227` | `_process_turn` 从不把 `client.task` 置 None，`_cleanup` 只取消未完成任务 → 已完成任务引用常驻，两个 `_finish_turn` 的 `turn_done` 可乱序 | A |
+| L3 | `ws/audio.py:93-121` + `server.py:400-404` | 空 payload 帧也计入 `chunks` → `recording_stop` 以块数判空，纯空帧可通过校验并白跑一轮状态机 | A |
+| L4 | `llm/client.py:375-381` | 200 但 body 非 JSON（网关 WAF 页）时报「响应不是合法 JSON」，不带 `status_code` 也不带响应片段，无法判断是谁拦的 | B |
+| L5 | `llm/client.py:416-421` | 紧跟 `raise_for_status` 的 `raise LLMProtocolError` 是不可达死代码，掩盖了 3xx 未跟随重定向的真实场景 | B |
+| L6 | `config.py:173-189` | `redacted()` 只脱敏 `api_key`，`proxy`/`base_url` 中 `user:pass@` 与 `?key=` 原样输出（当前无调用点，故低危） | B |
+| L7 | `llm/base.py:70-72` + `session.py:196-208` | `LLMResult.empty` 定义了但从未接入：空白回复作为成功轮写入 `_turns`，历史缺一轮而统计记一次失败 | B |
+| L8 | `session.py:52` | `to_dict()` 用真值判断 `first_token_ms`，`0.0` 被记成 `None`，首字延迟均值样本偏少 | C |
+| L9 | `main.c:304-312` | `session_start` 与 `playback_start` 重复复位 `recv_*`，跨轮次 `seq` 不归零 → 上一轮迟到帧被累加到新一轮 | C |
+| L10 | `app_ui.c:211-230` | `app_ui_append_reply` 的 `strlen` 在锁外，与 `clear_reply` 竞态 → `room` 基于过期长度，回复文字错乱 | C |
+| L11 | `app_state.c:47-50, 102-110` | `app_state_get` 不持锁，`busy` 判断与 `try_enter` 之间存在 TOCTOU，表现为偶发「按了没反应」 | C |
+| L12 | `voice_client.c`（`json_get_int`/`json_get_str`） | `json_get_int` 不查 `ERANGE`（溢出变 -1 → `(uint32_t)4294967295`，是 M38 的成因）；`json_get_str` 仅判 `v[-1]=='\\'`，`\"` 处理错误 | D |
+| L13 | `voice_client.c`（`fetch_weather`） | `run_network` 中同步 TLS（最长 12 秒），与首次下行时 `s_bin_buf` 的 PSRAM 分配峰值竞争 → 分片缓冲分配失败 + M38 错位 | D |
+| L14 | `voice_client.c`（`ui_sync`） | `switch(s_state)` 与写 `badge_dashboard_voice` 之间无原子性，4 个任务并发写 `s_state`，且 `record_loop` 绕过 `ui_sync` 直写 → 语音状态显示错乱 | D |
+| L15 | `voice_client.c`（`handle_session_start`） | `s_play_draining` 仅靠 frames 匹配置位；frames 缺失/溢出时永不置位，且 `play_task` 无超时兜底 → 永久 `ST_PLAYING`、TALK 永久「正忙」 | D |
+
+### 4.2 尚未逐条展开的类别线索（原 26 项摘要）
 
 | 类别 | 代表项 |
 | --- | --- |
