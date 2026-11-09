@@ -342,10 +342,14 @@ WSL 侧脚本：
 
 ## 七、文档清单
 
+> 2026-11-09 补齐：此前本表只列 16 篇，漏了 10-30 之后新增的 8 篇与 `asr/README.md`。
+> 完整分类索引见 [`README.md`](README.md)。
+
 | 文档 | 内容 |
 | --- | --- |
 | `docs/asr-plan.md` | ASR 方案与版本选型依据 |
 | `docs/asr-report.md` | ASR 验收报告（含 5 个坑） |
+| `docs/hardware-verification.md` | 1.85B 硬件资料核实（音频引脚、I2S 格式、4 声道采集） |
 | `docs/tts-report.md` | TTS 首次合成验收 |
 | `docs/tts-performance.md` | TTS 性能优化实测 |
 | `docs/v2-direction.md` | V2 方案转向分析 |
@@ -353,12 +357,20 @@ WSL 侧脚本：
 | `docs/wsl2-gpu-verified.md` | WSL2 GPU 验证结果 |
 | `docs/character-review.md` | 角色卡审查（3 个缺陷） |
 | `docs/model-selection.md` | DeepSeek 模型选型 |
-| `docs/demo-guide.md` | 演示操作指南 |
+| `docs/demo-guide.md` | 演示操作指南（含板子语音演示） |
 | `docs/stage3-dialogue-loop.md` | 阶段三验收 |
-| `docs/protocol.md` | WebSocket 协议与实测 |
+| `docs/protocol.md` | WebSocket 协议与实测（含音频下发节流） |
 | `docs/esp32-board-report.md` | 开发板状况与固件备份 |
 | `docs/board-firmware-audit.md` | 固件不足审查（更正旧报告） |
+| `docs/firmware-flash-audit-plan.md` | 烧录前检查方案与问题清单（含烧录结果） |
+| `docs/firmware.md` | 固件说明（职责边界、数据流、串口命令、编译烧录） |
+| `docs/FAULT-blackout-and-playback.md` | 故障报告：黑屏与播放中断（三个已证实根因） |
 | `docs/voice-elysia.md` | **角色音色克隆（爱莉希雅）** |
+| `docs/WORKLOG-2026-11-02.md` | 11-02 工作记录：固件崩溃与分片、字库、音量与长按 |
+| `docs/WORKLOG-2026-11-04.md` | 11-04 工作记录：无线直连、稳定性、24kHz 音质 |
+| `docs/PROJECT-SUMMARY.md` | 完成情况总览、踩坑与修复、当前阻塞 |
+| `docs/README.md` | 文档分类索引 |
+| `asr/README.md` | 本地 ASR 的环境、安装与命令行用法 |
 | `docs/development-log.md` | **本文件** |
 
 ---

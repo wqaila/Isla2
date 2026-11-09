@@ -1255,4 +1255,13 @@ cd server
 ## 关于 `website/`
 
 `website/` 是**独立的静态展示站，后端不提供**（后端只挂载 `server/static/`）。
-详见 `website/README.md`。
+详见 [`website/README.md`](website/README.md)。
+
+## 子目录文档
+
+| 目录 | 文档 | 内容 |
+|---|---|---|
+| [`android/`](android/) | [`README.md`](android/README.md) | Android 客户端（Kotlin + Compose）的构建与结构 |
+| [`rpi_client/`](rpi_client/) | [`README.md`](rpi_client/README.md) | 树莓派终端客户端用法 |
+| [`website/`](website/) | [`README.md`](website/README.md) | 独立静态展示站 |
+| [`docs/specs/`](docs/specs/) | [`2026-10-19-friend-companion-cloud-design.md`](docs/specs/2026-10-19-friend-companion-cloud-design.md) | 「朋友型角色 + 云端接入」设计规格（**设计稿，尚未实现**） |

@@ -32,6 +32,9 @@ yuanma/
 ├── jump.mp4 / walk.mp4 / Sit.mp4   # 角色动画源视频（用于生成精灵图素材）
 ```
 
+上游原始说明：[`AI-Pet-Badge-main/README.md`](AI-Pet-Badge-main/README.md)（从这里开始看）。
+上游 8 篇文档的完整索引见下文「上游文档」一节。
+
 ## 与 zjy13 的关系
 
 ```
@@ -42,6 +45,25 @@ yuanma/.../ai_pet_badge  ──WebSocket──►  zjy13/server (ASR + LLM + TTS
 - **协议**：共用 `zjy13/docs/protocol.md`
 - **固件侧改动与踩坑**：见 [`../zjy13/docs/WORKLOG-2026-11-02.md`](../zjy13/docs/WORKLOG-2026-11-02.md)、[`../zjy13/docs/WORKLOG-2026-11-04.md`](../zjy13/docs/WORKLOG-2026-11-04.md)
 - **故障根因分析**：见 [`../zjy13/docs/FAULT-blackout-and-playback.md`](../zjy13/docs/FAULT-blackout-and-playback.md)
+
+## 上游文档（`AI-Pet-Badge-main/docs/`）
+
+上游工程自带 8 篇文档，其中 4 篇由上游 README 直接链接，另外 4 篇此前没有任何入口，在此补全：
+
+| 文档 | 内容 | 入口 |
+|---|---|---|
+| [`QINGLAN_IMPORT.md`](AI-Pet-Badge-main/docs/QINGLAN_IMPORT.md) | 青岚角色导入（站姿待机、触摸动作、独立素材包） | 上游 README |
+| [`FIXED_SCREEN_2026-10-29.md`](AI-Pet-Badge-main/docs/FIXED_SCREEN_2026-10-29.md) | 固定朝向版导出、USB 切换与 SD 卡诊断 | 上游 README |
+| [`IMU_INTERACTION.md`](AI-Pet-Badge-main/docs/IMU_INTERACTION.md) | 体感阈值、校准、回放测试与实机验收 | 上游 README |
+| [`VOICE_CLONING.md`](AI-Pet-Badge-main/docs/VOICE_CLONING.md) | 音色复刻：本地 Key 检查、样本提交、WAV 试听 | 上游 README |
+| [`MVP_PLAN.md`](AI-Pet-Badge-main/docs/MVP_PLAN.md) | 已确认范围、协作方式与阶段安排 | 上游 README（正文提及） |
+| [`HARDWARE_CHECK.md`](AI-Pet-Badge-main/docs/HARDWARE_CHECK.md) | 2026-10-20 实机检查：USB/Flash/PSRAM 实测结论 | **本表补充** |
+| [`IMU_VALIDATION_2026-10-21.md`](AI-Pet-Badge-main/docs/IMU_VALIDATION_2026-10-21.md) | QMI8658 实现与验收记录 | **本表补充** |
+| [`VOICE_CLOUD_STATUS_2026-10-22.md`](AI-Pet-Badge-main/docs/VOICE_CLOUD_STATUS_2026-10-22.md) | 云端音色注册排查（2026-10-23 复核） | **本表补充** |
+
+> 上游文档只作为参考：语音链路最终采用 `zjy13` 的服务端 + 本工程 `voice_client.c`，
+> 以上游 `VOICE_CLONING.md` / `VOICE_CLOUD_STATUS` 描述的旧方案为准会走弯路，
+> 音色以 [`../zjy13/docs/voice-elysia.md`](../zjy13/docs/voice-elysia.md) 为准。
 
 ## 编译与烧录
 

@@ -67,6 +67,8 @@ zjy6/
 
 如需从 HuggingFace 模型重新转换：
 
+> 合并 / 转换 / 量化的完整用法见 [merge_and_convert_model.md](merge_and_convert_model.md)。
+
 ```bash
 # 转换 + 量化
 python merge_and_convert_model.py --convert --model models/qwen/Qwen-7B-Chat-Int4 --quantize q8_0
@@ -97,7 +99,9 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 Android 11 及以上读取 `/sdcard` 下的任意文件需要「所有文件访问权限」，
 应用启动时会跳转到系统设置页，请手动打开该开关，返回应用后会自动开始加载模型。
 
-详细指南：[deploy_android.md](deploy_android.md)
+详细指南：[deploy_android.md](deploy_android.md)（含 Android Studio 环境搭建请看
+[android_android_studio_guide.md](android_android_studio_guide.md)；工程内部结构见
+[android_app/README.md](android_app/README.md)）
 
 ### 方案二：PC 端推理
 
