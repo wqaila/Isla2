@@ -44,6 +44,23 @@ class SdpaMode(str, Enum):
     OFF = "off"
 
 
+class TextFrontendMode(str, Enum):
+    """文本前端（文本正则化）启用策略。
+
+    背景：wetext 的 __init__ 无条件调 snapshot_download()，每次联网校验
+    无 token 时返回 403，导致 CosyVoice 降级到无前端。但 fst 资源其实
+    已缓存在本地，故提供本项目的本地加载补丁。
+
+    - auto:   尝试启用本地 wetext，失败则记录警告并降级（默认）
+    - wetext: 强制启用，失败则启动报错
+    - none:   不启用
+    """
+
+    AUTO = "auto"
+    WETEXT = "wetext"
+    NONE = "none"
+
+
 class GPUConfig(BaseModel):
     """GPU 与推理配置。
 
@@ -51,7 +68,13 @@ class GPUConfig(BaseModel):
     防止拼写错误被静默忽略。
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        # model_dir 与 pydantic 的 model_ 保护命名空间冲突，
+        # 但字段名语义清晰且来自需求，故关闭保护。
+        protected_namespaces=(),
+    )
 
     # ---- 引擎 ----
     engine: EngineKind = Field(
@@ -125,6 +148,36 @@ class GPUConfig(BaseModel):
         ),
     )
 
+    # ---- 模型与文本前端 ----
+    model_dir: str = Field(
+        default="",
+        description=(
+            "CosyVoice3 模型目录。留空则用默认位置 "
+            "~/models/Fun-CosyVoice3-0.5B-2512。"
+        ),
+    )
+    text_frontend: TextFrontendMode = Field(
+        default=TextFrontendMode.AUTO,
+        description=(
+            "文本前端策略。auto=尝试启用本地 wetext（失败降级）；"
+            "wetext=强制启用（失败报错）；none=不启用。"
+        ),
+    )
+    default_voice_id: str = Field(
+        default="elysia",
+        description="未指定 voice_id 时使用的默认音色。",
+    )
+    min_text_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=2.0,
+        description=(
+            "合成文本 / 参考文本 的最小长度比。低于此值音色会明显漂移，"
+            "实测 0.21 时质心偏移 +490Hz，1.08 时仅 -56Hz。"
+            "上游 cosyvoice.py:94 也以 0.5 为警告阈值。"
+        ),
+    )
+
     # ---- 服务 ----
     host: str = Field(default="127.0.0.1", description="监听地址。")
     port: int = Field(default=50001, ge=1024, le=65535, description="监听端口。")
@@ -170,18 +223,22 @@ class GPUConfig(BaseModel):
 #: 这是为了兑现原提示词的要求："不能留下配置看似生效但实际未使用的参数"。
 CONSUMED_FIELDS: dict[str, str] = {
     "engine": "custom_voice.server.app:create_engine",
-    "device": "custom_voice.inference.stub_engine + Phase2 cosyvoice_engine",
-    "precision": "custom_voice.inference.stub_engine + Phase2 cosyvoice_engine",
+    "device": "custom_voice.inference.stub_engine + cosyvoice_engine",
+    "precision": "custom_voice.inference.stub_engine + cosyvoice_engine",
     "max_concurrent_requests": "custom_voice.server.app:create_engine（Phase 4 接调度器）",
     "request_timeout_s": "custom_voice.server.routes.synthesis",
-    "enable_compile": "Phase 4 优化阶段（Phase 1 仅记录到 /system/status）",
-    "enable_sdpa": "Phase 4 优化阶段（Phase 1 仅记录到 /system/status）",
-    "enable_vllm_llm": "Phase 4 优化阶段（Phase 1 仅记录到 /system/status）",
-    "speaker_cache_enabled": "custom_voice.inference.stub_engine + Phase2",
-    "speaker_cache_max_items": "custom_voice.inference.stub_engine + Phase2",
-    "cpu_offload": "Phase 4 优化阶段（Phase 1 仅记录到 /system/status）",
+    "enable_compile": "Phase 4 优化阶段（当前仅记录到 /system/status）",
+    "enable_sdpa": "Phase 4 优化阶段（当前仅记录到 /system/status）",
+    "enable_vllm_llm": "Phase 4 优化阶段（当前仅记录到 /system/status）",
+    "speaker_cache_enabled": "custom_voice.inference.stub_engine + cosyvoice_engine",
+    "speaker_cache_max_items": "custom_voice.inference.stub_engine + cosyvoice_engine",
+    "cpu_offload": "Phase 4 优化阶段（当前仅记录到 /system/status）",
     "memory_safety_margin_mb": "custom_voice.server.app:lifespan（启动显存检查）",
-    "token_hop_len_reset": "Phase 2 cosyvoice_engine（Phase 1 仅记录）",
+    "token_hop_len_reset": "custom_voice.inference.cosyvoice_engine:_reset_hop_len",
+    "model_dir": "custom_voice.inference.cosyvoice_engine:load",
+    "text_frontend": "custom_voice.inference.cosyvoice_engine:_setup_text_frontend",
+    "default_voice_id": "custom_voice.inference.cosyvoice_engine:synthesize",
+    "min_text_ratio": "custom_voice.inference.cosyvoice_engine:_check_text_ratio",
     "host": "custom_voice.server.app:run",
     "port": "custom_voice.server.app:run",
     "auth_token": "custom_voice.config.schema:_guard_non_loopback",
@@ -204,6 +261,7 @@ __all__ = [
     "GPUConfig",
     "Precision",
     "SdpaMode",
+    "TextFrontendMode",
     "find_stale_registrations",
     "find_unconsumed_fields",
 ]

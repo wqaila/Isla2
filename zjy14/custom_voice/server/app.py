@@ -40,11 +40,9 @@ def create_engine(config: GPUConfig) -> TTSEngine:
         return StubEngine(config)
 
     if config.engine is EngineKind.COSYVOICE3:
-        # Phase 2 实现。这里明确报错，避免静默回退到 stub 导致"以为用了真模型"。
-        raise ConfigError(
-            "engine=cosyvoice3 尚未实现（Phase 2 交付）。"
-            "当前请使用 engine=stub，或先完成 Phase 2。"
-        )
+        from ..inference.cosyvoice_engine import CosyVoiceEngine
+
+        return CosyVoiceEngine(config)
 
     raise ConfigError(f"未知引擎类型: {config.engine!r}")
 

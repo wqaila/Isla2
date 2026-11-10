@@ -22,6 +22,22 @@ data/
 logs/
 _audio_probe/
 
+# 诊断与验收产物（每次跑脚本都会重新生成）
+_phase2a/
+_timbre_diag/
+_rl_compare/
+_ref_ab/
+_ref_select/
+_ref_concat/
+_trim_test/
+_ratio_test/
+_clone_diag/
+_fixed_text/
+_tn_test/
+_tn_verify/
+_tn_stats/
+_verify/
+
 # 音频素材（体积大，且涉及授权）
 *.wav
 *.mp3

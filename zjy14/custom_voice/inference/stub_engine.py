@@ -16,7 +16,7 @@ import io
 import math
 import time
 import wave
-from typing import Iterator
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -188,6 +188,18 @@ class StubEngine:
             voices=self.list_voices(),
             peak_vram_mb=0.0,
         )
+
+    def diagnostics(self) -> dict[str, Any]:
+        """与 CosyVoiceEngine 保持接口一致，便于 /health 统一处理。"""
+        return {
+            "model_dir": "(stub)",
+            "text_frontend": "",
+            "voice_count": len(self._voices),
+            "hop_len_resets": 0,
+            "ratio_warnings": 0,
+            "precision": self._config.precision.value,
+            "peak_vram_mb": 0.0,
+        }
 
     def shutdown(self) -> None:
         self._ready = False

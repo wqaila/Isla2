@@ -146,13 +146,28 @@ print('  ', d['summary'], '| SNR', d['snr_db'], 'dB | 静音比例', d['silence_
 echo
 echo "[14] 改参考文本 -> 缓存 key 变化"
 BEFORE=$(curl -s "$BASE/api/v1/speakers/elysia" | python3 -c "import json,sys;print(json.load(sys.stdin)['feature_cache_key'])")
+# 先读出原始文本，改完必须恢复成它。
+# 历史教训：早期版本这里硬编码了「官方示例」的文本，
+# 把数据库里的正确参考文本覆盖掉，导致后续真模型合成在卷积层报
+# "Kernel size can't be greater than actual input size"。
+ORIG_TXT=$(curl -s "$BASE/api/v1/speakers/elysia" | python3 -c "import json,sys;print(json.load(sys.stdin)['transcript'])")
 curl -s -X PATCH "$BASE/api/v1/speakers/elysia" -H 'Content-Type: application/json' \
-  -d '{"transcript":"You are a helpful assistant.<|endofprompt|>改过的文本"}' > /dev/null
+  -d '{"transcript":"临时改动的文本用于验证缓存失效"}' > /dev/null
 AFTER=$(curl -s "$BASE/api/v1/speakers/elysia" | python3 -c "import json,sys;print(json.load(sys.stdin)['feature_cache_key'])")
 if [ "$BEFORE" != "$AFTER" ]; then ok "缓存 key 已失效 ($BEFORE -> $AFTER)"; else bad "缓存 key 未变"; fi
-# 改回去
-curl -s -X PATCH "$BASE/api/v1/speakers/elysia" -H 'Content-Type: application/json' \
-  -d '{"transcript":"You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。"}' > /dev/null
+# 恢复为改之前读到的值，绝不硬编码
+python3 - "$BASE" "$ORIG_TXT" <<'PY'
+import json, sys, urllib.request
+base, orig = sys.argv[1], sys.argv[2]
+body = json.dumps({"transcript": orig}).encode()
+req = urllib.request.Request(
+    f"{base}/api/v1/speakers/elysia", data=body,
+    headers={"Content-Type": "application/json"}, method="PATCH")
+urllib.request.urlopen(req, timeout=30).read()
+now = json.load(urllib.request.urlopen(f"{base}/api/v1/speakers/elysia", timeout=30))
+assert now["transcript"] == orig, "恢复失败"
+PY
+if [ $? -eq 0 ]; then ok "参考文本已正确恢复"; else bad "参考文本恢复失败"; fi
 
 echo
 echo "[15] 删除角色"

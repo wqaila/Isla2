@@ -47,20 +47,26 @@ async def health(request: Request) -> JSONResponse:
             },
         )
 
-    return JSONResponse(
-        status_code=200,
-        content={
-            "ok": True,
-            "engine": stats.kind,
-            "sample_rate": stats.sample_rate,
-            "device": stats.device,
-            "gpu": stats.gpu_name,
-            "torch": stats.torch_version,
-            "load_s": round(stats.load_s, 2),
-            "warmup_s": round(stats.warmup_s, 2),
-            "voices": [
-                {"voice_id": v, "is_builtin": False} for v in stats.voices
-            ],
-            "peak_vram_mb": stats.peak_vram_mb,
-        },
-    )
+    body = {
+        "ok": True,
+        "engine": stats.kind,
+        "sample_rate": stats.sample_rate,
+        "device": stats.device,
+        "gpu": stats.gpu_name,
+        "torch": stats.torch_version,
+        "load_s": round(stats.load_s, 2),
+        "warmup_s": round(stats.warmup_s, 2),
+        "voices": [{"voice_id": v, "is_builtin": False} for v in stats.voices],
+        "peak_vram_mb": stats.peak_vram_mb,
+    }
+
+    # 引擎若提供额外诊断信息（如 text_frontend 状态），一并暴露。
+    # 这对排查「数字读法不对」「音色漂移」很关键。
+    diag = getattr(state.engine, "diagnostics", None)
+    if callable(diag):
+        try:
+            body["diagnostics"] = diag()
+        except Exception:  # noqa: BLE001
+            logger.exception("获取引擎诊断信息失败（不影响健康检查）")
+
+    return JSONResponse(status_code=200, content=body)

@@ -6,8 +6,8 @@
 # 环境变量覆盖：ZJY14_<大写字段名>，例如 ZJY14_PORT=50002
 
 # ---- 引擎 ----
-# stub: 占位引擎，产出正弦波，用于 Phase 1 验证链路
-# cosyvoice3: 真实模型（Phase 2 接入）
+# stub: 占位引擎，产出正弦波，用于验证链路（不加载模型，启动快）
+# cosyvoice3: 真实模型
 engine: stub
 device: cuda
 
@@ -39,6 +39,29 @@ memory_safety_margin_mb: 1024
 # ---- 上游 bug 修复 ----
 # token_hop_len 跨调用翻倍且不重置，导致首包 1.75s -> 2.25s。
 token_hop_len_reset: true
+
+# ---- 模型与文本前端 ----
+# 留空则用默认位置 ~/models/Fun-CosyVoice3-0.5B-2512
+model_dir: ""
+
+# 文本前端（文本正则化）策略：
+#   auto   尝试启用本地 wetext，失败则降级（默认）
+#   wetext 强制启用，失败则启动报错
+#   none   不启用
+#
+# 背景：wetext 的 __init__ 无条件联网校验，无 token 时 403 降级。
+# 但 fst 资源已缓存在本地，本项目用补丁直接读取，无需 token。
+# 启用后数字/符号会被正确朗读（2026 -> 二零二六），
+# 实测音节 CV 从 0.818 提升到 0.909（节奏更自然）。
+text_frontend: auto
+
+# 未指定 voice_id 时使用的默认音色
+default_voice_id: elysia
+
+# 合成文本 / 参考文本 的最小长度比。
+# 实测比值 0.21 时音色质心偏移 +490Hz，1.08 时仅 -56Hz。
+# 上游 cosyvoice.py:94 也以 0.5 为警告阈值。
+min_text_ratio: 0.5
 
 # ---- 服务 ----
 # 默认仅回环。对外开放监听必须同时设置 auth_token（否则启动报错）。

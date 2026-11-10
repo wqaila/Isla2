@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：Phase 3 完成（角色与声音管理）**
+**当前阶段：Phase 2a 完成（真引擎接入，音色收尾）**
 
 ---
 
@@ -201,14 +201,14 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | Phase 0 审计 | ✅ 完成 | 环境探测 + 情绪可行性验证（含重大发现） |
 | Phase 1 骨架 | ✅ 完成 | 81 测试全绿，20 项端到端验收通过 |
 | Phase 3 角色声音 | ✅ 完成 | 145 测试全绿，17 项端到端验收通过；elysia 已迁移 |
-| **音色诊断与修复** | ⏳ **进行中** | 相似度 0.9208，音节CV +0.091；主观听感仍"不够" |
-| Phase 2 表达控制 | ⬜ 待开始 | 音色收尾后启动 |
+| **Phase 2a 音色收尾** | ✅ **完成** | 真引擎接入，186 测试全绿，12 项端到端验收通过 |
+| Phase 2b 表达控制 | ⬜ 待开始 | 混合调用模式已验证可行 |
 | Phase 4 GPU/流式 | ⬜ 待开始 | |
 | Phase 5 ESP32 桥接 | ⬜ 待开始 | 复用 zjy13 固件 |
 | Phase 6 Web 界面 | ⬜ 待开始 | React + TS 8 页 |
 | Phase 7 稳定发布 | ⬜ 待开始 | |
 
-详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md)。
+详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md)。
 
 ---
 
@@ -230,7 +230,8 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 
 | 文档 | 内容 |
 |---|---|
-| [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | **当日完整总结（成果 + 不足）** |
+| [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | **Phase 2a 报告（真引擎接入）** |
+| [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |
 | [02_IMPLEMENTATION_PLAN.md](docs/02_IMPLEMENTATION_PLAN.md) | 落地方案：环境审计、关键技术发现、架构、风险 |
 | [03_DECISIONS.md](docs/03_DECISIONS.md) | 10 项决策记录 |
 | [04_PHASE1_TASKS.md](docs/04_PHASE1_TASKS.md) | Phase 1 详细任务与验收标准 |
