@@ -113,8 +113,11 @@ static uint16_t s_send_seq;
 static uint32_t s_recv_frames, s_expect_frames;
 static uint32_t s_recv_bytes, s_expect_bytes;
 static volatile bool s_playing;
-/* 播放音量 0~100，可用串口命令 VOL <n> 运行时调整 */
-static volatile int s_volume = 60;
+/* 播放音量 0~100，可用串口命令 VOL <n> 运行时调整。
+ * 默认从 60 提到 85：板载扬声器口径小、效率低，60 在安静环境偏轻。
+ * 留 15 的余量给高音量素材，避免长按满幅时削波破音（实测 100 会破）。
+ * 觉得仍偏小可串口发 VOL 92 试；觉得破音则发 VOL 78。 */
+static volatile int s_volume = 85;
 
 /* ---- 播放缓冲：网络回调只入队，独立任务负责写 codec ----
  *
@@ -139,6 +142,13 @@ static size_t   s_play_head, s_play_tail, s_play_count;
 static TaskHandle_t s_play_task;
 static SemaphoreHandle_t s_play_mutex;
 static volatile bool s_play_draining;   /* 收到最后一帧，等待缓冲排空 */
+/* 流式播放：服务端不再预先告知总帧数，改为在所有音频后发一个
+ * 「负载长度为 0」的二进制帧作为结束标记。收到它才标记排空。
+ * 定长模式（playback_start 带 frames>0）仍然走原来的帧数判断，
+ * 两种模式并存，旧服务端不受影响。 */
+static volatile bool s_got_end_marker;
+/* 播放任务的空闲计数：用于流式模式下检测「服务端中途断流」 */
+static uint32_t s_idle_ticks;
 
 /* 音频设备句柄 */
 static esp_codec_dev_handle_t s_mic;
@@ -367,6 +377,7 @@ static void handle_playback_start(const char *json)
     s_recv_bytes = 0;
     s_playing = true;
     s_play_draining = false;
+    s_got_end_marker = false;
 
     /* 清空缓冲 */
     if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
@@ -401,8 +412,14 @@ static void handle_playback_start(const char *json)
     }
 
     s_state = ST_PLAYING; ui_sync();
-    ESP_LOGI(TAG, "开始播放：预期 %u 帧 / %u 字节 @%dHz -> 设备 %dHz",
-             (unsigned)frames, (unsigned)bytes, SPK_SAMPLE_RATE, SPK_DEV_RATE);
+    /* frames==0 表示服务端走流式，总长度未知，靠结束标记帧收尾 */
+    if (frames > 0) {
+        ESP_LOGI(TAG, "开始播放（定长）：预期 %u 帧 / %u 字节 @%dHz -> 设备 %dHz",
+                 (unsigned)frames, (unsigned)bytes, SPK_SAMPLE_RATE, SPK_DEV_RATE);
+    } else {
+        ESP_LOGI(TAG, "开始播放（流式）：长度未知，等待结束标记帧 @%dHz -> 设备 %dHz",
+                 SPK_SAMPLE_RATE, SPK_DEV_RATE);
+    }
 }
 
 /* 播放任务：从环形缓冲取 PCM，直接写 codec。
@@ -436,11 +453,26 @@ static void play_task(void *arg)
             continue;
         }
 
-        /* 缓冲空了：若已收齐最后一帧，则关闭扬声器并上报 */
+        /* 缓冲空了：若已收到结束信号，则关闭扬声器并上报 */
         if (s_play_draining) {
             s_play_draining = false;
             finish_playback();
             continue;
+        }
+
+        /* 流式兜底：如果长时间（12 秒）既没有新数据、也没收到结束标记，
+         * 说明服务端中途断了。主动收尾回到 IDLE，避免永久卡在 PLAYING
+         * 让后续 TALK 全部失败（该问题在 11-04 记录里出现过）。
+         * 定长模式下 s_expect_frames>0，一般不会走到这里。 */
+        if (s_playing && !s_got_end_marker) {
+            if (s_idle_ticks++ >= 1200) {   /* 1200 * 10ms = 12s */
+                s_idle_ticks = 0;
+                ESP_LOGW(TAG, "流式播放超时无数据且无结束标记，强制收尾");
+                finish_playback();
+                continue;
+            }
+        } else {
+            s_idle_ticks = 0;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -503,6 +535,18 @@ static void handle_binary(const uint8_t *data, size_t len)
         return;
     }
 
+    /* 结束标记帧：负载长度为 0。
+     * 流式模式下服务端不知道总帧数，用这个空帧告知「后面没有了」。
+     * 必须放在计数之前，否则会被算成「多收了一帧」。
+     * 定长模式下服务端不会发这种帧，所以不影响旧路径。 */
+    if (plen == 0) {
+        s_got_end_marker = true;
+        s_play_draining = true;
+        ESP_LOGI(TAG, "收到结束标记帧：共 %u 帧 / %u 字节",
+                 (unsigned)s_recv_frames, (unsigned)s_recv_bytes);
+        return;
+    }
+
     s_recv_frames++;
     s_recv_bytes += plen;
 
@@ -533,10 +577,14 @@ static void handle_binary(const uint8_t *data, size_t len)
         if (s_play_mutex) xSemaphoreGive(s_play_mutex);
     }
 
-    /* 收齐最后一帧：标记排空，由播放任务在缓冲写完后上报 playback_done */
+    /* 收尾判定，两种模式并存：
+     * 1) 定长（旧服务端）：playback_start 带 frames>0，收够帧数即排空
+     * 2) 流式（新服务端）：frames==0，靠前面那个空负载结束标记帧置位
+     * 两条件都只在「确实进入了播放」时生效，避免空轮次误判。 */
     if (s_expect_frames && s_recv_frames >= s_expect_frames) {
         s_play_draining = true;
     }
+    /* 流式模式下若服务端漏发结束标记，靠看门狗兜底（见 s_playing 超时） */
 }
 
 static void handle_text(const char *json)

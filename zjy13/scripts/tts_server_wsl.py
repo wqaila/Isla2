@@ -13,9 +13,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
+import struct
 import sys
 import time
 import wave
@@ -26,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 COSYVOICE_DIR = Path.home() / "CosyVoice"
@@ -419,6 +421,116 @@ async def synthesize(req: SynthRequest) -> Response:
             "x-voice-id": voice,
         },
     )
+
+
+@app.post("/synthesize_stream")
+async def synthesize_stream(req: SynthRequest):
+    """流式合成：边合成边把 PCM 分块推给调用方。
+
+    为什么要这个接口（2026-11-12）：
+    非流式的 ``/synthesize`` 必须等**整段**音频合成完才返回。实测 8 秒音频
+    要 4.8 秒合成，这段时间板子完全静默，是端到端延迟的主要来源。
+
+    CosyVoice 的 ``inference_zero_shot(stream=True)`` 会按句切分逐段 yield，
+    首段通常 1~1.5 秒就能出来。调用方拿到首段即可立刻下发播放，
+    后续段在播放期间继续合成，从而把「首字延迟」与「总合成时间」解耦。
+
+    传输格式（简单、无歧义，不依赖 chunked 语义）：
+        每块 = 4 字节大端 uint32 长度 + 该长度的裸 PCM16LE 单声道数据
+        末尾发送一个长度=0 的块表示结束
+    采样率通过响应头 ``x-sample-rate`` 告知。
+
+    失败处理：若首块之前就出错，返回 500；若中途出错，直接断开连接
+    （调用方会看到不完整流并报错），不发送伪造的结束块，避免静默截断。
+    """
+    model = runtime.model
+    if model is None:
+        raise HTTPException(status_code=503, detail="model not loaded")
+
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is empty")
+
+    voice = req.voice_id or DEFAULT_VOICE_ID
+    if voice not in runtime.voices:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown voice_id {voice!r}, available: {sorted(runtime.voices)}",
+        )
+    profile = runtime.voices[voice]
+
+    # 与非流式路径一致：重置上游的 token_hop_len 污染
+    if hasattr(model.model, "token_hop_len"):
+        model.model.token_hop_len = 25
+
+    sample_rate = runtime.sample_rate
+
+    async def gen():
+        started = time.perf_counter()
+        first_ms: float | None = None
+        total_samples = 0
+        try:
+            # inference_* 是同步生成器，放到线程里逐块取，避免阻塞事件循环
+            it = model.inference_zero_shot(
+                text, "", str(profile.ref_wav),
+                zero_shot_spk_id=voice,
+                stream=True,
+                speed=req.speed,
+            )
+            loop = asyncio.get_running_loop()
+            while True:
+                chunk = await loop.run_in_executor(None, _next_or_none, it)
+                if chunk is None:
+                    break
+                speech = chunk["tts_speech"]
+                # [1, N] float32 -> int16 LE 字节
+                pcm = _to_pcm16_bytes(speech)
+                if not pcm:
+                    continue
+                if first_ms is None:
+                    first_ms = (time.perf_counter() - started) * 1000
+                total_samples += len(pcm) // 2
+                yield struct.pack(">I", len(pcm)) + pcm
+            # 结束标记
+            yield struct.pack(">I", 0)
+            duration = total_samples / sample_rate if sample_rate else 0.0
+            logger.info(
+                "stream ok voice=%s chars=%d dur=%.2fs first=%.0fms total=%.0fms",
+                voice, len(text), duration,
+                first_ms if first_ms is not None else -1,
+                (time.perf_counter() - started) * 1000,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("流式合成失败（已发送部分数据）")
+            # 不发结束标记：让调用方明确知道这是不完整的
+            raise
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/octet-stream",
+        headers={
+            "x-sample-rate": str(sample_rate),
+            "x-engine": "cosyvoice3",
+            "x-voice-id": voice,
+        },
+    )
+
+
+def _next_or_none(it):
+    """从同步生成器取下一个元素，耗尽时返回 None（供 run_in_executor 使用）。"""
+    try:
+        return next(it)
+    except StopIteration:
+        return None
+
+
+def _to_pcm16_bytes(speech) -> bytes:
+    """把 [1, N] 的 float32 tensor 转成 int16 小端裸 PCM。"""
+    arr = speech.detach().to("cpu", dtype=torch.float32).numpy()
+    if arr.ndim > 1:
+        arr = arr.reshape(-1)
+    clipped = np.clip(arr, -1.0, 1.0)
+    return np.round(clipped * 32767.0).astype("<i2").tobytes()
 
 
 def main() -> None:

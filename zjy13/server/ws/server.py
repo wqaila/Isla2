@@ -82,6 +82,11 @@ PLAYBACK_GRACE_S = 15.0
 #: 看门狗最小超时（短音频也要留足播放 + 上报的时间）
 PLAYBACK_MIN_TIMEOUT_S = 20.0
 
+#: 流式播放时长度未知，看门狗先用这个估计值。
+#: 流式下真正的收尾靠板子收到结束标记帧后回报 playback_done；
+#: 这个超时只兜底「板子彻底失联」。取值要大一些，避免长回复被误杀。
+PLAYBACK_MAX_GUESS_S = 120.0
+
 
 @dataclass(slots=True)
 class ServerConfig:
@@ -761,17 +766,87 @@ class DialogueServer:
             ).to_dict(),
         )
 
+        # ---- TTS + 下发：流式 ----
+        #
+        # 2026-11-12 改造。原先的流程是「整段合成完 → 一次性下发」：
+        #   TTS 合成 4.8s（8 秒音频）→ 才开始发第一帧 → 板子开播
+        # 这段静默占了端到端延迟的 80%。
+        #
+        # 现在改成边合成边下发：
+        #   首块 PCM 到达（约 1~1.5s）→ 立刻发 playback_start → 边收边发
+        # 播放期间后续音频仍在合成，从而把「首字延迟」与「总合成时间」解耦。
+        #
+        # 协议配合：流式下总帧数未知，因此 playback_start 的 frames 传 0，
+        # 板子改为在收到「负载长度为 0 的二进制帧」时判定结束。
+        # 旧固件（只看 frames）在流式下不会收尾，所以服务端保留回退开关。
+        step = 4096            # 4096 字节 ≈ 128ms @ 16kHz16bit
+        sample_rate = 24000    # 会被实际值覆盖
+        seq = 0
+        sent_bytes = 0
+        playback_started = False
+        play_start = 0.0
+        bytes_per_sec = sample_rate * 2
+        lead_sec = 0.8
+        first_pcm_ms: float | None = None
+        tts_started = time.perf_counter()
+
         try:
-            tts_result = await self.tts.synthesize(
+            async for pcm_chunk in self.tts.synthesize_stream(
                 reply,
-                turn_id=f"{my_turn}-tts",
                 voice_id=self.voice_id,
                 speed=self.speaking_rate,
-            )
+            ):
+                if not pcm_chunk:
+                    continue
+                if first_pcm_ms is None:
+                    first_pcm_ms = (time.perf_counter() - tts_started) * 1000
+
+                # 第一块到手才发 playback_start：板子收到它才打开扬声器，
+                # 提前发会让板子在没数据时先开功放，增加底噪与耗电。
+                if not playback_started:
+                    sample_rate = self.tts.last_stream_sample_rate or 24000
+                    bytes_per_sec = sample_rate * 2
+                    client.state.to(State.PLAYING)
+                    self._arm_playback_timer(client, my_turn, PLAYBACK_MAX_GUESS_S)
+                    client.expect_audio_bytes = 0    # 流式下总长未知
+                    client.expect_audio_frames = 0
+                    await self.send_json(
+                        client,
+                        Envelope(
+                            type=PLAYBACK_START,
+                            session_id=client.session_id,
+                            turn_id=my_turn,
+                            seq=client.next_seq(),
+                            payload={
+                                "sample_rate": sample_rate,
+                                "duration_s": 0,
+                                "bytes": 0,
+                                "frames": 0,          # 0 = 流式，长度未知
+                                "frame_bytes": step,
+                                "streaming": True,
+                            },
+                        ).to_dict(),
+                    )
+                    play_start = time.perf_counter()
+                    playback_started = True
+                    logger.info(
+                        "流式播放开始 turn=%s 首块=%.0fms 采样率=%d",
+                        my_turn, first_pcm_ms, sample_rate,
+                    )
+
+                # 按块切帧下发，并按播放进度节流（防长音频灌爆热点链路）
+                for off in range(0, len(pcm_chunk), step):
+                    piece = pcm_chunk[off:off + step]
+                    played_sec = time.perf_counter() - play_start
+                    sent_sec = (sent_bytes + len(piece)) / bytes_per_sec
+                    ahead = sent_sec - played_sec
+                    if ahead > lead_sec:
+                        await asyncio.sleep(ahead - lead_sec)
+                    await self.send_audio(client, piece, seq)
+                    seq += 1
+                    sent_bytes += len(piece)
         except TTSUnavailableError as exc:
-            await self.send_error(
-                client, ErrorCode.TTS_UNAVAILABLE, exc.message
-            )
+            await self.send_error(client, ErrorCode.TTS_UNAVAILABLE, exc.message)
             await self._finish_turn(client, reason="tts_unavailable")
             return
         except TTSError as exc:
@@ -779,66 +854,21 @@ class DialogueServer:
             await self._finish_turn(client, reason="tts_failed")
             return
 
-        logger.info(
-            "TTS 完成 turn=%s 音频=%.2fs 耗时=%.0fms RTF=%.3f",
-            my_turn, tts_result.duration_s, tts_result.total_ms,
-            tts_result.realtime_factor,
-        )
+        if not playback_started:
+            await self.send_error(client, ErrorCode.TTS_FAILED, "TTS 未产生任何音频")
+            await self._finish_turn(client, reason="tts_empty")
+            return
 
-        # 下发音频（按帧切分，单帧不超过协议上限）
-        pcm = _wav_to_pcm16(tts_result.audio_path)
-        client.state.to(State.PLAYING)
-        # 进入 PLAYING 就启动看门狗：万一板子不回 playback_done，
-        # 也能自动回到 IDLE，不至于把整条连接卡死。
-        self._arm_playback_timer(client, my_turn, tts_result.duration_s)
-
-        step = 4096  # 4096 字节 ≈ 128ms @ 16kHz16bit，兼顾延迟与开销
-        total_frames = (len(pcm) + step - 1) // step
-        # 记录期望值，供 playback_done 校验（防止客户端提前退出导致丢帧）
-        client.expect_audio_bytes = len(pcm)
-        client.expect_audio_frames = total_frames
-
-        await self.send_json(
-            client,
-            Envelope(
-                type=PLAYBACK_START,
-                session_id=client.session_id,
-                turn_id=my_turn,
-                seq=client.next_seq(),
-                payload={
-                    "sample_rate": tts_result.sample_rate,
-                    "duration_s": round(tts_result.duration_s, 3),
-                    "bytes": len(pcm),
-                    "frames": total_frames,
-                    "frame_bytes": step,
-                },
-            ).to_dict(),
-        )
-
-        seq = 0
-        # 按播放进度节流下发。
-        # 一次性全速推送会让长音频（15s+ / 700KB+）在几秒内灌满链路，
-        # 实测在移动热点/WiFi Direct 上会触发 transport 写超时并断连。
-        # 这里限制为「已播放进度 + 2 秒提前量」，峰值带宽降到约 1/8，
-        # 同时保证板子缓冲里始终有数据、不会播空。
-        # 板子侧环形缓冲已缩到 8 秒，2 秒提前量留足抖动余量且不会溢出。
-        sample_rate = tts_result.sample_rate or 24000
-        bytes_per_sec = sample_rate * 2          # 16bit 单声道
-        lead_sec = 2.0                            # 允许领先播放进度 2 秒
-        play_start = time.perf_counter()
-        for off in range(0, len(pcm), step):
-            played_sec = time.perf_counter() - play_start
-            sent_sec = (off + step) / bytes_per_sec
-            ahead = sent_sec - played_sec
-            if ahead > lead_sec:
-                await asyncio.sleep(ahead - lead_sec)
-            await self.send_audio(client, pcm[off:off + step], seq)
-            seq += 1
+        # 结束标记帧：负载长度为 0，板子据此判定收尾
+        await self.send_audio(client, b"", seq)
 
         total_ms = (time.perf_counter() - started) * 1000
+        duration_s = sent_bytes / bytes_per_sec if bytes_per_sec else 0.0
         logger.info(
-            "音频已下发 turn=%s 帧=%d/%d 字节=%d 端到端=%.0fms（等待 playback_done）",
-            my_turn, seq, total_frames, len(pcm), total_ms,
+            "音频已下发 turn=%s 帧=%d 字节=%d 音频=%.2fs 首块=%.0fms 端到端=%.0fms"
+            "（等待 playback_done）",
+            my_turn, seq, sent_bytes, duration_s,
+            first_pcm_ms or 0, total_ms,
         )
         # 等待开发板回报 playback_done（由 _on_playback_done 收尾）
 

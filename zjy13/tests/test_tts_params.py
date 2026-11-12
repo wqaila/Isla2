@@ -74,10 +74,16 @@ def test_server_defaults_to_1_when_card_omits_rate() -> None:
 
 
 def test_server_passes_speed_to_synthesize() -> None:
-    """``synthesize`` 调用必须同时带 voice_id 与 speed。"""
+    """WS 服务端的合成调用必须同时带 voice_id 与 speed。
+
+    2026-11-12 起服务端改用流式 ``synthesize_stream``，两种调用都接受。
+    """
     src = SERVER_PY.read_text(encoding="utf-8")
-    idx = src.index("self.tts.synthesize(")
-    call = src[idx:idx + 320]
+    if "self.tts.synthesize_stream(" in src:
+        idx = src.index("self.tts.synthesize_stream(")
+    else:
+        idx = src.index("self.tts.synthesize(")
+    call = src[idx:idx + 400]
     assert "voice_id" in call, "未传 voice_id"
     assert "speed" in call, "未传 speed，角色卡的 speaking_rate 不会生效"
 

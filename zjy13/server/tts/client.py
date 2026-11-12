@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import logging
+import struct
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -107,6 +109,8 @@ class TTSConfig:
 
     base_url: str = "http://127.0.0.1:50000"
     synthesize_path: str = "/synthesize"
+    #: 流式合成接口（边合成边返回 PCM 分块）。服务端不支持时自动回退非流式。
+    stream_path: str = "/synthesize_stream"
     health_path: str = "/health"
     timeout_s: float = 120.0
     connect_timeout_s: float = 5.0
@@ -123,6 +127,7 @@ class TTSConfig:
         return cls(
             base_url=env("TTS_BASE_URL", "http://127.0.0.1:50000").rstrip("/"),
             synthesize_path=env("TTS_SYNTH_PATH", "/synthesize"),
+            stream_path=env("TTS_STREAM_PATH", "/synthesize_stream"),
             health_path=env("TTS_HEALTH_PATH", "/health"),
             timeout_s=float(env("TTS_TIMEOUT_S", "120")),
             connect_timeout_s=float(env("TTS_CONNECT_TIMEOUT_S", "5")),
@@ -133,6 +138,10 @@ class TTSConfig:
     @property
     def url(self) -> str:
         return f"{self.base_url}{self.synthesize_path}"
+
+    @property
+    def stream_url(self) -> str:
+        return f"{self.base_url}{self.stream_path}"
 
     @property
     def health_url(self) -> str:
@@ -168,6 +177,10 @@ class TTSClient:
         self._client: httpx.AsyncClient | None = None
         self._active_turns: set[str] = set()
         self._completed_turns: set[str] = set()
+        #: 最近一次流式合成的采样率（从响应头 x-sample-rate 读取）。
+        #: 流式接口是「裸 PCM」，调用方必须知道采样率才能正确下发，
+        #: 而首块到达时就要发 playback_start，所以这里缓存最近一次的值。
+        self.last_stream_sample_rate: int = 0
 
     # ------------------------------------------------------------------
 
@@ -324,6 +337,128 @@ class TTSClient:
     def reset_turn(self, turn_id: str) -> None:
         """允许显式重试同一 turn。"""
         self._completed_turns.discard(turn_id)
+
+    # ------------------------------------------------------------------
+    # 流式合成
+    # ------------------------------------------------------------------
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        *,
+        voice_id: str | None = None,
+        speed: float = 1.0,
+    ) -> AsyncIterator[bytes]:
+        """流式合成，逐块产出裸 PCM16LE 单声道数据。
+
+        与非流式 ``synthesize()`` 的区别（2026-11-12 新增）：
+        ``synthesize()`` 要等整段音频合成完（实测 8 秒音频需 4.8 秒），
+        这期间板子完全静默，是端到端延迟的最大来源。
+        本方法在服务端按句流式生成时，**首块通常 1~1.5 秒**就能拿到，
+        调用方可以立刻开始下发播放。
+
+        协议：每块 = 4 字节大端 uint32 长度 + PCM；长度 0 表示结束。
+        采样率从响应头 ``x-sample-rate`` 读取（默认 24000）。
+
+        :raises TTSUnavailableError: 服务未启动或不支持流式接口
+        :raises TTSError: 合成过程中出错，或流被截断
+        """
+        text = (text or "").strip()
+        if not text:
+            raise TTSBadRequestError("待合成文本为空")
+
+        client = self._ensure()
+        payload = {
+            "text": text,
+            "voice_id": voice_id or self.config.default_voice,
+            "speed": speed,
+        }
+
+        try:
+            async with client.stream(
+                "POST", self.config.stream_url, json=payload
+            ) as response:
+                if response.status_code == 400:
+                    body = await response.aread()
+                    raise TTSBadRequestError(
+                        f"TTS 参数错误: {body[:300]!r}", status_code=400
+                    )
+                if response.status_code == 503:
+                    raise TTSUnavailableError("TTS 模型未加载")
+                if response.status_code == 404:
+                    # 老版本服务端没有流式接口：明确告知，由调用方决定回退
+                    raise TTSUnavailableError(
+                        "TTS 服务不支持流式接口（/synthesize_stream 返回 404）。"
+                        "请更新 WSL 侧的 scripts/tts_server_wsl.py。"
+                    )
+                if response.status_code != 200:
+                    body = await response.aread()
+                    raise TTSError(
+                        f"TTS 返回 {response.status_code}: {body[:200]!r}",
+                        status_code=response.status_code,
+                    )
+
+                # 采样率必须在读第一块之前拿到：调用方收到首块就要发
+                # playback_start，里面得带采样率。
+                try:
+                    self.last_stream_sample_rate = int(
+                        response.headers.get("x-sample-rate", "0") or 0
+                    )
+                except (TypeError, ValueError):
+                    self.last_stream_sample_rate = 0
+                if not self.last_stream_sample_rate:
+                    self.last_stream_sample_rate = 24000
+
+                finished = False
+                async for pcm in _iter_length_prefixed(response.aiter_bytes()):
+                    if pcm is None:
+                        finished = True
+                        break
+                    yield pcm
+
+                if not finished:
+                    raise TTSError("TTS 流被截断（未收到结束标记）")
+        except httpx.ConnectError as exc:
+            raise TTSUnavailableError(
+                f"无法连接本地 TTS 服务 {self.config.base_url}。"
+                "请确认 WSL 中的 TTS 服务已启动。"
+                f"（{type(exc).__name__}）"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise TTSTimeoutError(
+                f"TTS 流式合成超时（{self.config.timeout_s}s）"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise TTSUnavailableError(
+                f"TTS 流式请求失败: {type(exc).__name__}: {exc}"
+            ) from exc
+
+
+async def _iter_length_prefixed(
+    byte_iter: AsyncIterator[bytes],
+) -> AsyncIterator[bytes | None]:
+    """解析「4 字节大端长度 + 负载」的分块流。
+
+    长度 0 表示结束，此时产出一次 ``None`` 供调用方确认「流是完整的」。
+    这样能区分「正常结束」与「连接中途断掉」——后者不产出 None，
+    调用方据此报错，避免把截断的音频当成完整回复播出去。
+    """
+    buf = bytearray()
+    async for chunk in byte_iter:
+        buf.extend(chunk)
+        while True:
+            if len(buf) < 4:
+                break
+            (length,) = struct.unpack(">I", bytes(buf[:4]))
+            if length == 0:
+                del buf[:4]
+                yield None
+                return
+            if len(buf) < 4 + length:
+                break
+            payload = bytes(buf[4:4 + length])
+            del buf[:4 + length]
+            yield payload
 
 
 def _sanitize_voice_id(voice_id: str) -> str:

@@ -32,14 +32,32 @@ CHAR_DIR = PROJECT_ROOT / "server" / "characters"
 
 
 def test_synthesize_receives_voice_id() -> None:
-    """WS 服务端调用 synthesize 时必须显式传 voice_id。"""
+    """WS 服务端调用 TTS 时必须显式传 voice_id。
+
+    注意：2026-11-12 起服务端改用流式接口 ``synthesize_stream``，
+    因此这里两种调用都接受，只要传了 voice_id 即可。
+    """
     src = SERVER_PY.read_text(encoding="utf-8")
-    # 找到 synthesize 调用
-    match = re.search(r"self\.tts\.synthesize\((.*?)\)", src, re.S)
-    assert match, "未找到 tts.synthesize 调用"
+    match = (
+        re.search(r"self\.tts\.synthesize_stream\((.*?)\)", src, re.S)
+        or re.search(r"self\.tts\.synthesize\((.*?)\)", src, re.S)
+    )
+    assert match, "未找到 TTS 合成调用（synthesize 或 synthesize_stream）"
     call = match.group(1)
     assert "voice_id" in call, (
-        "synthesize 调用没有传 voice_id，开发板会听到错误的音色"
+        "合成调用没有传 voice_id，开发板会听到错误的音色"
+    )
+
+
+def test_streaming_is_used() -> None:
+    """服务端应走流式合成，否则首字延迟受整段合成时间拖累。
+
+    背景：非流式要等整段音频合成完（8 秒音频约 4.8 秒）才下发，
+    这段静默占端到端延迟约 80%。改用流式后首块约 1~1.5 秒即可开播。
+    """
+    src = SERVER_PY.read_text(encoding="utf-8")
+    assert "synthesize_stream" in src, (
+        "服务端没有使用流式合成，首字延迟仍受整段合成时间拖累"
     )
 
 

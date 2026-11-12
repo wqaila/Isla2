@@ -101,6 +101,18 @@ class FakeTTS:
             text=text,
         )
 
+    async def synthesize_stream(self, text, *, voice_id=None, speed=1.0, **kw):
+        """流式替身：产出几块静音 PCM，模拟边合成边下发。
+
+        服务端自 2026-11-12 起改用流式（synthesize_stream），
+        这里必须同步实现，否则 _run_pipeline 会 AttributeError。
+        """
+        self.last_stream_sample_rate = 24000
+        # 分两块给，验证服务端能正确拼接与切帧
+        chunk_bytes = int(24000 * 2 * self.duration_s / 2)
+        for _ in range(2):
+            yield b"\x00" * chunk_bytes
+
 
 def _write_silence_wav(path: Path, duration_s: float, sample_rate: int = 24000) -> None:
     import wave
