@@ -300,12 +300,24 @@ class DeviceSimulator:
         frame = AudioFrame.decode(data)
         if frame.msg_type != BinaryType.AUDIO_DOWN:
             return
+
+        # 结束标记帧（负载长度为 0）：流式下服务端靠它告知「后面没有了」。
+        # 固件据此判定收尾（voice_client.c 的 s_got_end_marker），
+        # 模拟器必须同样处理，否则流式模式永远等不到 playback_done 时机。
+        if not frame.payload:
+            if not self._playback_reported:
+                self._playback_reported = True
+                self.trace.mark("audio_complete", t0)
+                asyncio.create_task(self._report_playback_done())
+            return
+
         if self.trace.audio_frames == 0:
             self.trace.mark("first_audio", t0)
         self.trace.audio_frames += 1
         self.trace.audio_bytes += len(frame.payload)
 
-        # 收齐预期帧数后回报 playback_done（模拟播放完成）
+        # 定长模式（旧服务端）：收齐预期帧数后回报 playback_done。
+        # 流式模式下 _expect_frames 为 0，走上面的结束标记分支。
         if (self._expect_frames
                 and self.trace.audio_frames >= self._expect_frames
                 and not self._playback_reported):

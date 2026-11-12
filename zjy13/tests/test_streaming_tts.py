@@ -143,10 +143,14 @@ def test_ws_server_uses_streaming() -> None:
 
 
 def test_ws_server_sends_frames_zero() -> None:
-    """流式下 playback_start 的 frames 必须是 0（表示长度未知）。"""
+    """流式下 playback_start 的 frames 必须是 0（表示长度未知）。
+
+    注意：2026-11-12 加填充音后，playback_start 可能在两处发
+    （填充音会话 / 无填充音时），所以搜索窗口要足够大。
+    """
     src = _read(SERVER_PY)
     idx = src.index("synthesize_stream")
-    body = src[idx:idx + 2500]
+    body = src[idx:idx + 8000]
     assert '"frames": 0' in body, (
         "流式模式必须把 frames 置 0，否则板子会按旧逻辑等固定帧数"
     )

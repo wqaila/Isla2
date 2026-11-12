@@ -84,17 +84,58 @@ def test_can_reports_transition_table() -> None:
 
 
 def test_busy_states_cover_all_processing_states() -> None:
-    """处理中的 5 个状态都算 busy，IDLE / ERROR 不算。"""
+    """处理中的状态都算 busy，IDLE / ERROR 不算。
+
+    FILLER（播语气词占位）也算 busy——它表示本轮还在处理，
+    只是先用语气词填充空白。但注意：FILLER 与 PLAYING 虽然都 busy，
+    `_on_recording_start` 对这两者放开打断（见 server.py 注释）。
+    """
     expected = {
         State.RECORDING,
         State.ASR_PROCESSING,
         State.LLM_PROCESSING,
         State.TTS_PROCESSING,
+        State.FILLER,
         State.PLAYING,
     }
     assert BUSY_STATES == expected
     assert State.IDLE not in BUSY_STATES
     assert State.ERROR not in BUSY_STATES
+
+
+def test_filler_can_advance_to_processing() -> None:
+    """FILLER 必须能继续往前走（ASR/LLM/TTS），否则填充音会卡死主流程。
+
+    这是 FILLER 与 PLAYING 的核心区别：
+    PLAYING 表示正文在播、本轮即将结束，只能回 IDLE；
+    FILLER 表示还在处理，必须允许 ASR_PROCESSING 等后续状态。
+    """
+    sm = DialogueStateMachine()
+    sm.to(State.RECORDING)
+    sm.to(State.FILLER)
+    assert sm.can(State.ASR_PROCESSING) is True
+    assert sm.can(State.LLM_PROCESSING) is True
+    assert sm.can(State.TTS_PROCESSING) is True
+    assert sm.can(State.PLAYING) is True
+    assert sm.can(State.IDLE) is True
+    assert sm.can(State.ERROR) is True
+
+
+def test_filler_reachable_from_recording() -> None:
+    """录音结束后应能进入 FILLER（播语气词占位）。"""
+    sm = DialogueStateMachine()
+    sm.to(State.RECORDING)
+    assert sm.can(State.FILLER) is True
+
+
+def test_playing_cannot_go_back_to_processing() -> None:
+    """PLAYING 是「正文在播」，不允许退回处理态。"""
+    sm = DialogueStateMachine()
+    for s in (State.RECORDING, State.ASR_PROCESSING,
+              State.LLM_PROCESSING, State.TTS_PROCESSING, State.PLAYING):
+        sm.to(s)
+    assert sm.can(State.ASR_PROCESSING) is False
+    assert sm.can(State.IDLE) is True
 
 
 def test_is_busy_true_while_playing() -> None:

@@ -87,6 +87,19 @@ PLAYBACK_MIN_TIMEOUT_S = 20.0
 #: 这个超时只兜底「板子彻底失联」。取值要大一些，避免长回复被误杀。
 PLAYBACK_MAX_GUESS_S = 120.0
 
+#: 延迟自适应：记录最近 N 轮的「松手→首块音频」耗时，
+#: 用于决定要不要播填充音。
+#:
+#: 为什么需要：如果上一轮很快（比如缓存命中，1 秒内就出声），
+#: 再播 0.7 秒的「嗯…」反而显得啰嗦。
+#: 只有当历史延迟明显超过填充音长度时才播。
+LATENCY_HISTORY_SIZE = 5
+
+#: 历史平均延迟低于这个值时跳过填充音（秒）。
+#: 取 1.2s：填充音本身约 0.7s，若等待不足 1.2s，
+#: 播填充音会让总时长变长，得不偿失。
+FILLER_SKIP_BELOW_S = 1.2
+
 
 @dataclass(slots=True)
 class ServerConfig:
@@ -119,6 +132,15 @@ class ClientSession:
     task: asyncio.Task | None = None
     #: 播放看门狗任务：PLAYING 状态下等不到 playback_done 时强制收尾
     playback_timer: asyncio.Task | None = None
+    #: 填充音发送任务（「嗯…」等语气词）。正文就绪或本轮失败时要取消它，
+    #: 否则会在后台继续发音频帧，污染下一轮的播放。
+    filler_task: asyncio.Task | None = None
+    #: 通知填充音任务「正文已就绪，立刻停」
+    filler_body_ready: asyncio.Event | None = None
+    #: 通知填充音任务「本轮已作废，立刻停」
+    filler_cancel: asyncio.Event | None = None
+    #: 本轮填充音是否已开过播放会话（正文要接在它后面，不再发 playback_start）
+    filler_session_open: bool = False
     last_heartbeat: float = field(default_factory=time.perf_counter)
     device_id: str = ""
     hello_done: bool = False
@@ -175,6 +197,53 @@ class DialogueServer:
         rate = tts_settings.get("speaking_rate")
         self.speaking_rate = float(rate) if isinstance(rate, (int, float)) else 1.0
         self._clients: dict[str, ClientSession] = {}
+
+        # 填充音：预生成的语气词（嗯… / 这个嘛… / 唔…）。
+        # 用户松手后到正文出声有约 2.3 秒静默，先播一个语气词能显著降低
+        # 感知延迟。资源加载失败时自动降级为「不播填充音」，不影响主链路。
+        try:
+            from ..tts.fillers import FillerBank
+
+            self.fillers = FillerBank()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("填充音加载失败，将不播语气词: %s", exc)
+            self.fillers = None
+
+        # 延迟自适应：记录最近若干轮的「松手→首块音频」耗时（秒）。
+        # 若历史平均很快，就跳过填充音（否则显得啰嗦）。
+        self._latency_samples: list[float] = []
+
+    # ------------------------------------------------------------------
+    # 延迟自适应
+    # ------------------------------------------------------------------
+
+    def _record_latency(self, seconds: float) -> None:
+        """记录一轮的「松手→首块音频」耗时。"""
+        self._latency_samples.append(seconds)
+        if len(self._latency_samples) > LATENCY_HISTORY_SIZE:
+            self._latency_samples.pop(0)
+
+    def _mean_latency(self) -> float | None:
+        """最近若干轮的平均延迟（秒）。样本不足时返回 None。"""
+        if not self._latency_samples:
+            return None
+        return sum(self._latency_samples) / len(self._latency_samples)
+
+    def _should_play_filler(self) -> bool:
+        """是否该播填充音。
+
+        规则：
+        - 没有填充音资源 → 不播
+        - 还没有历史样本（第一轮）→ 播（首轮必须给用户即时反馈）
+        - 历史平均延迟 >= FILLER_SKIP_BELOW_S → 播（等待够久，填充有意义）
+        - 历史平均很快 → 跳过（播了反而让总时长变长）
+        """
+        if self.fillers is None or not self.fillers.available:
+            return False
+        mean = self._mean_latency()
+        if mean is None:
+            return True
+        return mean >= FILLER_SKIP_BELOW_S
 
     def _dialogue_for(self, client: ClientSession) -> ConversationSession:
         """取本连接共用的对话会话，没有就建一个。
@@ -233,6 +302,178 @@ class DialogueServer:
             await client.ws.send(frame.encode())
         except Exception as exc:  # noqa: BLE001
             logger.debug("发送音频失败: %s", exc)
+
+    # ------------------------------------------------------------------
+    # 填充音（语气词）
+    # ------------------------------------------------------------------
+
+    async def _interrupt_for_new_turn(
+        self, client: ClientSession, *, reason: str
+    ) -> None:
+        """打断当前轮，为新一轮让路。
+
+        与 ``_on_cancel`` 的区别：
+        - ``_on_cancel`` 是客户端主动发 ``cancel``，本轮作废、不发 ``turn_done``
+        - 本方法是「用户直接开口说话」触发的隐式打断：要发 ``turn_cancelled``
+          让板子知道上一轮作废（否则板子还在等 playback_done），
+          但**不发 turn_done**（新一轮马上开始，板子不需要回 IDLE）。
+
+        清理内容：
+        1. 停填充音（否则后台继续发音频帧污染新一轮）
+        2. 取消本轮的 ASR/LLM/TTS 处理任务
+        3. 撤掉播放看门狗
+        4. 清空本轮音频缓冲
+        """
+        turn_id = client.turn_id
+        await self._stop_filler(client)
+        self._cancel_playback_timer(client)
+
+        if client.task is not None and not client.task.done():
+            client.task.cancel()
+            try:
+                await client.task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        client.task = None
+
+        client.audio = None
+        client.expect_audio_bytes = 0
+        client.expect_audio_frames = 0
+
+        # 通知板子：上一轮作废，别再等它的 playback_done
+        await self.send_json(
+            client,
+            Envelope(
+                type=TURN_CANCELLED,
+                session_id=client.session_id,
+                turn_id=turn_id,
+                payload={"reason": reason},
+            ).to_dict(),
+        )
+
+        # 状态复位到 IDLE，随后 _on_recording_start 会转到 RECORDING
+        client.state.reset()
+        logger.info("已打断 turn=%s（%s），准备接受新录音", turn_id, reason)
+
+    async def _stop_filler(self, client: ClientSession) -> None:
+        """停止本轮填充音任务。
+
+        两种触发：正文已就绪（正常切换）、本轮失败/取消（丢弃）。
+        用 ``filler_cancel`` 通知任务自己退出，而不是直接 ``task.cancel()``——
+        后者会在任意 await 点抛出 CancelledError，可能让 send_audio 半途而废
+        留下不完整的帧；用事件让它在帧边界退出更干净。
+        """
+        if client.filler_cancel is not None:
+            client.filler_cancel.set()
+        task = client.filler_task
+        client.filler_task = None
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        client.filler_body_ready = None
+        client.filler_cancel = None
+        client.filler_session_open = False
+
+    async def _start_playback_session(
+        self,
+        client: ClientSession,
+        my_turn: str,
+        sample_rate: int,
+        *,
+        reason: str,
+    ) -> None:
+        """开始一个流式播放会话（发 playback_start，frames=0）。
+
+        ``reason="filler"`` 时进入 FILLER 状态（占位播放中，主流程继续）；
+        ``reason="body"`` 时进入 PLAYING 状态（正文播放，本轮即将结束）。
+        """
+        client.state.to(State.FILLER if reason == "filler" else State.PLAYING)
+        self._arm_playback_timer(client, my_turn, PLAYBACK_MAX_GUESS_S)
+        client.expect_audio_bytes = 0
+        client.expect_audio_frames = 0
+        await self.send_json(
+            client,
+            Envelope(
+                type=PLAYBACK_START,
+                session_id=client.session_id,
+                turn_id=my_turn,
+                seq=client.next_seq(),
+                payload={
+                    "sample_rate": sample_rate,
+                    "duration_s": 0,
+                    "bytes": 0,
+                    "frames": 0,
+                    "frame_bytes": 4096,
+                    "streaming": True,
+                },
+            ).to_dict(),
+        )
+        logger.info(
+            "流式播放开始 turn=%s 采样率=%d 原因=%s",
+            my_turn, sample_rate, reason,
+        )
+
+    async def _send_fillers(
+        self,
+        client: ClientSession,
+        my_turn: str,
+        *,
+        body_ready: asyncio.Event,
+        cancel: asyncio.Event,
+    ) -> tuple[int, int, int]:
+        """边播边补地发送填充音，直到正文就绪 / 取消 / 达上限。
+
+        「边播边补」是这里的关键设计：
+        服务端无法预知这一轮要等多久（LLM 和 TTS 耗时波动大），
+        所以不预判，而是一个接一个地发，正文一到立刻停。
+
+        这样：
+        - 等待短时不会多发（正文到了就停）
+        - 等待长时不会播空（没到就继续补）
+        - 有上限（MAX_FILLER_SECONDS）防止 LLM 卡死时变复读机
+
+        :return: (发出的填充音个数, 发出的字节数, 下一个可用 seq)
+                 第三个值必须是**实际用过的 seq + 1**，
+                 正文要从它接着排，否则板子会判乱序。
+        """
+        from ..tts.fillers import FillerSession
+
+        if self.fillers is None or not self.fillers.available:
+            return 0, 0, 0
+
+        session = FillerSession(self.fillers)
+        seq = 0
+        sent_bytes = 0
+        count = 0
+        step = 4096
+
+        while session.should_continue():
+            if body_ready.is_set() or cancel.is_set():
+                break
+            clip = session.next_clip()
+            if clip is None:
+                break
+            # 按帧切分下发（板子协议单帧上限 48KB）
+            for off in range(0, len(clip.pcm), step):
+                if body_ready.is_set() or cancel.is_set():
+                    # 正文到了：剩下的填充音立刻丢弃，让板子尽快切正文
+                    break
+                await self.send_audio(client, clip.pcm[off:off + step], seq)
+                seq += 1
+                sent_bytes += min(step, len(clip.pcm) - off)
+            count += 1
+            logger.debug(
+                "填充音 %s (%.2fs) 已发，累计 %.2fs，seq 到 %d",
+                clip.id, clip.duration_s, session.sent_seconds, seq,
+            )
+
+        return count, sent_bytes, seq
 
     # ------------------------------------------------------------------
     # 连接生命周期
@@ -489,13 +730,34 @@ class DialogueServer:
     async def _on_recording_start(
         self, client: ClientSession, msg: dict[str, Any]
     ) -> None:
-        # 半双工：处理中不接受新录音（V2 第九节）
+        # 半双工：处理中不接受新录音（V2 第九节）。
+        #
+        # 但 2026-11-12 起放开「打断」：正在播放（FILLER/PLAYING）时允许用户
+        # 再次按下说话，先取消当前轮再接受新录音。
+        # 用户明确要求允许打断——爱莉说长句时（实测可达 10 秒），
+        # 只能干等说完才能插话，体验很差。
+        #
+        # 只在「播放相关状态」放开：ASR/LLM/TTS 处理中仍拒绝，
+        # 因为那时代码正在使用 client.audio / client.task，
+        # 中途切换会破坏本轮数据的完整性（而且那几段通常只持续 1~2 秒）。
         if client.state.is_busy:
-            await self.send_error(
-                client, ErrorCode.TURN_BUSY,
-                f"当前状态 {client.state.state.value} 不接受新录音",
-            )
-            return
+            if client.state.state in (State.FILLER, State.PLAYING):
+                reason = (
+                    "filler_interrupt"
+                    if client.state.state == State.FILLER
+                    else "playback_interrupt"
+                )
+                logger.info(
+                    "用户打断 turn=%s state=%s，取消当前轮接受新录音",
+                    client.turn_id, client.state.state.value,
+                )
+                await self._interrupt_for_new_turn(client, reason=reason)
+            else:
+                await self.send_error(
+                    client, ErrorCode.TURN_BUSY,
+                    f"当前状态 {client.state.state.value} 不接受新录音",
+                )
+                return
 
         try:
             client.state.to(State.RECORDING)
@@ -634,7 +896,48 @@ class DialogueServer:
     async def _run_pipeline(
         self, client: ClientSession, my_turn: str, started: float
     ) -> None:
+        # ---- 填充音：先播「嗯…」再等正文 ----
+        #
+        # 2026-11-12 新增。用户从松手到听到正文要等约 2.3 秒
+        # （ASR 0.1s + LLM 0.8s + TTS 首块 1.5s），这段完全静默。
+        # 真人对答时会说「嗯…」「这个嘛…」，既填补空白又像在思考。
+        #
+        # 实现要点：
+        # 1. 填充音与正文**共用同一个 playback_start 会话**，
+        #    板子会把两段 PCM 当连续音频播，中间不会有播放状态切换。
+        # 2. 填充音在后台任务里「边播边补」，正文首块到达时置 body_ready，
+        #    填充音立刻停，后续 PCM 直接接上。
+        # 3. 延迟自适应：若历史平均延迟很短，跳过填充音（否则显得啰嗦）。
+        filler_count = 0
+        filler_bytes = 0
+        playback_session_open = False
+
+        if self._should_play_filler():
+            try:
+                await self._start_playback_session(
+                    client, my_turn, 24000, reason="filler"
+                )
+                playback_session_open = True
+                client.filler_session_open = True
+                client.filler_body_ready = asyncio.Event()
+                client.filler_cancel = asyncio.Event()
+                client.filler_task = asyncio.create_task(
+                    self._send_fillers(
+                        client, my_turn,
+                        body_ready=client.filler_body_ready,
+                        cancel=client.filler_cancel,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("填充音启动失败，继续正常流程: %s", exc)
+                client.filler_task = None
+                client.filler_body_ready = None
+                client.filler_cancel = None
+                client.filler_session_open = False
+                playback_session_open = False
+
         # ---- ASR ----
+        # 注意：填充音已把状态置为 FILLER，转换表允许 FILLER → ASR_PROCESSING。
         client.state.to(State.ASR_PROCESSING)
         audio = client.audio
         assert audio is not None
@@ -814,25 +1117,58 @@ class DialogueServer:
                 if not playback_started:
                     sample_rate = self.tts.last_stream_sample_rate or 24000
                     bytes_per_sec = sample_rate * 2
-                    client.state.to(State.PLAYING)
-                    self._arm_playback_timer(client, my_turn, PLAYBACK_MAX_GUESS_S)
-                    client.expect_audio_bytes = 0    # 流式下总长未知
-                    client.expect_audio_frames = 0
-                    await self.send_json(
-                        client,
-                        Envelope(
-                            type=PLAYBACK_START,
-                            session_id=client.session_id,
-                            turn_id=my_turn,
-                            seq=client.next_seq(),
-                            payload={
-                                "sample_rate": sample_rate,
-                                "duration_s": 0,
-                                "bytes": 0,
-                                "frames": 0,          # 0 = 流式，长度未知
-                                "frame_bytes": step,
-                                "streaming": True,
-                            },
+                    if playback_session_open:
+                        # 填充音已经开过播放会话：正文直接接在后面，
+                        # 只需把状态从 FILLER 切到 PLAYING，不再发 playback_start。
+                        # 这样板子缓冲里「填充音 + 正文」是连续音频，无缝衔接。
+                        if client.filler_body_ready is not None:
+                            client.filler_body_ready.set()
+                        if client.filler_task is not None:
+                            try:
+                                filler_count, filler_bytes, filler_seq = (
+                                    await client.filler_task
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug("填充音任务收尾异常: %s", exc)
+                                filler_seq = 0
+                            client.filler_task = None
+                        else:
+                            filler_seq = 0
+                        client.filler_session_open = False
+                        client.state.to(State.PLAYING)
+                        self._arm_playback_timer(
+                            client, my_turn, PLAYBACK_MAX_GUESS_S
+                        )
+                        # seq 必须接着填充音实际用过的号往后排，
+                        # 否则板子会判乱序（实测曾在 46 -> 43 处跳变）。
+                        seq = filler_seq
+                        logger.info(
+                            "正文接入填充音会话 turn=%s 填充音=%d 个 "
+                            "填充字节=%d 接续帧号=%d",
+                            my_turn, filler_count, filler_bytes, seq,
+                        )
+                    else:
+                        client.state.to(State.PLAYING)
+                        self._arm_playback_timer(
+                            client, my_turn, PLAYBACK_MAX_GUESS_S
+                        )
+                        client.expect_audio_bytes = 0    # 流式下总长未知
+                        client.expect_audio_frames = 0
+                        await self.send_json(
+                            client,
+                            Envelope(
+                                type=PLAYBACK_START,
+                                session_id=client.session_id,
+                                turn_id=my_turn,
+                                seq=client.next_seq(),
+                                payload={
+                                    "sample_rate": sample_rate,
+                                    "duration_s": 0,
+                                    "bytes": 0,
+                                    "frames": 0,          # 0 = 流式，长度未知
+                                    "frame_bytes": step,
+                                    "streaming": True,
+                                },
                         ).to_dict(),
                     )
                     play_start = time.perf_counter()
@@ -908,6 +1244,9 @@ class DialogueServer:
     async def _finish_turn(self, client: ClientSession, *, reason: str) -> None:
         """结束一轮，回到 IDLE（V2 第十二节第 9 条）。"""
         turn_id = client.turn_id
+        # 先停填充音：否则它会在后台继续发音频帧，
+        # 与本轮的 turn_done / 下一轮的音频混在一起。
+        await self._stop_filler(client)
         # 收尾时撤掉看门狗。注意看门狗自己也会调用本函数，
         # 此时不能 cancel 当前任务（会给自己抛 CancelledError）。
         timer = client.playback_timer

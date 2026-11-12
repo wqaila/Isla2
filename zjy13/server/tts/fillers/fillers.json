@@ -1,0 +1,29 @@
+{
+  "sample_rate": 24000,
+  "items": [
+    {
+      "id": "um",
+      "text": "嗯…",
+      "desc": "通用思考，最中性",
+      "file": "filler_um.pcm",
+      "samples": 16898,
+      "duration_s": 0.704
+    },
+    {
+      "id": "zhege",
+      "text": "这个嘛…",
+      "desc": "需要斟酌",
+      "file": "filler_zhege.pcm",
+      "samples": 18565,
+      "duration_s": 0.774
+    },
+    {
+      "id": "wu",
+      "text": "唔…",
+      "desc": "有点为难",
+      "file": "filler_wu.pcm",
+      "samples": 16552,
+      "duration_s": 0.69
+    }
+  ]
+}

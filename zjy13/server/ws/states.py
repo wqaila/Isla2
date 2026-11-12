@@ -23,6 +23,12 @@ class State(str, Enum):
     ASR_PROCESSING = "asr_processing"
     LLM_PROCESSING = "llm_processing"
     TTS_PROCESSING = "tts_processing"
+    #: 正在播填充音（「嗯…」等语气词），同时后台在跑 ASR/LLM/TTS。
+    #:
+    #: 与 PLAYING 区分开的原因：PLAYING 表示「正在播正文，本轮即将结束」，
+    #: 而 FILLER 表示「还在处理，只是先用语气词占位」——
+    #: 两者允许的后续转换完全不同（FILLER 必须能继续转 ASR_PROCESSING）。
+    FILLER = "filler"
     PLAYING = "playing"
     ERROR = "error"
 
@@ -30,10 +36,22 @@ class State(str, Enum):
 #: 合法转换表：当前状态 → 允许进入的状态集合
 _TRANSITIONS: dict[State, frozenset[State]] = {
     State.IDLE: frozenset({State.RECORDING, State.ERROR}),
-    State.RECORDING: frozenset({State.ASR_PROCESSING, State.IDLE, State.ERROR}),
+    State.RECORDING: frozenset({
+        State.ASR_PROCESSING, State.FILLER, State.IDLE, State.ERROR,
+    }),
     State.ASR_PROCESSING: frozenset({State.LLM_PROCESSING, State.IDLE, State.ERROR}),
     State.LLM_PROCESSING: frozenset({State.TTS_PROCESSING, State.IDLE, State.ERROR}),
     State.TTS_PROCESSING: frozenset({State.PLAYING, State.IDLE, State.ERROR}),
+    # FILLER 是「占位播放中」：主流程继续往前走（ASR → LLM → TTS），
+    # 任一阶段失败都要能直接回 IDLE。
+    State.FILLER: frozenset({
+        State.ASR_PROCESSING,
+        State.LLM_PROCESSING,
+        State.TTS_PROCESSING,
+        State.PLAYING,
+        State.IDLE,
+        State.ERROR,
+    }),
     State.PLAYING: frozenset({State.IDLE, State.ERROR}),
     # ERROR 必须能回到 IDLE，否则会永久卡住
     State.ERROR: frozenset({State.IDLE}),
@@ -45,6 +63,7 @@ BUSY_STATES: frozenset[State] = frozenset({
     State.ASR_PROCESSING,
     State.LLM_PROCESSING,
     State.TTS_PROCESSING,
+    State.FILLER,
     State.PLAYING,
 })
 
