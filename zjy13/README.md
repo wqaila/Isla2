@@ -254,7 +254,7 @@ curl http://127.0.0.1:50000/health
 .\.venv-asr\Scripts\python.exe -m pytest tests -q
 ```
 
-实测：**`.venv` 420 passed**，**`.venv-asr` 430 passed**。
+实测：**`.venv` 432 passed**，**`.venv-asr` 442 passed**。
 
 > `conftest.py` 会在缺少 torch 时自动跳过 ASR 引擎测试，
 > 因此两个环境都能用一条命令跑完，不会在收集阶段中断。
@@ -484,7 +484,7 @@ zjy13/
 │  ├─ ws_client_sim.py          # WebSocket 协议模拟器
 │  ├─ fw_protocol_equiv.py      # 固件字节级协议等价验证
 │  └─ ...
-├─ tests/                       # 420 + 430 个测试
+├─ tests/                       # 432 + 442 个测试
 ├─ docs/                        # 28 篇技术文档
 └─ backup/esp32/                # 原厂固件备份（16MB，3 份副本）
 ```

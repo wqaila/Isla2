@@ -111,25 +111,73 @@ static uint32_t request_next_action(void)
     portEXIT_CRITICAL(&request_mux);
     return selected;
 }
-static void on_touch(lv_event_t *event)
+/* 触摸说话：**按下即开始录音，松手发送**（2026-11-12 改造）
+ *
+ * 改造前用 LV_EVENT_LONG_PRESSED 作为录音起点，而该事件是在**按住满 300ms
+ * 时**才触发一次，导致录音起点比手指按下晚 300ms。用户按 400ms 就松手，
+ * 实际只录到约 100ms，服务端直接报 asr_failed: 音频过短。
+ * 串口实录：长按说话 -> 松开发送 只隔 154ms，录到 0.080s。
+ *
+ * 现在改为 LV_EVENT_PRESSED（按下瞬间）开始录音，并用一个「短按」判定：
+ * 松手时若总按住时长 < SHORT_PRESS_MS，则取消本轮录音并当作短按切动画。
+ * 这样既保证了录音窗口 = 完整按住时长，又保住了短按切动画的功能。
+ */
+static uint32_t s_press_tick;        /* 按下的时刻（FreeRTOS tick） */
+static bool     s_press_recording;   /* 本次按下是否已开始录音 */
+
+#define SHORT_PRESS_MS  300          /* 低于此时长视为短按（切动画） */
+
+static void on_voice_press(lv_event_t *event)
 {
     (void)event;
-    ++touch_count;
-    uint32_t selected = request_next_action();
-    if (selected != BADGE_NO_ACTION) ESP_LOGI(TAG,"Touch -> queued %s",clips[selected].name);
-}
-/* 长按屏幕说话、松开发送：短按仍走上面的动画逻辑，不会误触录音 */
-static void on_voice_hold(lv_event_t *event)
-{
-    (void)event;
-    if (!voice_connected()) { ESP_LOGW(TAG,"语音未连接服务端（发 VOICE <ip> 连接）"); return; }
+    s_press_tick = xTaskGetTickCount();
+    s_press_recording = false;
+
+    if (!voice_connected()) {
+        ESP_LOGW(TAG, "语音未连接服务端（发 VOICE <ip> 连接）");
+        return;
+    }
     esp_err_t r = voice_talk_start();
-    ESP_LOGI(TAG,"长按说话 -> start=%d",(int)r);
+    s_press_recording = (r == ESP_OK);
+    ESP_LOGI(TAG, "按下说话 -> start=%d", (int)r);
 }
+
 static void on_voice_release(lv_event_t *event)
 {
     (void)event;
-    if (voice_talk_stop() == ESP_OK) ESP_LOGI(TAG,"松开发送");
+    const uint32_t held_ms =
+        (uint32_t)((xTaskGetTickCount() - s_press_tick) * portTICK_PERIOD_MS);
+
+    if (!s_press_recording) {
+        /* 按下时没能开始录音（未连接等），只按短按处理 */
+        if (held_ms < SHORT_PRESS_MS) {
+            ++touch_count;
+            uint32_t selected = request_next_action();
+            if (selected != BADGE_NO_ACTION) {
+                ESP_LOGI(TAG, "Touch -> queued %s", clips[selected].name);
+            }
+        }
+        return;
+    }
+
+    s_press_recording = false;
+
+    if (held_ms < SHORT_PRESS_MS) {
+        /* 短按：取消录音，改为切动画。
+         * voice_talk_stop 内部有最短时长保护，会本地取消并通知服务端。 */
+        ESP_LOGI(TAG, "短按 %ums -> 取消录音，切动画", (unsigned)held_ms);
+        voice_talk_stop();
+        ++touch_count;
+        uint32_t selected = request_next_action();
+        if (selected != BADGE_NO_ACTION) {
+            ESP_LOGI(TAG, "Touch -> queued %s", clips[selected].name);
+        }
+        return;
+    }
+
+    if (voice_talk_stop() == ESP_OK) {
+        ESP_LOGI(TAG, "松开发送（按住 %ums）", (unsigned)held_ms);
+    }
 }
 static void print_status(void)
 {
@@ -446,15 +494,16 @@ void app_main(void)
     lv_obj_t *screen=lv_screen_active();
     lv_obj_set_style_bg_color(screen,lv_color_hex(0xFFF0F5),0);
     lv_obj_remove_flag(screen,LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(screen,on_touch,LV_EVENT_CLICKED,NULL);
-    lv_obj_add_event_cb(screen,on_voice_hold,LV_EVENT_LONG_PRESSED,NULL);
-    lv_obj_add_event_cb(screen,on_voice_release,LV_EVENT_RELEASED,NULL);
-    /* 长按阈值：LVGL 默认 400ms 偏长，按住说话要等太久。
-     * 缩到 300ms——仍能区分"短按切换动画"与"长按说话"，但响应更跟手。
-     * 注意别设太小（<250ms 时短按容易误判成长按，导致误触发录音）。 */
-    for (lv_indev_t *indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
-        lv_indev_set_long_press_time(indev, 300);
-    }
+    /* 触摸交互（2026-11-12 改造）：
+     *   PRESSED  按下瞬间 -> 开始录音（不再等 300ms 长按阈值）
+     *   RELEASED 松手     -> 停止录音；若按住不足 SHORT_PRESS_MS 则取消录音并切动画
+     *
+     * 不再注册 CLICKED / LONG_PRESSED：
+     *   - CLICKED 会在 release 之后额外触发一次，与上面的短按判定重复切动画
+     *   - LONG_PRESSED 在按住满 300ms 才触发，正是原来录音窗口少 300ms 的根因
+     */
+    lv_obj_add_event_cb(screen, on_voice_press,   LV_EVENT_PRESSED,  NULL);
+    lv_obj_add_event_cb(screen, on_voice_release, LV_EVENT_RELEASED, NULL);
     badge_scene_init(background);
     bsp_display_unlock();
     badge_dashboard_start(); badge_imu_start();

@@ -1,13 +1,16 @@
 # 板子与固件缺陷排查（2026-11-12）
 
 > 排查方式：读真实串口日志 + 静态代码审查 + 服务端对照
-> 当前状态：固件已烧录（8.5MB / 9MB 分区，余 0.5MB），服务端在跑，
+> 当前状态：固件已烧录（8.7MB / 9MB 分区，余 6%），服务端在跑，
 > 板子已连上 WiFi 与服务端（`BADGE_VOICE_PING {"conn":1}`）
 > 结论：**能演示，但有 1 个高频致命缺陷 + 6 个功能性缺口 + 若干硬件天花板**
+>
+> **2026-11-12 更新**：P0「长按说话录不到音」**已修复并烧录**（方案 A + B 都做了），
+> 详见第七节。其余缺口仍未动。
 
 ---
 
-## 一、致命缺陷：长按说话很容易录不到声音
+## 一、致命缺陷：长按说话很容易录不到声音 ✅ 已修复
 
 ### 现象（串口实录）
 
@@ -63,6 +66,8 @@ lv_obj_add_event_cb(screen, on_voice_release, LV_EVENT_RELEASED, NULL);  // 松�
 并提示「按住说话久一点」。用户至少能得到明确反馈，不再看到服务端错误。
 
 **方案 C：两者都做** —— A 解决体验，B 兜底异常。
+
+> **实际采用：方案 C（A + B 都做了）**，见第七节。
 
 ---
 
@@ -204,3 +209,109 @@ I (935908) wifi:connected with Isla2Badge
 用户体感就是「有时候说话没反应」，且复现概率取决于按住时长。
 
 建议下一步优先做 P0 两项，再考虑打断与鉴权。
+
+---
+
+## 七、P0 修复记录（2026-11-12 当天完成）
+
+### 改了什么
+
+**方案 A：按下即录音（`main.c`）**
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 录音起点 | `LV_EVENT_LONG_PRESSED`（按住 300ms 后） | `LV_EVENT_PRESSED`（按下瞬间） |
+| 短按处理 | `LV_EVENT_CLICKED` 单独回调 | 在 `RELEASED` 里按按住时长判定 |
+| 长按阈值 | `lv_indev_set_long_press_time(300)` | 移除（不再需要） |
+
+新增 `SHORT_PRESS_MS = 300` 与 `s_press_tick`：
+
+```c
+static void on_voice_press(lv_event_t *event) {
+    s_press_tick = xTaskGetTickCount();
+    voice_talk_start();            // 按下就开始录
+}
+
+static void on_voice_release(lv_event_t *event) {
+    uint32_t held = (xTaskGetTickCount() - s_press_tick) * portTICK_PERIOD_MS;
+    if (held < SHORT_PRESS_MS) {
+        voice_talk_stop();         // 取消录音
+        request_next_action();     // 并切动画
+        return;
+    }
+    voice_talk_stop();             // 正常发送
+}
+```
+
+**关键**：同时**移除了 `LV_EVENT_CLICKED`** 的注册。否则短按会在
+`RELEASED` 之后再触发一次 `CLICKED`，导致动画连跳两帧。
+
+**方案 B：最短时长保护（`voice_client.c`）**
+
+新增 `MIN_TALK_MS = 350`（服务端下限 200ms + 150ms 余量）：
+
+```c
+if (s_record_start_us != 0 && elapsed_ms < MIN_TALK_MS) {
+    ESP_LOGW(TAG, "录音仅 %ums（< %dms），已本地取消本轮。按住说话请久一点", ...);
+    send_text("{\"type\":\"cancel\",...}");   // 不是 recording_stop
+    s_state = ST_IDLE;
+    return ESP_ERR_INVALID_SIZE;
+}
+```
+
+时间戳 `s_record_start_us` 记在 `record_loop` 里（而非 `voice_talk_start`），
+因为后者只是发出 `recording_start`，还要等 `session_start` 回来才真正开读，
+两者差几十毫秒，用错会让时长判定偏乐观。
+
+### 验证
+
+**端到端（模拟固件行为，真实 TTS）**：
+
+```
+[路径 A] 短按（录音 0.1s → 固件应发 cancel）
+  ✓ 收到 turn_cancelled (reason=client_cancel)
+
+[路径 B] 正常按住 1.5s → 应走完 ASR→LLM→TTS
+  playback_start @ 1580ms  frames=0
+  ✓ 结束标记收到，音频 101760 字节 (2.12s)
+  ✓ turn_done，链路闭环
+
+路径 A（短按取消）: PASS
+路径 B（正常说话）: PASS
+```
+
+对比修复前：短按会收到 `asr_failed: 音频过短（0.080s < 0.2s）`，
+现在是干净的 `turn_cancelled`。
+
+**编译与烧录**：
+
+```
+ai_pet_badge.bin binary size 0x87eeb0 bytes (8.7 MB)，分区余 6%
+Project build complete.
+Wrote 8908464 bytes at 0x00020000 in 53.7 seconds
+Hash of data verified.
+```
+
+**测试**：`.venv` **432** / `.venv-asr` **442** passed，
+新增 `tests/test_voice_touch_fix.py`（12 个用例）。
+
+### 写测试时踩到的坑（记录一下）
+
+用 Python 检查 C 源码时有两个陷阱：
+
+1. **C 注释里的 `{` `}` 会破坏大括号配对** —— 按配对切函数体会切错
+2. **C 字符串字面量是转义形式** —— 源码里是 `\"cancel\"` 而不是 `"cancel"`，
+   直接按后者查找会 `ValueError`
+
+最终改为「全文范围内检查 `\"cancel\"` 出现在 `recording_stop` 之前，
+且两者之间有 `return`」，简单可靠。
+
+### 仍需你上板确认
+
+我验证的是「服务端收到的行为正确」，但**真实手感要你按一下**：
+
+| 项 | 期望 |
+|---|---|
+| 短按（<300ms） | 切动画，不录音，串口出现 `短按 xxxms -> 取消录音，切动画` |
+| 按住 1 秒 | 正常说话并听到回复，串口出现 `松开发送（按住 xxxxms）` |
+| 按住 1.5 秒以上 | 同上，识别更完整 |

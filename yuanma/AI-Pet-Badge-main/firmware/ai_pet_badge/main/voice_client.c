@@ -15,6 +15,7 @@
 #include "esp_codec_dev.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -61,6 +62,18 @@ static const char *TAG = "voice";
 
 /* 单轮音频上限 60 秒 */
 #define MAX_TURN_SECONDS   60
+
+/* 最短有效录音时长（毫秒）。
+ *
+ * 为什么需要：LVGL 的 LV_EVENT_LONG_PRESSED 在**按住满 300ms 时才触发**，
+ * 录音起点比手指按下晚 300ms。用户按 400ms 就松手 → 只录到约 100ms，
+ * 而服务端 ASR 要求 ≥200ms，会直接报 asr_failed: 音频过短。
+ *
+ * 取 350ms 的理由：
+ *   - 服务端下限 200ms，留 150ms 余量吸收线程调度与首块延迟
+ *   - 中文说 2~3 个字约 400~600ms，350ms 不会误伤正常短句
+ *   - 低于 350ms 的录音即使送上去，识别结果也基本是噪声 */
+#define MIN_TALK_MS        350
 
 /* 心跳间隔：协议规定 20 秒；服务端 30 秒无消息即断开连接 */
 #define APP_VOICE_HEARTBEAT_MS  20000
@@ -149,6 +162,10 @@ static volatile bool s_play_draining;   /* 收到最后一帧，等待缓冲排�
 static volatile bool s_got_end_marker;
 /* 播放任务的空闲计数：用于流式模式下检测「服务端中途断流」 */
 static uint32_t s_idle_ticks;
+/* 本轮录音真正开始的时刻（us，esp_timer）。
+ * 用于最短时长保护：LVGL 长按事件在按住 300ms 后才触发，
+ * 若用户很快松手，实际录音窗口可能只有几十毫秒。 */
+static int64_t s_record_start_us;
 
 /* 音频设备句柄 */
 static esp_codec_dev_handle_t s_mic;
@@ -296,6 +313,12 @@ static void record_loop(void *arg)
     uint32_t sent = 0;
     const uint32_t max_bytes = (uint32_t)MIC_SAMPLE_RATE * MIC_CHANNELS * 2 *
                                MAX_TURN_SECONDS;
+
+    /* 记录「真正能开始读麦克风」的时刻。
+     * 注意不能用 voice_talk_start 的时刻：那时只是发出了 recording_start，
+     * 还要等 session_start 回来才启动本任务，中间有几十毫秒。
+     * 用这个时间戳算录音时长才准确。 */
+    s_record_start_us = esp_timer_get_time();
 
     while (s_state == ST_RECORDING && s_connected && !s_talk_stop_requested) {
         if (esp_codec_dev_read(s_mic, s_mic_buf, CHUNK_BYTES) != ESP_OK) {
@@ -963,6 +986,40 @@ esp_err_t voice_talk_stop(void)
     if (s_state != ST_RECORDING && !s_talk_requested) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* 最短时长保护（2026-11-12 新增）。
+     *
+     * 问题：LVGL 的 LV_EVENT_LONG_PRESSED 在**按住满 300ms 时才触发**，
+     * 也就是录音起点比手指按下晚 300ms。用户按 400ms 就松手的话，
+     * 真正能录到的只有 100ms 左右，而服务端 ASR 要求 ≥0.2s，
+     * 直接报 asr_failed: 音频过短，用户体感就是「说话没反应」。
+     *
+     * 串口实录（修复前）：
+     *   I (12118) 长按说话 -> start=0
+     *   I (12272) 松开发送              ← 只隔 154ms
+     *   E (12310) asr_failed: 音频过短（0.080s < 0.2s）
+     *
+     * 处理：录到的时长不足 MIN_TALK_MS 时，本地取消本轮，不发 recording_stop。
+     * 让服务端那轮自然超时/由 cancel 收尾，用户在屏幕和串口都能看到原因，
+     * 而不是收到一个看不懂的服务端错误。 */
+    const uint32_t elapsed_ms =
+        (uint32_t)((esp_timer_get_time() - s_record_start_us) / 1000);
+    if (s_record_start_us != 0 && elapsed_ms < MIN_TALK_MS) {
+        ESP_LOGW(TAG, "录音仅 %ums（< %dms），已本地取消本轮。按住说话请久一点",
+                 (unsigned)elapsed_ms, (int)MIN_TALK_MS);
+        s_talk_stop_requested = true;
+        s_talk_requested = false;
+        /* 通知服务端作废本轮，避免它等 playback_done 白等到超时 */
+        char cancel[JSON_BUF];
+        snprintf(cancel, sizeof(cancel),
+                 "{\"type\":\"cancel\",\"protocol_version\":%d,\"turn_id\":\"%s\"}",
+                 PROTO_VERSION, s_turn_id);
+        send_text(cancel);
+        s_state = ST_IDLE;
+        badge_dashboard_voice(2);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     s_talk_stop_requested = true;
     s_talk_requested = false;
 
@@ -970,7 +1027,7 @@ esp_err_t voice_talk_stop(void)
     snprintf(buf, sizeof(buf),
              "{\"type\":\"recording_stop\",\"protocol_version\":%d}", PROTO_VERSION);
     send_text(buf);
-    ESP_LOGI(TAG, "停止录音");
+    ESP_LOGI(TAG, "停止录音（已录 %ums）", (unsigned)elapsed_ms);
     return ESP_OK;
 }
 
