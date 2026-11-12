@@ -76,6 +76,11 @@ class LLMClient:
         # 当前进行中的请求任务，供 cancel() 使用
         self._current_task: asyncio.Task[Any] | None = None
         self._cancel_event = asyncio.Event()
+        # 代理回退状态：
+        #   None  = 还没遇到过连接失败，按配置走
+        #   True  = 已确认代理不可用，后续一律直连
+        #   False = 已确认代理可用（本进程内不再试探）
+        self._proxy_broken: bool | None = None
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -98,6 +103,9 @@ class LLMClient:
                 pool=cfg.connect_timeout_s,
             )
             proxy = str(getattr(cfg, "proxy", "") or "")
+            # 代理已确认不可用时改用直连（见 _switch_to_direct）
+            if self._proxy_broken:
+                proxy = ""
             self._client = httpx.AsyncClient(
                 timeout=timeout,
                 transport=self._transport,
@@ -112,6 +120,29 @@ class LLMClient:
                 proxy=proxy or None,
             )
         return self._client
+
+    async def _switch_to_direct(self) -> None:
+        """放弃代理，改用直连。
+
+        为什么要这个（2026-11-12）：
+        ``LLM_PROXY`` 指向本地 Clash（127.0.0.1:7897），但 Clash 不一定开着。
+        没开时每个请求都 ``ConnectError``，重试 3 次全失败，用户只看到
+        ``network_error``；而实测 DeepSeek 此时**能直连**，等于白白失败。
+
+        做法：首次遇到「连接失败」就把 ``_proxy_broken`` 置真、丢弃旧 client，
+        下一次重试会用直连重建。标记是粘性的——既然代理连不上，
+        后续轮次不再浪费一次尝试去试探它。
+        """
+        if self._proxy_broken:
+            return
+        self._proxy_broken = True
+        logger.warning(
+            "代理 %s 连接失败，已自动切换直连（可用 LLM_PROXY_FALLBACK=false 关闭此行为）",
+            getattr(self._config, "proxy", "") or "(未配置)",
+        )
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     async def aclose(self) -> None:
         if self._client is not None and not self._client.is_closed:
@@ -234,8 +265,13 @@ class LLMClient:
         cfg = self._config
         max_attempts = max(1, int(cfg.max_attempts))
         last_error: LLMError | None = None
+        # 代理回退会额外消耗一次循环：max_attempts=3 时若首次就撞上代理不通，
+        # 剩下 2 次里要留 1 次给直连。因此这里给循环多留 1 次余量，
+        # 但「真正的重试次数」仍以 max_attempts 为准（见下方 retries_done）。
+        max_loops = max_attempts + 1
+        retries_done = 0
 
-        for attempt in range(1, max_attempts + 1):
+        for attempt in range(1, max_loops + 1):
             if cancel_event.is_set():
                 raise LLMCancelledError("本轮已被取消")
 
@@ -266,11 +302,11 @@ class LLMClient:
                     started=started,
                     cancel_event=cancel_event,
                 )
-                result.attempts = attempt
+                result.attempts = retries_done + 1
                 logger.info(
                     "llm ok turn=%s attempt=%d first_token_ms=%s total_ms=%.1f chars=%d",
                     turn_key,
-                    attempt,
+                    retries_done + 1,
                     result.summary()["first_token_ms"],
                     result.total_ms,
                     len(result.text),
@@ -280,10 +316,11 @@ class LLMClient:
                 raise
             except LLMError as exc:
                 last_error = exc
+                retries_done += 1
                 logger.warning(
                     "llm error turn=%s attempt=%d/%d code=%s status=%s msg=%s",
                     turn_key,
-                    attempt,
+                    retries_done,
                     max_attempts,
                     exc.code,
                     exc.status_code,
@@ -295,7 +332,26 @@ class LLMClient:
                         f"流式输出中途失败（已输出部分内容，不再重试）: {exc.message}",
                         status_code=exc.status_code,
                     ) from exc
-                if not exc.retryable or attempt >= max_attempts:
+
+                # 代理连不上 → 切直连后立刻重试，不占用正常的退避等待。
+                # 只在「网络类连接失败」时触发；鉴权/限流等错误不回退，
+                # 因为换个线路也一样会失败，白白多打一次请求。
+                # 注意：这种情况不消耗 max_attempts 配额，只是多跑一轮循环。
+                if (
+                    getattr(cfg, "proxy_fallback", True)
+                    and cfg.proxy
+                    and not self._proxy_broken
+                    and exc.code == "network_error"
+                    and "ConnectError" in (exc.message or "")
+                ):
+                    await self._switch_to_direct()
+                    retries_done -= 1      # 不算一次真正的重试
+                    logger.info(
+                        "llm retry turn=%s 立即改用直连重试", turn_key
+                    )
+                    continue
+
+                if not exc.retryable or retries_done >= max_attempts:
                     raise
 
                 delay = self._backoff_delay(attempt, exc.retry_after_s)

@@ -107,6 +107,14 @@ class LLMConfig:
     # HTTP 代理。默认空表示直连（trust_env=False，不读系统代理）。
     # 需要走代理时显式配置，例如 http://127.0.0.1:7897
     proxy: str = ""
+    #: 代理连不上时是否自动回退直连。
+    #:
+    #: 背景（2026-11-12）：LLM_PROXY 指向本地 Clash，但 Clash 不一定开着。
+    #: 没开时每次请求都 ConnectError，重试 3 次全失败，用户只看到 network_error。
+    #: 而实测 DeepSeek 多数时候能直连，等于白白失败。
+    #: 开启后：代理连不上 → 自动改直连重试一次，并把可用线路记住（本进程内）。
+    #: 关掉则保持旧行为（严格按 LLM_PROXY，适合"必须走代理"的合规环境）。
+    proxy_fallback: bool = True
 
     # ---- 构造 ----
 
@@ -130,6 +138,7 @@ class LLMConfig:
             stream_include_usage=_env_bool("LLM_STREAM_INCLUDE_USAGE", False),
             thinking=_env_str("LLM_THINKING", "default") or "default",
             proxy=_env_str("LLM_PROXY", ""),
+            proxy_fallback=_env_bool("LLM_PROXY_FALLBACK", True),
         )
 
     # ---- 校验 ----
