@@ -787,6 +787,14 @@ class DialogueServer:
         play_start = 0.0
         bytes_per_sec = sample_rate * 2
         lead_sec = 0.8
+        # 首块不受 lead_sec 限制，一次发够「预缓冲 + 余量」。
+        #
+        # 为什么（2026-11-12）：固件加了 120ms 预缓冲，攒够才开始写 codec。
+        # 若服务端还按 lead_sec 节流，首块可能只发出几十毫秒音频，
+        # 板子就一直等不满预缓冲 —— 表现为"更晚才出声"，反而更差。
+        # 这里让首块至少发够 FIRST_BURST_MS，让板子立刻能开播。
+        FIRST_BURST_MS = 300
+        first_burst_bytes = sample_rate * 2 * FIRST_BURST_MS // 1000
         first_pcm_ms: float | None = None
         tts_started = time.perf_counter()
 
@@ -834,14 +842,20 @@ class DialogueServer:
                         my_turn, first_pcm_ms, sample_rate,
                     )
 
-                # 按块切帧下发，并按播放进度节流（防长音频灌爆热点链路）
+                # 按块切帧下发，并按播放进度节流（防长音频灌爆热点链路）。
+                # 首块特殊处理：不节流，一次发够 first_burst_bytes，
+                # 让板子能立刻攒满预缓冲并开播（否则会等不满而延后出声）。
                 for off in range(0, len(pcm_chunk), step):
                     piece = pcm_chunk[off:off + step]
-                    played_sec = time.perf_counter() - play_start
-                    sent_sec = (sent_bytes + len(piece)) / bytes_per_sec
-                    ahead = sent_sec - played_sec
-                    if ahead > lead_sec:
-                        await asyncio.sleep(ahead - lead_sec)
+                    if sent_bytes < first_burst_bytes:
+                        # 首块阶段：直接发，不 sleep
+                        pass
+                    else:
+                        played_sec = time.perf_counter() - play_start
+                        sent_sec = (sent_bytes + len(piece)) / bytes_per_sec
+                        ahead = sent_sec - played_sec
+                        if ahead > lead_sec:
+                            await asyncio.sleep(ahead - lead_sec)
                     await self.send_audio(client, piece, seq)
                     seq += 1
                     sent_bytes += len(piece)

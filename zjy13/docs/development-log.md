@@ -289,8 +289,8 @@ self.token_hop_len = min(self.token_max_hop_len, self.token_hop_len * self.strea
 
 | 环境 | 测试数 | 覆盖内容 |
 | --- | --- | --- |
-| `.venv`（LLM+TTS+WS+音色） | **441** | 配置/适配器/客户端/角色卡/会话/守卫/文本处理/TTS 客户端/协议/音频/音色/状态机/WS 主流程/配置模板/TTS 参数 |
-| `.venv-asr`（全量，含 ASR） | **451** | 上述全部 + ASR 音频格式/重采样/规范化/引擎/架构校验 |
+| `.venv`（LLM+TTS+WS+音色） | **450** | 配置/适配器/客户端/角色卡/会话/守卫/文本处理/TTS 客户端/协议/音频/音色/状态机/WS 主流程/配置模板/TTS 参数 |
+| `.venv-asr`（全量，含 ASR） | **460** | 上述全部 + ASR 音频格式/重采样/规范化/引擎/架构校验 |
 
 > 两个环境都能用一条命令跑完：`conftest.py` 在缺少 torch 时自动跳过
 > `test_asr_engine.py`，不会在收集阶段整体中断（历史上曾因缺 numpy 中断）。
@@ -463,10 +463,10 @@ $env:PYTHONUTF8="1"
 
 ```powershell
 # 全部测试（conftest 会自动跳过缺 torch 的 ASR 测试）
-.\.venv\Scripts\python.exe -m pytest tests -q          # 441 passed
+.\.venv\Scripts\python.exe -m pytest tests -q          # 450 passed
 
 # 含 ASR 引擎测试
-.\.venv-asr\Scripts\python.exe -m pytest tests -q      # 451 passed
+.\.venv-asr\Scripts\python.exe -m pytest tests -q      # 460 passed
 ```
 
 ---

@@ -75,6 +75,18 @@ static const char *TAG = "voice";
  *   - 低于 350ms 的录音即使送上去，识别结果也基本是噪声 */
 #define MIN_TALK_MS        350
 
+/* 播放预缓冲（毫秒）。开播前先攒够这么多音频再写 codec。
+ *
+ * 为什么需要（2026-11-12）：流式下发下，首块音频到达时缓冲里只有一小段，
+ * 原实现「有数据就立刻写」会立刻播空，然后 vTaskDelay(10ms) 等下一帧，
+ * 用户听到的就是"刚开始播放卡一下"。
+ *
+ * 取 120ms 的依据：
+ *   - 24k 下 120ms = 2880 采样，足够覆盖一次网络抖动 + 任务调度
+ *   - 太小（40ms）挡不住 10ms 的轮询空档
+ *   - 太大会增加首字延迟；用户明确要求低延迟，不能回退太多 */
+#define PREBUF_MS          120
+
 /* 心跳间隔：协议规定 20 秒；服务端 30 秒无消息即断开连接 */
 #define APP_VOICE_HEARTBEAT_MS  20000
 
@@ -162,6 +174,9 @@ static volatile bool s_play_draining;   /* 收到最后一帧，等待缓冲排�
 static volatile bool s_got_end_marker;
 /* 播放任务的空闲计数：用于流式模式下检测「服务端中途断流」 */
 static uint32_t s_idle_ticks;
+/* 预缓冲是否已完成（每轮播放开始时由 handle_playback_start 复位）。
+ * 播放任务是常驻的，用静态变量才能跨轮次正确重置。 */
+static volatile bool s_prebuf_done;
 /* 本轮录音真正开始的时刻（us，esp_timer）。
  * 用于最短时长保护：LVGL 长按事件在按住 300ms 后才触发，
  * 若用户很快松手，实际录音窗口可能只有几十毫秒。 */
@@ -481,6 +496,9 @@ static void handle_playback_start(const char *json)
     s_playing = true;
     s_play_draining = false;
     s_got_end_marker = false;
+    /* 复位预缓冲：本轮开播前要重新攒够 PREBUF_MS 音频 */
+    s_prebuf_done = false;
+    s_idle_ticks = 0;
 
     /* 清空缓冲 */
     if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
@@ -534,11 +552,35 @@ static void play_task(void *arg)
     /* 每次最多取 1024 采样；原先按 SPK_DEV_RATE*2/4 开，白占 16KB 内部 RAM */
     static int16_t out_buf[1024];
 
+    /* 预缓冲（2026-11-12 新增，修复"刚开始播放卡一下"）。
+     *
+     * 问题：原实现只要缓冲里有 1 个采样就立刻写 codec。流式下发下
+     * 首块音频到达时缓冲里只有一小段，写出去立刻播空，
+     * 然后 vTaskDelay(10ms) 等下一帧 —— 这 10ms 空档就是听到的卡顿。
+     *
+     * 修法：开播前先攒够 PREBUF_MS（120ms）音频再开始写。
+     *
+     * 状态放在静态变量 s_prebuf_done 里，由 handle_playback_start 复位：
+     * play_task 是常驻任务，局部变量跨轮次不会重置。 */
+    const size_t prebuf_need = (size_t)SPK_SAMPLE_RATE / 1000 * PREBUF_MS;   /* 采样数 */
+
     while (true) {
         /* 取数据 */
         size_t avail = 0;
         if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
         avail = s_play_count;
+
+        /* 开播前预缓冲：不够就先不取，让网络回调继续填。
+         * 若已收到结束标记（极短音频）则直接放行，避免死等。 */
+        if (!s_prebuf_done) {
+            if (avail < prebuf_need && !s_play_draining) {
+                if (s_play_mutex) xSemaphoreGive(s_play_mutex);
+                vTaskDelay(pdMS_TO_TICKS(5));
+                continue;
+            }
+            s_prebuf_done = true;
+        }
+
         if (avail > 0) {
             const size_t take = (avail > 1024) ? 1024 : avail;
             for (size_t i = 0; i < take; ++i) {
@@ -562,6 +604,10 @@ static void play_task(void *arg)
             finish_playback();
             continue;
         }
+
+        /* 中途播空（预缓冲已用过）：下一段音频要重新攒，
+         * 否则连续欠载时会反复「写一小段→播空」，听感更差。 */
+        s_prebuf_done = false;
 
         /* 流式兜底：如果长时间（12 秒）既没有新数据、也没收到结束标记，
          * 说明服务端中途断了。主动收尾回到 IDLE，避免永久卡在 PLAYING

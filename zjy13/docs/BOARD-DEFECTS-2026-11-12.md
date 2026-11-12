@@ -388,3 +388,112 @@ Hash of data verified.
 > 写测试时又踩到一个坑：断言「不能出现 `char text[240]`」时，
 > 代码注释里正好写着这句解释历史原因，导致误报。
 > 最终改为先剥离注释再检查。
+
+---
+
+## 九、刚开始播放时卡一下（同日追加修复）
+
+用户反馈「更新固件后板子在刚开始播放回复的音频时会卡一下」。
+**这是流式 TTS 改造引入的新问题**，非流式时代没有。
+
+### 9.1 根因
+
+固件 `play_task` 原本是「只要缓冲里有 1 个采样就立刻写 codec」：
+
+```c
+if (avail > 0 && s_spk) {
+    esp_codec_dev_write(s_spk, out_buf, (int)(avail * 2));
+    continue;                    // 立刻回到循环顶部
+}
+// 缓冲空了
+vTaskDelay(pdMS_TO_TICKS(10));   // ← 这 10ms 就是听到的卡顿
+```
+
+非流式时整段音频一次性到齐，缓冲永远不空，所以没暴露。
+流式下首块只有一小段，**写出去立刻播空**，然后等 10ms 拿下一帧。
+
+### 9.2 修复（两端配合，缺一不可）
+
+**固件：加预缓冲**
+
+开播前先攒够 `PREBUF_MS = 120ms` 再写 codec：
+
+```c
+if (!s_prebuf_done) {
+    if (avail < prebuf_need && !s_play_draining) {
+        xSemaphoreGive(s_play_mutex);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;                 // 继续攒，先不写
+    }
+    s_prebuf_done = true;
+}
+```
+
+设计细节：
+
+| 项 | 取值 | 理由 |
+|---|---|---|
+| `PREBUF_MS` | 120ms | 挡住一次网络抖动 + 任务调度；40ms 挡不住 10ms 轮询空档 |
+| 状态变量 | `s_prebuf_done`（静态） | `play_task` 是常驻任务，局部变量跨轮次不重置 |
+| 复位时机 | `handle_playback_start` | 每轮开播前重新攒 |
+| 极短音频 | 检查 `!s_play_draining` | 否则总量不足 120ms 时会死等 |
+| 中途播空 | 重置 `s_prebuf_done` | 避免连续欠载时反复「写一小段→播空」 |
+
+**服务端：首块一次发够**
+
+如果只改固件不改服务端，会有新问题：服务端按 `lead_sec=0.8` 节流，
+首块可能只发出 128ms 一片，板子要等第二片才攒满 120ms 预缓冲 ——
+**反而更晚出声**。
+
+所以首块阶段跳过节流：
+
+```python
+FIRST_BURST_MS = 300
+first_burst_bytes = sample_rate * 2 * FIRST_BURST_MS // 1000
+...
+if sent_bytes < first_burst_bytes:
+    pass                          # 首块阶段不 sleep
+else:
+    # 正常按播放进度节流
+```
+
+300ms > 固件 120ms 预缓冲，留 2.5 倍余量。
+
+### 9.3 验证
+
+用模拟器测「板子累计收到多少音频」与时间的关系：
+
+```
+playback_start 到达 : 1621 ms
+累计到 120ms 音频   : 1621 ms   ← 同一时刻，预缓冲立即满足
+累计到 300ms 音频   : 1622 ms
+总帧数              : 86
+总字节              : 347520 (7.24s)
+结束标记            : 收到
+
+预缓冲就绪耗时      : 0 ms（playback_start 之后）
+→ 预缓冲几乎立刻满足，不会卡顿
+```
+
+修复前：首块只发 128ms 一片，预缓冲要等第二片（约 100ms 后）才满。
+
+**编译与烧录**：
+
+```
+ai_pet_badge.bin  8.7MB，分区余 6%
+Wrote 8908624 bytes at 0x00020000 in 53.8 seconds
+Hash of data verified.
+```
+
+测试 `.venv` **450** / `.venv-asr` **460** passed，
+新增 `tests/test_playback_prebuffer.py`（9 个用例）。
+
+### 9.4 代价
+
+预缓冲 120ms 会让「首字出声」延后约 120ms。
+相比卡顿，这个交换是值得的——而且服务端首块发够 300ms 后，
+预缓冲是「一次性满足」而非「等待满足」，实际感知差异很小。
+
+> 若你觉得还是偏慢，可把 `PREBUF_MS` 降到 80ms 试；
+> 若仍有轻微卡顿，可提到 160ms。两端常量要一起调
+> （服务端 `FIRST_BURST_MS` 必须大于固件 `PREBUF_MS`）。
