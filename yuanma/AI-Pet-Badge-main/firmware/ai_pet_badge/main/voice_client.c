@@ -167,6 +167,20 @@ static uint32_t s_idle_ticks;
  * 若用户很快松手，实际录音窗口可能只有几十毫秒。 */
 static int64_t s_record_start_us;
 
+/* 下行文本（ASR 结果 / LLM 回复 / delta）的共享缓冲。
+ *
+ * 为什么用静态而不是栈数组：
+ * 1) 原实现 asr_final 用 char[160]、llm_final 用 char[240]，
+ *    **装不下完整内容**——中文 UTF-8 每字 3 字节，240 字节只够 80 字，
+ *    而 LLM_MAX_TOKENS=128 约 85 汉字（≈255 字节），实测尾巴被截断。
+ * 2) 但这些函数跑在 WebSocket 事件任务的栈上，该任务只有 4096 字节。
+ *    把数组加到 768 会明显加大栈压力（该任务历史上有过崩溃）。
+ * 3) handle_text 只由 WebSocket 事件回调单线程调用，无并发风险，
+ *    因此共享一块静态缓冲是安全的，且不占栈。
+ *
+ * 1024 字节可容纳约 340 汉字，足够覆盖服务端 MAX_TEXT_CHARS 的常规取值。 */
+static char s_text_buf[1024];
+
 /* 音频设备句柄 */
 static esp_codec_dev_handle_t s_mic;
 static esp_codec_dev_handle_t s_spk;
@@ -220,9 +234,75 @@ static bool json_get_str(const char *json, const char *key, char *out, size_t ca
     const char *v = json_value_start(json, key);
     if (!v || *v != '"') return false;
     ++v;
+
+    /* 必须做转义解码（2026-11-12 修复）。
+     *
+     * 原实现是原样拷贝，导致服务端发来的 \n、\"、\\ 等序列
+     * 会以字面量形式出现在屏幕与串口上。实测 LLM 回复里常带 \n
+     * （角色卡允许换行），屏幕会显示成两个字符 "\n" 而不是换行。
+     *
+     * 这里处理 JSON 标准转义：\" \\ \/ \b \f \n \r \t 与 \uXXXX。
+     * \uXXXX 只处理 BMP（中文都在此范围），按 UTF-8 编码写出；
+     * 代理对（emoji 等）转成 U+FFFD，避免写出非法 UTF-8。 */
     size_t o = 0;
-    while (*v && !(*v == '"' && v[-1] != '\\') && o + 1 < cap) {
-        out[o++] = *v++;
+    while (*v && o + 1 < cap) {
+        if (*v == '"' ) break;                 /* 未转义的引号 = 结束 */
+        if (*v != '\\') { out[o++] = *v++; continue; }
+
+        /* 遇到反斜杠：看下一个字符 */
+        const char esc = v[1];
+        if (esc == '\0') break;
+        v += 2;
+        switch (esc) {
+        case '"':  out[o++] = '"';  break;
+        case '\\': out[o++] = '\\'; break;
+        case '/':  out[o++] = '/';  break;
+        case 'b':  out[o++] = '\b'; break;
+        case 'f':  out[o++] = '\f'; break;
+        case 'n':  out[o++] = '\n'; break;
+        case 'r':  out[o++] = '\r'; break;
+        case 't':  out[o++] = '\t'; break;
+        case 'u': {
+            /* \uXXXX：解析 4 位十六进制 */
+            unsigned cp = 0;
+            int k = 0;
+            for (; k < 4; ++k) {
+                const char h = v[k];
+                unsigned d;
+                if (h >= '0' && h <= '9') d = (unsigned)(h - '0');
+                else if (h >= 'a' && h <= 'f') d = (unsigned)(h - 'a' + 10);
+                else if (h >= 'A' && h <= 'F') d = (unsigned)(h - 'A' + 10);
+                else break;
+                cp = cp * 16 + d;
+            }
+            if (k < 4) { out[o++] = '?'; break; }   /* 非法序列 */
+            v += 4;
+            if (cp >= 0xD800 && cp <= 0xDFFF) {
+                /* 代理对：固件不拼 emoji，用替代字符避免非法 UTF-8 */
+                cp = 0xFFFD;
+            }
+            /* 编码成 UTF-8 */
+            if (cp < 0x80) {
+                if (o + 1 < cap) out[o++] = (char)cp;
+            } else if (cp < 0x800) {
+                if (o + 2 < cap) {
+                    out[o++] = (char)(0xC0 | (cp >> 6));
+                    out[o++] = (char)(0x80 | (cp & 0x3F));
+                }
+            } else {
+                if (o + 3 < cap) {
+                    out[o++] = (char)(0xE0 | (cp >> 12));
+                    out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                    out[o++] = (char)(0x80 | (cp & 0x3F));
+                }
+            }
+            break;
+        }
+        default:
+            /* 未知转义：原样保留反斜杠与字符，便于排查 */
+            if (o + 2 < cap) { out[o++] = '\\'; out[o++] = esc; }
+            break;
+        }
     }
     out[o] = '\0';
     return true;
@@ -644,19 +724,22 @@ static void handle_text(const char *json)
             xTaskCreate(record_loop, "voice_rec", 4096, NULL, 5, &s_task);
         }
     } else if (strcmp(type, "asr_final") == 0) {
-        char text[160];
-        if (json_get_str(json, "text", text, sizeof(text))) {
-            ESP_LOGI(TAG, "识别: %s", text);
+        if (json_get_str(json, "text", s_text_buf, sizeof(s_text_buf))) {
+            ESP_LOGI(TAG, "识别: %s", s_text_buf);
         }
     } else if (strcmp(type, "llm_delta") == 0) {
-        char text[160];
-        if (json_get_str(json, "text", text, sizeof(text))) {
-            printf("BADGE_VOICE {\"delta\":\"%s\"}\n", text);
+        if (json_get_str(json, "text", s_text_buf, sizeof(s_text_buf))) {
+            printf("BADGE_VOICE {\"delta\":\"%s\"}\n", s_text_buf);
         }
     } else if (strcmp(type, "llm_final") == 0) {
-        char text[240];
-        if (json_get_str(json, "text", text, sizeof(text))) {
-            ESP_LOGI(TAG, "回复: %s", text);
+        /* 原来这里用栈上 char text[240]，装不下完整回复：
+         * LLM_MAX_TOKENS=128 约 85 汉字，UTF-8 每字 3 字节 ≈ 255 字节，
+         * 加标点与 emoji 更多。实测屏幕与串口都少了尾巴。
+         *
+         * 改用共享静态缓冲（见 s_text_buf 注释）：既够大，又不吃
+         * WebSocket 事件任务那 4096 字节的栈。 */
+        if (json_get_str(json, "text", s_text_buf, sizeof(s_text_buf))) {
+            ESP_LOGI(TAG, "回复: %s", s_text_buf);
         }
     } else if (strcmp(type, "playback_start") == 0) {
         handle_playback_start(json);
