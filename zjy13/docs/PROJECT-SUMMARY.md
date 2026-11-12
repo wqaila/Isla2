@@ -225,7 +225,7 @@ Kernel size: (4).
 |---|---|
 | `zjy13/` | 电脑侧服务端：ASR、LLM、TTS、WebSocket、角色卡、音色 |
 | `zjy13/firmware/` | 第一阶段独立固件（已被 `yuanma` 版本取代，保留作参考） |
-| `zjy13/docs/` | 28 篇技术文档，含审查清单与实测记录 |
+| `zjy13/docs/` | 29 篇技术文档，含审查清单与实测记录 |
 | `zjy13/tools/` | 音色选段、协议模拟器、固件等价验证等 |
 | `yuanma/AI-Pet-Badge-main/` | **原固件完整源码**（含 Elysia 动画、触摸、IMU、天气） |
 | `yuanma/*.mp4` | 3 个绿幕动画源素材（walk/jump/sit） |
