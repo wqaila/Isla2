@@ -14,6 +14,12 @@ htmlcov/
 .venv/
 venv/
 
+# 前端
+web/node_modules/
+web/dist/
+web/.vite/
+web/*.tsbuildinfo
+
 # 数据与产物（不放仓库）
 data/
 *.db
@@ -45,6 +51,7 @@ _d1_final/
 _d1_placebo/
 _d1_official/
 _phase2b/
+_phase6/
 _p2b_speed/
 _p2b_speed2/
 
