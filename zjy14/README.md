@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：Phase 5 完成（zjy13 设备协议桥接）**
+**当前阶段：Phase 7 完成（全部阶段交付）**
 
 ---
 
@@ -207,7 +207,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | **Phase 4 流式/并发** | ✅ **完成** | 长句首包 5.36s→1.48s（+72.4%），257 测试全绿 |
 | **Phase 5 ESP32 桥接** | ✅ **完成** | 协议完全对齐 zjy13，只改 TTS_BASE_URL 即可切换 |
 | **Phase 6 Web 界面** | ✅ **完成** | React + TS 8 页，构建通过，30 项验收通过 |
-| Phase 7 稳定发布 | ⬜ 待开始 | |
+| **Phase 7 稳定发布** | ✅ **完成** | 30 分钟 596 轮零失败、显存零增长；一键启动 + 故障手册 + 验收报告 |
 
 详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md)、[docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)、[docs/14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md)。
 
@@ -243,6 +243,9 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [16_PHASE4_REPORT.md](docs/16_PHASE4_REPORT.md) | **Phase 4 报告（流式 + 并发）** |
 | [17_DEFECT_FIXES.md](docs/17_DEFECT_FIXES.md) | **缺陷修复报告（配置摆设清理 + compile 实现）** |
 | [18_PHASE5_REPORT.md](docs/18_PHASE5_REPORT.md) | **Phase 5 报告（设备协议桥接）** |
+| [ACCEPTANCE_REPORT.md](docs/ACCEPTANCE_REPORT.md) | **验收报告（只填实测数据）** |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维说明** |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | **故障排查手册** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |

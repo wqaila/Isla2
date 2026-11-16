@@ -16,8 +16,15 @@ device: cuda
 precision: fp32
 
 # ---- 并发 ----
-# 先单并发稳定。TTS 峰值显存 3.45GB，12GB 总量理论上够 2-3 并发，
-# 但 CUDA 上下文与中间张量会叠加，放开前需实测。
+# 实测（2026-11-16，probe/_p7_concurrency.py）：
+#   单并发峰值 allocated 3550MB / reserved 3922MB
+#   2并发峰值 allocated 3572MB / reserved 3924MB  <- 增量仅 +23MB
+#   2 并发加速比 1.93x，剩余显存 2647MB（安全余量要求 1024MB）
+# 结论：2 并发可行。但默认仍设 1，原因：
+#   1. 单用户语音交互场景并发需求低
+#   2. 多并发会放大采样随机性带来的时序抖动
+#   3. 与 ASR 共存时显存更紧张（ASR 约 2GB）
+# 若需放开，改为 2 并重启，实测无 OOM 风险。
 max_concurrent_requests: 1
 # 等待队列上限。超出返回 429，避免无界堆积拖垮服务。
 max_queue_size: 8
