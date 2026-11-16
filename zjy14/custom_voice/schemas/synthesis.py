@@ -22,26 +22,61 @@ SYNTHESIS_RESPONSE_HEADERS = (
 class SynthesisRequest(BaseModel):
     """合成请求。
 
-    Phase 1 只需 text/voice_id/speed（zjy13 已在用）。
-    Phase 2 增加 emotion/style/instruction，全部可选。
+    契约约束（D2）：前三个字段与 zjy13 的 TTSClient 完全兼容。
+    其余字段可选，旧调用不传时走默认值。
+
+    **重要（D1 结论）**：``emotion`` / ``intensity`` / ``style`` 仅作元数据，
+    不传给 TTS 模型 —— 实测 CosyVoice3 的情绪指令无效。
+    真正生效的是 ``speed`` / ``volume`` / ``pause_profile`` / ``instruction``。
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    # ---- zjy13 兼容字段 ----
     text: str = Field(..., min_length=1, max_length=2000, description="待合成文本。")
     voice_id: str = Field(default="elysia", description="音色标识。")
     speed: float = Field(default=1.0, ge=0.5, le=2.0, description="语速倍率。")
 
-    # ---- Phase 2 扩展位（Phase 1 接受但暂不生效）----
-    emotion: str | None = Field(default=None, description="情绪标签。Phase 2 生效。")
-    intensity: float | None = Field(
-        default=None, ge=0.0, le=1.0, description="情绪强度。Phase 2 生效。"
+    # ---- 路线乙：真正生效的控制 ----
+    volume: float = Field(
+        default=1.0,
+        ge=0.5,
+        le=1.5,
+        description="音量增益。在音频层应用，不依赖模型。",
     )
-    style: str | None = Field(default=None, description="表达风格。Phase 2 生效。")
+    pause_profile: str = Field(
+        default="natural",
+        description=(
+            "停顿档位：none / tight / natural / relaxed / dramatic。"
+            "通过分句合成 + 插入静音实现。"
+        ),
+    )
     instruction: str | None = Field(
         default=None,
         max_length=500,
-        description="自然语言声音指令。Phase 2 生效。",
+        description=(
+            "自然语言声音指令，如「温柔一点，放慢速度」。"
+            "由规则解析器转成 speed/volume/pause。"
+        ),
+    )
+
+    # ---- 元数据（不传给模型，仅供 LLM 侧与 UI）----
+    emotion: str | None = Field(
+        default=None,
+        description=(
+            "情绪标签。**仅记录，不影响合成** —— "
+            "实测 CosyVoice3 情绪指令无效（见 docs/13_D1_EMOTION_VERDICT.md）。"
+        ),
+    )
+    intensity: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="情绪强度。仅记录，不影响合成。",
+    )
+    style: str | None = Field(
+        default=None,
+        description="表达风格。仅记录，不影响合成。",
     )
 
     @field_validator("text")

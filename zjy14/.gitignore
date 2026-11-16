@@ -44,6 +44,9 @@ _d1_combined/
 _d1_final/
 _d1_placebo/
 _d1_official/
+_phase2b/
+_p2b_speed/
+_p2b_speed2/
 
 # 音频素材（体积大，且涉及授权）
 *.wav

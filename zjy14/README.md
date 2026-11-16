@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：Phase 2a 完成（真引擎接入，音色收尾）**
+**当前阶段：Phase 2b 完成（表达控制·路线乙）**
 
 ---
 
@@ -203,13 +203,13 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | Phase 3 角色声音 | ✅ 完成 | 145 测试全绿，17 项端到端验收通过；elysia 已迁移 |
 | **Phase 2a 音色收尾** | ✅ **完成** | 真引擎接入，186 测试全绿，12 项验收通过，**盲听确认改善** |
 | **D1 情绪验证** | ✅ **完成** | **实测结论：情绪指令无效**，改走路线乙（语速/音量/停顿 + LLM 侧情绪） |
-| Phase 2b 表达控制 | ⬜ 待开始 | 按路线乙实现：语速/停顿控制 + 指令解析器 |
+| **Phase 2b 表达控制** | ✅ **完成** | 路线乙：语速/音量/停顿 + 指令解析器，235 测试全绿，8 项验收通过 |
 | Phase 4 GPU/流式 | ⬜ 待开始 | |
 | Phase 5 ESP32 桥接 | ⬜ 待开始 | 复用 zjy13 固件 |
 | Phase 6 Web 界面 | ⬜ 待开始 | React + TS 8 页 |
 | Phase 7 稳定发布 | ⬜ 待开始 | |
 
-详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md)、[docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)。
+详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md)、[docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)、[docs/14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md)。
 
 ---
 
@@ -219,7 +219,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
   加入「请用蓝色的语气」这种无意义指令产生的 F0 变化（15.4/72.5 Hz）
   比真正的情绪指令（10.1/24.3 Hz）还大，说明模型只对"prompt 变长"有反应。
   已改走路线乙：语速/音量/停顿控制 + 情绪由 LLM 侧用词表达。
-  详见 [docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)。
+  详见 [docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)、[docs/14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md)。
 - **音色已改善但仍非完美** —— 盲听确认较 Phase 0 有改善、数字读法自然、多次采样一致（2026-11-16）。客观相似度 0.9208（超官方基准 0.7559）。剩余差距可能来自参考素材代表性或 0.5B 模型能力上限，非工程问题。
 - **仅 1 个角色素材**（elysia），无法验证"跨角色不串音色"（决策 D9）。
 - **流式未实现** —— 接口已留，实现仍是一次性返回整段。
@@ -238,7 +238,9 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 
 | 文档 | 内容 |
 |---|---|
-| [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | **Phase 2a 报告（真引擎接入）** |
+| [14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md) | **Phase 2b 报告（表达控制·路线乙）** |
+| [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
+| [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |
 | [02_IMPLEMENTATION_PLAN.md](docs/02_IMPLEMENTATION_PLAN.md) | 落地方案：环境审计、关键技术发现、架构、风险 |
 | [03_DECISIONS.md](docs/03_DECISIONS.md) | 10 项决策记录 |

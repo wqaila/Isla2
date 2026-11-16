@@ -32,7 +32,7 @@ import io
 import time
 import wave
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
 
@@ -43,12 +43,16 @@ from ..core.errors import (
     SynthesisError,
 )
 from ..core.logging import get_logger
+from ..expression.control import PAUSE_PROFILES
 from ..schemas.synthesis import (
     AudioChunk,
     EngineStats,
     SynthesisRequest,
     SynthesisResult,
 )
+
+if TYPE_CHECKING:
+    from ..expression.control import ExpressionParams
 
 logger = get_logger("engine.cosyvoice")
 
@@ -72,6 +76,47 @@ NORMAL_CHARS_PER_SEC = 4.2
 #: 实测案例：文本只标了 11 字但音频 4.5 秒（应有 19 字），比值 0.58。
 REF_TEXT_RATIO_MIN = 0.6
 REF_TEXT_RATIO_MAX = 1.6
+
+
+def _block_modelscope_download() -> Any:
+    """临时禁止 modelscope 联网下载，返回用于恢复的原始函数。
+
+    为什么需要（实测教训）：
+      CosyVoice3.__init__ -> CosyVoiceFrontEnd.__init__ 会 `import wetext`，
+      而 wetext 的 __init__ 无条件调 snapshot_download()。
+      无 token 时它会先尝试下载部分文件，实测卡住 **90 秒以上**才失败，
+      把服务启动时间从 8.5s 拖到 100s+。
+
+      我们的 enable_wetext_frontend 补丁在构造之后才生效，救不了这次下载。
+      所以在构造前把 snapshot_download 换成抛异常，让它快速走 except 分支。
+
+    :return: 原始的 snapshot_download（供 finally 恢复）；不可用时返回 None
+    """
+    try:
+        import modelscope
+    except ImportError:
+        return None
+
+    original = getattr(modelscope, "snapshot_download", None)
+    if original is None:
+        return None
+
+    def _blocked(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("zjy14: 启动期禁止 modelscope 联网下载（使用本地缓存）")
+
+    modelscope.snapshot_download = _blocked
+    return original
+
+
+def _restore_modelscope_download(original: Any) -> None:
+    if original is None:
+        return
+    try:
+        import modelscope
+
+        modelscope.snapshot_download = original
+    except ImportError:
+        pass
 
 
 def check_reference_consistency(audio_path: str, prompt_text: str) -> tuple[bool, str]:
@@ -289,12 +334,17 @@ class CosyVoiceEngine:
                 extra={"extra_fields": {"precision": "fp16"}},
             )
 
+        # 关键：构造前禁止 modelscope 联网下载。
+        # 否则 wetext 的 snapshot_download 会卡 90s+ 才失败（无 token 时）。
+        _orig_download = _block_modelscope_download()
         try:
             self._model = CosyVoice3(str(self._model_dir), fp16=fp16)
         except Exception as exc:  # noqa: BLE001
             raise EngineNotReadyError(
                 f"模型加载失败：{type(exc).__name__}: {exc}"
             ) from exc
+        finally:
+            _restore_modelscope_download(_orig_download)
 
         self._load_s = time.perf_counter() - t0
         self._setup_text_frontend()
@@ -478,6 +528,106 @@ class CosyVoiceEngine:
     def list_voices(self) -> list[str]:
         return list(self._voices)
 
+    def _resolve_expression(self, req: SynthesisRequest) -> "ExpressionParams":
+        """把请求里的字段解析成结构化表达参数。
+
+        优先级：instruction（自然语言）> 显式字段 > 默认值。
+        emotion/style 只作元数据，不参与引擎调用。
+        """
+        from ..expression import build_params, merge_params, parse_instruction
+
+        # 基础参数来自显式字段
+        base = build_params(
+            speed=req.speed,
+            volume=req.volume,
+            pause_profile=req.pause_profile,
+            emotion=req.emotion,
+            intensity=req.intensity,
+            style=req.style,
+            source="fields",
+        )
+
+        # 自然语言指令覆盖显式字段
+        if req.instruction:
+            parsed = parse_instruction(req.instruction)
+            base = merge_params(base, parsed.params)
+
+        return base
+
+    def _synthesize_segments(
+        self,
+        voice: str,
+        info: dict[str, Any],
+        text: str,
+        expr: "ExpressionParams",
+    ) -> tuple[bytes, float, int]:
+        """按停顿档位分段合成并拼接。
+
+        :return: (PCM 字节, 音频时长秒, 段数)
+        """
+        from ..expression.pause import (
+            apply_gain,
+            build_segments,
+            concat_with_pauses,
+        )
+
+        pause_ms = PAUSE_PROFILES[expr.pause_profile.value]
+        segments = build_segments(text, pause_ms)
+
+        if not segments:
+            raise InvalidRequestError("文本为空，无法合成")
+
+        parts: list[bytes] = []
+        audio_parts: list[Any] = []
+        pauses: list[int] = []
+
+        for seg in segments:
+            self._reset_hop_len()
+            try:
+                chunks = list(
+                    self._model.inference_zero_shot(
+                        seg.text,
+                        "",
+                        info["audio_path"],
+                        zero_shot_spk_id=voice,
+                        stream=False,
+                        speed=expr.speed,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise SynthesisError(
+                    f"合成失败（段 {seg.text[:20]!r}）：{type(exc).__name__}: {exc}",
+                    detail={"voice_id": voice, "segment": seg.text[:40]},
+                ) from exc
+
+            if not chunks:
+                raise SynthesisError(
+                    f"模型未返回音频（段 {seg.text[:20]!r}）",
+                    detail={"voice_id": voice},
+                )
+
+            speech = chunks[0]["tts_speech"]
+            pcm = _to_pcm16(speech)
+            parts.append(pcm)
+            audio_parts.append(
+                np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+            )
+            pauses.append(seg.trailing_pause_ms)
+
+        if len(audio_parts) == 1:
+            merged = audio_parts[0]
+        else:
+            merged = concat_with_pauses(audio_parts, pauses, SAMPLE_RATE)
+
+        # 音量增益（音频层，不依赖模型）
+        merged = apply_gain(merged, expr.volume)
+
+        pcm_out = np.round(
+            np.clip(merged, -1.0, 1.0) * 32767.0
+        ).astype("<i2").tobytes()
+        duration = len(pcm_out) / 2 / SAMPLE_RATE
+        return pcm_out, duration, len(segments)
+
     def synthesize(self, req: SynthesisRequest) -> SynthesisResult:
         if not self._ready:
             raise EngineNotReadyError("引擎尚未加载完成，请稍后重试")
@@ -485,34 +635,20 @@ class CosyVoiceEngine:
         voice = self._pick_voice(req.voice_id)
         info = self._voices[voice]
 
+        expr = self._resolve_expression(req)
+        for w in expr.warnings:
+            logger.warning(
+                "表达参数警告",
+                extra={"extra_fields": {"warning": w, "source": expr.source}},
+            )
+
         ratio = self._check_text_ratio(req.text, info["prompt_text"])
 
-        self._reset_hop_len()
         started = time.perf_counter()
-        try:
-            chunks = list(
-                self._model.inference_zero_shot(
-                    req.text,
-                    "",
-                    info["audio_path"],
-                    zero_shot_spk_id=voice,
-                    stream=False,
-                    speed=req.speed,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise SynthesisError(
-                f"合成失败：{type(exc).__name__}: {exc}",
-                detail={"voice_id": voice, "chars": len(req.text)},
-            ) from exc
-
+        pcm, duration, n_seg = self._synthesize_segments(
+            voice, info, req.text, expr
+        )
         total_ms = (time.perf_counter() - started) * 1000
-        if not chunks:
-            raise SynthesisError("模型未返回音频", detail={"voice_id": voice})
-
-        speech = chunks[0]["tts_speech"]
-        pcm = _to_pcm16(speech)
-        duration = len(pcm) / 2 / SAMPLE_RATE
         self._refresh_vram()
 
         logger.info(
@@ -524,8 +660,12 @@ class CosyVoiceEngine:
                     "duration_s": round(duration, 3),
                     "total_ms": round(total_ms, 1),
                     "rtf": round((total_ms / 1000) / duration, 3) if duration else 0,
-                    "speed": req.speed,
+                    "segments": n_seg,
                     "text_ratio": round(ratio, 3),
+                    # 生效的控制项
+                    **expr.effective_controls(),
+                    # 仅元数据
+                    "emotion_meta": expr.emotion,
                 }
             },
         )
