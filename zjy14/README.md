@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：Phase 7 完成（全部阶段交付）**
+**当前阶段：前端流式完成（Phase 8）**
 
 ---
 
@@ -246,6 +246,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [ACCEPTANCE_REPORT.md](docs/ACCEPTANCE_REPORT.md) | **验收报告（只填实测数据）** |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维说明** |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | **故障排查手册** |
+| [19_PHASE8_STREAM_UI.md](docs/19_PHASE8_STREAM_UI.md) | **前端流式播放 + 真机联调准备** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |

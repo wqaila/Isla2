@@ -164,7 +164,120 @@ export const synthesisApi = {
     };
     return { blob, meta };
   },
+
+  /** 流式合成：边收边回调，返回最终统计。
+   *
+   * 协议（与 zjy13 一致）：每块 = 4 字节大端 uint32 长度 + PCM16LE；
+   * 长度 0 表示结束。
+   *
+   * 为什么不用 EventSource：
+   *   音频是二进制，SSE 只支持文本，Base64 会多 33% 体积。
+   *   用 fetch + ReadableStream 直接读二进制更高效。
+   *
+   * @param body 合成请求
+   * @param onChunk 每收到一块 PCM 时回调（已去掉长度前缀）
+   * @param signal 用于取消
+   */
+  async synthesizeStream(
+    body: SynthesisRequest,
+    onChunk: (pcm: ArrayBuffer, index: number) => void,
+    signal?: AbortSignal,
+  ): Promise<StreamSummary> {
+    const started = performance.now();
+    const res = await fetch(BASE + "/synthesize_stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      await parseError(res);
+    }
+
+    const sampleRate = Number(res.headers.get("x-sample-rate") ?? 24000);
+    const requestId = res.headers.get("x-request-id") ?? "";
+    const reader = res.body?.getReader();
+    if (!reader) {
+      throw new ApiError("响应不支持流式读取", "no_stream", 0);
+    }
+
+    let buf = new Uint8Array(0);
+    let totalBytes = 0;
+    let chunks = 0;
+    let firstChunkMs: number | null = null;
+    let gotEnd = false;
+
+    const appendBuf = (src: Uint8Array) => {
+      const merged = new Uint8Array(buf.length + src.length);
+      merged.set(buf, 0);
+      merged.set(src, buf.length);
+      buf = merged;
+    };
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) appendBuf(value);
+
+        // 尽可能多地解析完整块
+        for (;;) {
+          if (buf.length < 4) break;
+          const view = new DataView(buf.buffer, buf.byteOffset, 4);
+          const len = view.getUint32(0, false); // 大端
+          if (buf.length < 4 + len) break;
+
+          const pcm = buf.slice(4, 4 + len);
+          buf = buf.slice(4 + len);
+
+          if (len === 0) {
+            gotEnd = true;
+            break;
+          }
+          if (firstChunkMs === null) {
+            firstChunkMs = performance.now() - started;
+          }
+          totalBytes += len;
+          onChunk(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + len), chunks);
+          chunks += 1;
+        }
+        if (gotEnd) break;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!gotEnd) {
+      // 服务端中途断开时不发结束标记，这里必须报错而不是静默接受
+      throw new ApiError(
+        "流被截断（未收到结束标记），音频可能不完整",
+        "stream_truncated",
+        0,
+      );
+    }
+
+    return {
+      sampleRate,
+      requestId,
+      chunks,
+      totalBytes,
+      durationS: totalBytes / 2 / sampleRate,
+      firstChunkMs: firstChunkMs ?? -1,
+      totalMs: performance.now() - started,
+    };
+  },
 };
+
+/** 流式合成统计。 */
+export interface StreamSummary {
+  sampleRate: number;
+  requestId: string;
+  chunks: number;
+  totalBytes: number;
+  durationS: number;
+  firstChunkMs: number;
+  totalMs: number;
+}
 
 /** 把 ApiError 转成可展示的文本（含 detail 摘要）。 */
 export function describeError(e: unknown): string {
