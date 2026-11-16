@@ -27,6 +27,17 @@ def _scheduler_stats(state) -> dict:  # type: ignore[no-untyped-def]
         return {"enabled": False, "reason": "统计读取失败"}
 
 
+def _bridge_compat() -> dict:
+    """返回与 zjy13 设备协议的兼容信息。"""
+    from ...bridge import describe_compat
+
+    try:
+        return describe_compat()
+    except Exception:  # noqa: BLE001
+        logger.exception("读取桥接兼容信息失败")
+        return {"error": "读取失败"}
+
+
 @router.get("/status")
 async def status(request: Request) -> dict:
     """服务状态摘要：版本、配置、路径、引擎、运行时长。"""
@@ -73,6 +84,8 @@ async def status(request: Request) -> dict:
         },
         # 调度器实时统计（并发/队列/拒绝/超时）
         "scheduler": _scheduler_stats(state),
+        # 与 zjy13 设备协议的兼容对照（证明不重复造轮子）
+        "bridge": _bridge_compat(),
         "config_sources": describe_config_sources(),
         "paths": describe_paths(),
         "db": {
