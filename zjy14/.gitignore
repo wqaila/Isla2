@@ -37,6 +37,13 @@ _tn_test/
 _tn_verify/
 _tn_stats/
 _verify/
+_d1_emotion/
+_d1_diag/
+_d1_hybrid_diag/
+_d1_combined/
+_d1_final/
+_d1_placebo/
+_d1_official/
 
 # 音频素材（体积大，且涉及授权）
 *.wav
@@ -60,5 +67,8 @@ configs/local.yaml
 .idea/
 *.swp
 
-# 修正仓库根 .gitignore 的 _*.py 规则误伤 __init__.py
+# 修正仓库根 .gitignore 的 _*.py 规则误伤
+# 根 .gitignore 用 _*.py 排除临时脚本，但本项目的 probe/ 下
+# 全是以 _ 开头的可复现诊断脚本，必须入库。
 !__init__.py
+!probe/_*.py
