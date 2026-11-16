@@ -247,6 +247,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维说明** |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | **故障排查手册** |
 | [19_PHASE8_STREAM_UI.md](docs/19_PHASE8_STREAM_UI.md) | **前端流式播放 + 真机联调准备** |
+| [20_DAILY_SUMMARY_2026-11-16.md](docs/20_DAILY_SUMMARY_2026-11-16.md) | **当日总结（成果·不足·缺陷）** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |
