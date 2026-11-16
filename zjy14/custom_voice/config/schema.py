@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -36,12 +36,6 @@ class EngineKind(str, Enum):
 
     STUB = "stub"
     COSYVOICE3 = "cosyvoice3"
-
-
-class SdpaMode(str, Enum):
-    AUTO = "auto"
-    ON = "on"
-    OFF = "off"
 
 
 class TextFrontendMode(str, Enum):
@@ -129,17 +123,20 @@ class GPUConfig(BaseModel):
     )
 
     # ---- 优化开关 ----
+    # 以下 3 个开关经实测后已移除，理由记录在此避免以后重复添加：
+    #   enable_sdpa     PyTorch 2.8 默认已启用 flash/mem_efficient SDPA
+    #                   （实测均为 True），CosyVoice 内部也无 sdpa 开关，无作用
+    #   enable_vllm_llm 模型目录无 vllm/ 子目录，load_vllm 无可用权重
+    #   cpu_offload     CosyVoice3 无 offload 接口；手动 .to('cpu') 会破坏
+    #                   推理图，每次请求搬运权重导致延迟灾难性上升
     enable_compile: bool = Field(
         default=False,
-        description="torch.compile。未实测收益，默认关闭。",
-    )
-    enable_sdpa: SdpaMode = Field(
-        default=SdpaMode.AUTO,
-        description="SDPA 注意力。auto 表示按环境探测。",
-    )
-    enable_vllm_llm: bool = Field(
-        default=False,
-        description="vLLM 加速 LLM 子路径。模型目录无 vllm/ 子目录，默认关闭。",
+        description=(
+            "torch.compile 套用到 LLM 子模块。"
+            "实测 8 轮交错采样：基线中位 3.049s -> compile 2.783s，"
+            "配对差值均值 -0.177s（相对改善 8.7%），8 轮中 7 轮更快。"
+            "代价是首次推理触发编译，冷启动敏感场景建议关闭。"
+        ),
     )
 
     # ---- 缓存 ----
@@ -155,10 +152,6 @@ class GPUConfig(BaseModel):
     )
 
     # ---- 显存 ----
-    cpu_offload: bool = Field(
-        default=False,
-        description="CPU offload。可能显著增加延迟，默认关闭。",
-    )
     memory_safety_margin_mb: int = Field(
         default=1024,
         ge=0,
@@ -258,12 +251,9 @@ CONSUMED_FIELDS: dict[str, str] = {
     "stream_enabled": "custom_voice.inference.streaming:StreamPolicy",
     "stream_char_threshold": "custom_voice.inference.streaming:StreamPolicy",
     "request_timeout_s": "custom_voice.server.routes.synthesis",
-    "enable_compile": "Phase 4 优化阶段（当前仅记录到 /system/status）",
-    "enable_sdpa": "Phase 4 优化阶段（当前仅记录到 /system/status）",
-    "enable_vllm_llm": "Phase 4 优化阶段（当前仅记录到 /system/status）",
+    "enable_compile": "custom_voice.inference.cosyvoice_engine:_apply_compile",
     "speaker_cache_enabled": "custom_voice.inference.stub_engine + cosyvoice_engine",
     "speaker_cache_max_items": "custom_voice.inference.stub_engine + cosyvoice_engine",
-    "cpu_offload": "Phase 4 优化阶段（当前仅记录到 /system/status）",
     "memory_safety_margin_mb": "custom_voice.server.app:lifespan（启动显存检查）",
     "token_hop_len_reset": "custom_voice.inference.cosyvoice_engine:_reset_hop_len",
     "model_dir": "custom_voice.inference.cosyvoice_engine:load",
@@ -291,7 +281,6 @@ __all__ = [
     "EngineKind",
     "GPUConfig",
     "Precision",
-    "SdpaMode",
     "TextFrontendMode",
     "find_stale_registrations",
     "find_unconsumed_fields",

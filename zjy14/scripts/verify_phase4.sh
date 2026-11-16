@@ -153,9 +153,21 @@ def one(i):
     except Exception as e:
         return time.perf_counter() - t0, type(e).__name__
 
-# 先单独测一次，拿到单请求耗时作为基准
-single = one(0)[0]
-print(f"  单请求耗时基准 {single:.2f}s")
+# 关键：先预热一次，再测基准。
+# 首次合成含 CUDA kernel 初始化与可能的 compile，会虚高 3 倍以上，
+# 用它当基准会误判「并发未生效」。
+one(0)
+print("  已预热（首次合成开销已排除）")
+
+# 基准：3 次取中位
+base_times = []
+for i in range(3):
+    t, code = one(i)
+    if code == 200:
+        base_times.append(t)
+base_times.sort()
+single = base_times[len(base_times) // 2]
+print(f"  单请求中位 {single:.2f}s（3 次：{[round(t,2) for t in base_times]}）")
 
 t0 = time.perf_counter()
 with ThreadPoolExecutor(max_workers=3) as ex:
@@ -163,23 +175,26 @@ with ThreadPoolExecutor(max_workers=3) as ex:
 wall = time.perf_counter() - t0
 
 statuses = [r[1] for r in results]
-print(f"  3 个并发请求，墙钟总耗时 {wall:.2f}s")
+times = [r[0] for r in results]
+print(f"  3 并发请求，墙钟 {wall:.2f}s，各请求 {[round(t,2) for t in times]}")
 print(f"  状态 {statuses}")
 
-all_ok = all(s == 200 for s in statuses)
-# 单并发串行时，墙钟应接近 3 倍单请求耗时；
-# 若并行则会接近 1 倍。用 2 倍作为分界。
-if not all_ok:
+if not all(s == 200 for s in statuses):
     print(f"  [FAIL] 有请求失败: {statuses}")
     sys.exit(1)
 
-if wall >= single * 2:
-    print(f"  [PASS] 串行执行（墙钟 {wall:.2f}s >= 2×单请求 {single*2:.2f}s），"
-          "符合 max_concurrent=1")
+ratio = wall / single if single > 0 else 0
+print(f"  墙钟/单请求 = {ratio:.2f}（串行应 >= 2.2，并行接近 1.0）")
+
+if ratio >= 2.2:
+    print("  [PASS] 串行执行，符合 max_concurrent=1")
+    sys.exit(0)
+elif ratio >= 1.5:
+    print("  [部分] 介于串行与并行之间")
     sys.exit(0)
 else:
-    print(f"  [WARN] 墙钟 {wall:.2f}s 明显小于 2×单请求，可能并行执行")
-    sys.exit(0)
+    print("  [FAIL] 仍是并行，调度器可能未生效")
+    sys.exit(1)
 PY
 [ $? -eq 0 ] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
 

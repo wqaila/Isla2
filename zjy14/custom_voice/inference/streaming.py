@@ -49,10 +49,6 @@ class StreamPolicy:
     enabled: bool = True
     #: 路由阈值：字符数 >= 此值走流式
     threshold: int = STREAM_CHAR_THRESHOLD
-    #: 服务层是否对上游块做二次切分（切成更小的块）
-    reslice: bool = False
-    #: 二次切分的目标块时长（毫秒）
-    chunk_ms: int = TARGET_CHUNK_MS
 
     def should_stream(self, text: str) -> bool:
         """判断该文本是否应走流式。"""
@@ -64,8 +60,6 @@ class StreamPolicy:
         return {
             "enabled": self.enabled,
             "threshold": self.threshold,
-            "reslice": self.reslice,
-            "chunk_ms": self.chunk_ms,
         }
 
 

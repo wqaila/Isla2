@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from ...core.errors import InvalidRequestError, SpeakerNotFoundError, ZJY14Error
+from ...core.errors import InvalidRequestError, SpeakerNotFoundError
 from ...core.logging import get_logger
 from ...schemas.character import (
     QualityReportOut,

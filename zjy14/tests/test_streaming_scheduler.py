@@ -79,7 +79,26 @@ def test_describe_routing_includes_reason() -> None:
 
 def test_policy_to_dict() -> None:
     d = StreamPolicy().to_dict()
-    assert set(d) == {"enabled", "threshold", "reslice", "chunk_ms"}
+    # 只暴露真正生效的字段。reslice/chunk_ms 已移除（从未被消费）。
+    assert set(d) == {"enabled", "threshold"}
+
+
+def test_policy_has_no_dead_fields() -> None:
+    """StreamPolicy 不应有定义但从未被消费的字段。
+
+    这是对「配置看似生效但实际未使用」的守护 ——
+    早期版本有 reslice / chunk_ms 两个字段，只出现在 to_dict 里，
+    从未影响任何行为。
+    """
+    from dataclasses import fields
+
+    p = StreamPolicy()
+    d = p.to_dict()
+    declared = {f.name for f in fields(p)}
+    assert declared == set(d), (
+        f"StreamPolicy 字段 {declared} 与 to_dict 输出 {set(d)} 不一致，"
+        "可能存在死字段"
+    )
 
 
 # ----------------------------------------------------------------------

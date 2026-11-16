@@ -241,6 +241,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md) | **Phase 2b 报告（表达控制·路线乙）** |
 | [15_PHASE6_REPORT.md](docs/15_PHASE6_REPORT.md) | **Phase 6 报告（Web 管理界面）** |
 | [16_PHASE4_REPORT.md](docs/16_PHASE4_REPORT.md) | **Phase 4 报告（流式 + 并发）** |
+| [17_DEFECT_FIXES.md](docs/17_DEFECT_FIXES.md) | **缺陷修复报告（配置摆设清理 + compile 实现）** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |

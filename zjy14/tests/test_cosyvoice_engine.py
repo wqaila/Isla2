@@ -32,11 +32,19 @@ from custom_voice.schemas.synthesis import SynthesisRequest
 # ----------------------------------------------------------------------
 
 
+class _FakeLLM:
+    """模拟 CosyVoice3LM，用于验证 torch.compile 的套用目标。"""
+
+    def __init__(self) -> None:
+        self.compiled = False
+
+
 class _FakeInnerModel:
-    """模拟 CosyVoice3Model，只提供 token_hop_len。"""
+    """模拟 CosyVoice3Model，提供 token_hop_len 与 llm 子模块。"""
 
     def __init__(self) -> None:
         self.token_hop_len = 25
+        self.llm = _FakeLLM()
 
     def tts(self, **kwargs: Any):  # noqa: ANN201
         yield {"tts_speech": _fake_speech(0.5)}
@@ -407,6 +415,82 @@ def test_text_frontend_wetext_mode_fails_loudly(
     e = CosyVoiceEngine(cfg)
     with pytest.raises(tf.TextFrontendError):
         e.load()
+
+
+# ----------------------------------------------------------------------
+# enable_compile 配置项（曾登记但未实现）
+# ----------------------------------------------------------------------
+
+
+def test_compile_disabled_by_default(engine) -> None:  # type: ignore[no-untyped-def]
+    """默认不编译。"""
+    d = engine.diagnostics()
+    assert d["compile_requested"] is False
+    assert d["compile_applied"] is False
+
+
+def test_compile_switch_is_consumed(fake_cosyvoice, config, monkeypatch) -> None:
+    """enable_compile=true 时，diagnostics 必须反映「已生效」。
+
+    这是对「配置看似生效但实际未使用」的守护 ——
+    该字段曾登记为「Phase 4 优化阶段」却从未被任何代码读取。
+    """
+    from custom_voice.inference.cosyvoice_engine import CosyVoiceEngine
+
+    import torch as real_torch
+
+    # 只替换 compile 属性，保留真 torch 的其余功能（zeros 等）
+    monkeypatch.setattr(real_torch, "compile", lambda m, **kw: m, raising=False)
+
+    cfg = config.model_copy(
+        update={"model_dir": str(fake_cosyvoice), "enable_compile": True}
+    )
+    e = CosyVoiceEngine(cfg)
+    e.load()  # 必须加载后才能套用 compile
+    d = e.diagnostics()
+    assert d["compile_requested"] is True
+    assert d["compile_applied"] is True
+
+
+def test_compile_failure_degrades_gracefully(fake_cosyvoice, config, monkeypatch) -> None:
+    """compile 失败不能阻断启动，只能降级。"""
+    from custom_voice.inference.cosyvoice_engine import CosyVoiceEngine
+
+    import torch as real_torch
+
+    def _boom(m, **kw):  # noqa: ANN001, ANN202
+        raise RuntimeError("模拟编译失败")
+
+    monkeypatch.setattr(real_torch, "compile", _boom, raising=False)
+
+    cfg = config.model_copy(
+        update={"model_dir": str(fake_cosyvoice), "enable_compile": True}
+    )
+    e = CosyVoiceEngine(cfg)
+    e.load()  # 不应因 compile 失败而抛异常
+    assert e.diagnostics()["compile_applied"] is False
+
+
+# ----------------------------------------------------------------------
+# 已移除的配置项不应回归
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["enable_sdpa", "enable_vllm_llm", "cpu_offload"])
+def test_removed_switches_stay_removed(field: str) -> None:
+    """这 3 个开关经实测后已移除，不应被重新加回。
+
+    移除理由（记录在 schema.py 注释里）：
+      enable_sdpa     PyTorch 2.8 默认已启用 flash/mem_efficient SDPA
+      enable_vllm_llm 模型目录无 vllm/ 子目录，无可用权重
+      cpu_offload     CosyVoice3 无 offload 接口，手动搬运会破坏推理图
+    """
+    from custom_voice.config.schema import GPUConfig
+
+    assert field not in GPUConfig.model_fields, (
+        f"{field} 已被移除，不应重新加入。若确有需要，"
+        "请先在 probe/ 下实测收益再实现。"
+    )
 
 
 # ----------------------------------------------------------------------

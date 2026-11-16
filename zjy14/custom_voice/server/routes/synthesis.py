@@ -8,14 +8,12 @@
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from ...core.errors import InvalidRequestError
 from ...core.logging import get_logger, get_request_id
 from ...schemas.synthesis import SynthesisRequest
 from ..deps import get_state

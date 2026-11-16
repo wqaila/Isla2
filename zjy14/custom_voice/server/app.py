@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import time
-import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 

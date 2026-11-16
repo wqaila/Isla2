@@ -18,7 +18,6 @@ import re
 from dataclasses import dataclass
 
 from .control import (
-    EMOTION_LABELS,
     ExpressionParams,
     PauseProfile,
     build_params,

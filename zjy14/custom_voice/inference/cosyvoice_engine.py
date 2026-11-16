@@ -210,6 +210,7 @@ class CosyVoiceEngine:
         self._model_dir = Path(config.model_dir) if config.model_dir else DEFAULT_MODEL_DIR
         self._ratio_warnings = 0
         self._hop_resets = 0
+        self._compile_applied = False
         # 归一化为枚举：model_copy(update=...) 不做类型校验，
         # 直接传字符串时 `is` 比较会失效，导致配置项静默不生效。
         self._text_frontend_mode = TextFrontendMode(config.text_frontend)
@@ -217,6 +218,60 @@ class CosyVoiceEngine:
     # ------------------------------------------------------------------
     # 内部工具
     # ------------------------------------------------------------------
+
+    def _apply_compile(self) -> None:
+        """按配置套用 torch.compile。
+
+        实测收益（2026-11-16，8 轮交错采样排除顺序效应）：
+          基线   中位 3.049s  均值 2.986s
+          compile 中位 2.783s  均值 2.808s
+          配对差值均值 -0.177s（相对改善 8.7%），8 轮中 7 轮更快
+          噪声参考（基线标准差/2）0.084s，收益是其 2 倍以上
+
+        只编译 LLM 子模块：它是自回归瓶颈（占首包约 52%）。
+        不编译 flow/hift：结构更复杂，graph break 风险高，收益不明确。
+
+        代价：首次推理触发编译，约多花 10-60s（实测本机约 1.2s 套用
+        + 首次推理额外开销）。因此只适合「常驻服务」场景，
+        冷启动敏感时建议关闭。
+        """
+        if not self._config.enable_compile:
+            return
+
+        try:
+            import torch
+        except ImportError:
+            logger.warning("torch 不可用，跳过 compile")
+            return
+
+        # 目标：self._model.model.llm（CosyVoice3Model 的 LLM 子模块）
+        inner = getattr(self._model, "model", None)
+        llm = getattr(inner, "llm", None) if inner is not None else None
+        if llm is None:
+            logger.warning(
+                "找不到 LLM 子模块，跳过 compile",
+                extra={
+                    "extra_fields": {
+                        "has_inner_model": inner is not None,
+                        "model_type": type(self._model).__name__,
+                    }
+                },
+            )
+            return
+
+        try:
+            t0 = time.perf_counter()
+            inner.llm = torch.compile(llm, dynamic=False)
+            elapsed = time.perf_counter() - t0
+            self._compile_applied = True
+            logger.info(
+                "torch.compile 已套用到 LLM（首次推理会触发编译）",
+                extra={"extra_fields": {"apply_s": round(elapsed, 2)}},
+            )
+        except Exception:  # noqa: BLE001
+            # compile 失败不应阻断启动，降级为未编译
+            logger.exception("torch.compile 套用失败，降级为未编译")
+            self._compile_applied = False
 
     def _reset_hop_len(self) -> None:
         """重置上游 token_hop_len 污染。
@@ -354,7 +409,12 @@ class CosyVoiceEngine:
         self._register_voices()
         cache_s = time.perf_counter() - t0
 
+        # torch.compile（若启用）。必须放在预热之前，
+        # 让预热承担首次编译开销，避免首个真实请求被拖慢。
+        self._apply_compile()
+
         # 预热：避免首句承担 CUDA kernel 初始化开销
+        # （启用 compile 时还承担首次编译）
         t0 = time.perf_counter()
         self._warmup()
         self._warmup_s = time.perf_counter() - t0
@@ -804,6 +864,9 @@ class CosyVoiceEngine:
             "ratio_warnings": self._ratio_warnings,
             "precision": self._config.precision.value,
             "peak_vram_mb": self._peak_vram_mb,
+            # torch.compile 状态：区分「配置要求」与「实际生效」
+            "compile_requested": self._config.enable_compile,
+            "compile_applied": self._compile_applied,
         }
 
     def shutdown(self) -> None:
