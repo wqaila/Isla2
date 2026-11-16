@@ -22,11 +22,13 @@ class AppState:
         engine: TTSEngine,
         db: Database,
         speaker_cache: Any | None = None,
+        scheduler: Any | None = None,
     ) -> None:
         self.config = config
         self.engine = engine
         self.db = db
         self.speaker_cache = speaker_cache
+        self.scheduler = scheduler
         self.started_at = time.time()
 
 

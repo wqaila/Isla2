@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：Phase 6 完成（Web 管理界面）**
+**当前阶段：Phase 4 完成（流式 + 并发优化）**
 
 ---
 
@@ -204,7 +204,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | **Phase 2a 音色收尾** | ✅ **完成** | 真引擎接入，186 测试全绿，12 项验收通过，**盲听确认改善** |
 | **D1 情绪验证** | ✅ **完成** | **实测结论：情绪指令无效**，改走路线乙（语速/音量/停顿 + LLM 侧情绪） |
 | **Phase 2b 表达控制** | ✅ **完成** | 路线乙：语速/音量/停顿 + 指令解析器，235 测试全绿，8 项验收通过 |
-| Phase 4 GPU/流式 | ⬜ 待开始 | |
+| **Phase 4 流式/并发** | ✅ **完成** | 长句首包 5.36s→1.48s（+72.4%），257 测试全绿 |
 | Phase 5 ESP32 桥接 | ⬜ 待开始 | 复用 zjy13 固件 |
 | **Phase 6 Web 界面** | ✅ **完成** | React + TS 8 页，构建通过，30 项验收通过 |
 | Phase 7 稳定发布 | ⬜ 待开始 | |
@@ -240,6 +240,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 |---|---|
 | [14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md) | **Phase 2b 报告（表达控制·路线乙）** |
 | [15_PHASE6_REPORT.md](docs/15_PHASE6_REPORT.md) | **Phase 6 报告（Web 管理界面）** |
+| [16_PHASE4_REPORT.md](docs/16_PHASE4_REPORT.md) | **Phase 4 报告（流式 + 并发）** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |

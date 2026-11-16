@@ -15,6 +15,18 @@ router = APIRouter(prefix="/api/v1/system", tags=["system"])
 logger = get_logger("routes.system")
 
 
+def _scheduler_stats(state) -> dict:  # type: ignore[no-untyped-def]
+    """读取调度器统计。调度器未启用时返回明确说明。"""
+    sched = getattr(state, "scheduler", None)
+    if sched is None:
+        return {"enabled": False, "reason": "调度器未初始化"}
+    try:
+        return {"enabled": True, **sched.stats()}
+    except Exception:  # noqa: BLE001
+        logger.exception("读取调度器统计失败")
+        return {"enabled": False, "reason": "统计读取失败"}
+
+
 @router.get("/status")
 async def status(request: Request) -> dict:
     """服务状态摘要：版本、配置、路径、引擎、运行时长。"""
@@ -41,7 +53,11 @@ async def status(request: Request) -> dict:
             "device": cfg.device,
             "precision": cfg.precision.value,
             "max_concurrent_requests": cfg.max_concurrent_requests,
+            "max_queue_size": cfg.max_queue_size,
+            "queue_timeout_s": cfg.queue_timeout_s,
             "request_timeout_s": cfg.request_timeout_s,
+            "stream_enabled": cfg.stream_enabled,
+            "stream_char_threshold": cfg.stream_char_threshold,
             "speaker_cache_enabled": cfg.speaker_cache_enabled,
             "speaker_cache_max_items": cfg.speaker_cache_max_items,
             "memory_safety_margin_mb": cfg.memory_safety_margin_mb,
@@ -55,6 +71,8 @@ async def status(request: Request) -> dict:
             "auth_token_set": bool(cfg.auth_token),
             "is_loopback": cfg.is_loopback(),
         },
+        # 调度器实时统计（并发/队列/拒绝/超时）
+        "scheduler": _scheduler_stats(state),
         "config_sources": describe_config_sources(),
         "paths": describe_paths(),
         "db": {

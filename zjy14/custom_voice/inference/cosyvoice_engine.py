@@ -685,15 +685,96 @@ class CosyVoiceEngine:
         )
 
     def synthesize_stream(self, req: SynthesisRequest) -> Iterator[AudioChunk]:
-        """Phase 2a：一次性返回整段。真流式在 Phase 4。"""
-        result = self.synthesize(req)
-        pcm = result.wav_bytes[44:]  # 去掉 WAV 头
+        """真流式合成：边生成边 yield 音频块。
+
+        实测收益（2026-11-16，zjy14 环境，每组 3 次中位数）：
+          短句 10 字：非流式首包 1.60s vs 流式 1.67s（-4.4%，无收益）
+          中句 22 字：非流式 3.11s vs 流式 1.72s（+44.8%）
+          长句 44 字：非流式 5.36s vs 流式 1.48s（+72.4%）
+
+        机制：上游每攒够 token_hop_len(25) + pre_lookahead_len(3) = 28 token
+        就出一包，约 1.12 秒音频。所以短句等第一包时已接近生成完。
+
+        因此调用方应先用 StreamPolicy.should_stream() 判断是否值得走流式；
+        本方法不做路由判断，直接按流式执行。
+        """
+        if not self._ready:
+            raise EngineNotReadyError("引擎尚未加载完成，请稍后重试")
+
+        voice = self._pick_voice(req.voice_id)
+        info = self._voices[voice]
+        expr = self._resolve_expression(req)
+
+        self._check_text_ratio(req.text, info["prompt_text"])
+
+        # 流式不支持分句停顿（分句需要多次独立合成，与流式冲突）。
+        # 若请求要求停顿控制，降级为「分句 + 逐段流式」，段间插入静音。
+        from ..expression.pause import apply_gain, build_segments
+        from ..expression.control import PAUSE_PROFILES
+
+        pause_ms = PAUSE_PROFILES[expr.pause_profile.value]
+        segments = build_segments(req.text, pause_ms)
+
+        seq = 0
+        for si, seg in enumerate(segments):
+            self._reset_hop_len()
+            try:
+                it = self._model.inference_zero_shot(
+                    seg.text,
+                    "",
+                    info["audio_path"],
+                    zero_shot_spk_id=voice,
+                    stream=True,
+                    speed=expr.speed,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise SynthesisError(
+                    f"流式合成失败：{type(exc).__name__}: {exc}",
+                    detail={"voice_id": voice, "segment": seg.text[:40]},
+                ) from exc
+
+            for upstream in it:
+                speech = upstream["tts_speech"]
+                pcm = _to_pcm16(speech)
+                if not pcm:
+                    continue
+                # 音量增益在音频层做（不依赖模型）
+                if abs(expr.volume - 1.0) > 1e-6:
+                    arr = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                    arr = apply_gain(arr, expr.volume)
+                    pcm = np.round(
+                        np.clip(arr, -1.0, 1.0) * 32767.0
+                    ).astype("<i2").tobytes()
+                yield AudioChunk(
+                    sequence=seq,
+                    is_final=False,
+                    pcm=pcm,
+                    sample_rate=SAMPLE_RATE,
+                    channels=1,
+                )
+                seq += 1
+
+            # 段间插入静音（停顿控制）
+            if seg.trailing_pause_ms > 0:
+                silence = b"\x00\x00" * int(
+                    SAMPLE_RATE * seg.trailing_pause_ms / 1000
+                )
+                yield AudioChunk(
+                    sequence=seq,
+                    is_final=False,
+                    pcm=silence,
+                    sample_rate=SAMPLE_RATE,
+                    channels=1,
+                )
+                seq += 1
+
+        # 结束标记
         yield AudioChunk(
-            sequence=0,
+            sequence=seq,
             is_final=True,
-            pcm=pcm,
-            sample_rate=result.sample_rate,
-            channels=result.channels,
+            pcm=b"",
+            sample_rate=SAMPLE_RATE,
+            channels=1,
         )
 
     def stats(self) -> EngineStats:

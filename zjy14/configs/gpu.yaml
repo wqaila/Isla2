@@ -16,9 +16,24 @@ device: cuda
 precision: fp32
 
 # ---- 并发 ----
-# 先单并发稳定，Phase 4 再逐步评估 2 并发。
+# 先单并发稳定。TTS 峰值显存 3.45GB，12GB 总量理论上够 2-3 并发，
+# 但 CUDA 上下文与中间张量会叠加，放开前需实测。
 max_concurrent_requests: 1
+# 等待队列上限。超出返回 429，避免无界堆积拖垮服务。
+max_queue_size: 8
+# 排队超时。超时返回 503。
+queue_timeout_s: 60
 request_timeout_s: 120
+
+# ---- 流式 ----
+# 实测（2026-11-16，每组 3 次中位数）：
+#   短句 10 字：非流式首包 1.60s vs 流式 1.67s（-4.4%，无收益）
+#   中句 22 字：非流式 3.11s vs 流式 1.72s（+44.8%）
+#   长句 44 字：非流式 5.36s vs 流式 1.48s（+72.4%）
+# 短句流式无收益的原因：上游要攒够 28 token（约 1.12s 音频）才出第一包。
+stream_enabled: true
+# 路由阈值：有效字符数 >= 此值走流式。取 15（介于 10 与 22 之间）。
+stream_char_threshold: 15
 
 # ---- 优化开关 ----
 enable_compile: false

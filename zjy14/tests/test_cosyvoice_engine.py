@@ -318,12 +318,37 @@ def test_synth_failure_maps_to_synthesis_error(engine) -> None:  # type: ignore[
     assert "合成失败" in str(ei.value)
 
 
-def test_stream_yields_single_chunk(engine) -> None:  # type: ignore[no-untyped-def]
+def test_stream_yields_chunks_with_final_marker(engine) -> None:  # type: ignore[no-untyped-def]
+    """流式必须产出多个数据块 + 一个 is_final 结束标记。
+
+    Phase 4 起改为真流式（此前是一次性返回单块）。
+    """
     chunks = list(engine.synthesize_stream(
-        SynthesisRequest(text="测试" * 5, voice_id="testvoice")))
-    assert len(chunks) == 1
-    assert chunks[0].is_final is True
-    assert chunks[0].sample_rate == 24000
+        SynthesisRequest(text="测试" * 10, voice_id="testvoice")))
+
+    assert len(chunks) >= 2, "真流式应至少产出 1 个数据块 + 1 个结束标记"
+    last = chunks[-1]
+    assert last.is_final is True
+    assert last.pcm == b""
+    data_chunks = chunks[:-1]
+    assert all(not c.is_final for c in data_chunks)
+    assert [c.sequence for c in chunks] == list(range(len(chunks)))
+    assert all(c.sample_rate == 24000 for c in chunks)
+
+
+def test_stream_sequence_starts_at_zero(engine) -> None:  # type: ignore[no-untyped-def]
+    chunks = list(engine.synthesize_stream(
+        SynthesisRequest(text="测试文本", voice_id="testvoice")))
+    assert chunks[0].sequence == 0
+
+
+def test_stream_not_ready(config, fake_cosyvoice) -> None:
+    from custom_voice.inference.cosyvoice_engine import CosyVoiceEngine
+
+    cfg = config.model_copy(update={"model_dir": str(fake_cosyvoice)})
+    e = CosyVoiceEngine(cfg)
+    with pytest.raises(EngineNotReadyError):
+        list(e.synthesize_stream(SynthesisRequest(text="测试")))
 
 
 # ----------------------------------------------------------------------

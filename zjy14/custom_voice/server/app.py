@@ -137,7 +137,26 @@ def build_app(config: GPUConfig | None = None) -> FastAPI:
             enabled=cfg.speaker_cache_enabled,
         )
 
-        app.state.zjy14 = AppState(cfg, engine, db, speaker_cache)
+        # 推理调度器：并发限制 + 排队 + 取消
+        from ..inference.scheduler import Scheduler
+
+        scheduler = Scheduler(
+            max_concurrent=cfg.max_concurrent_requests,
+            max_queue=cfg.max_queue_size,
+            queue_timeout_s=cfg.queue_timeout_s,
+        )
+        logger.info(
+            "推理调度器已启用",
+            extra={
+                "extra_fields": {
+                    "max_concurrent": cfg.max_concurrent_requests,
+                    "max_queue": cfg.max_queue_size,
+                    "queue_timeout_s": cfg.queue_timeout_s,
+                }
+            },
+        )
+
+        app.state.zjy14 = AppState(cfg, engine, db, speaker_cache, scheduler)
         try:
             yield
         finally:

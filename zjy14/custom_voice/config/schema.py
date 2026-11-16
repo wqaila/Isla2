@@ -94,11 +94,38 @@ class GPUConfig(BaseModel):
         le=8,
         description="最大并发合成请求数。先单并发稳定，再逐步放开。",
     )
+    max_queue_size: int = Field(
+        default=8,
+        ge=0,
+        le=64,
+        description="等待队列上限。超出时返回 429，避免无界堆积。",
+    )
+    queue_timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        le=600,
+        description="排队超时秒数。超时返回 503。",
+    )
     request_timeout_s: float = Field(
         default=120.0,
         gt=0,
         le=600,
         description="单次合成超时秒数。",
+    )
+
+    # ---- 流式 ----
+    stream_enabled: bool = Field(
+        default=True,
+        description="是否启用流式合成接口。",
+    )
+    stream_char_threshold: int = Field(
+        default=15,
+        ge=1,
+        le=200,
+        description=(
+            "流式路由阈值（有效字符数）。"
+            "实测 10 字流式无收益（-4.4%），22 字有收益（+44.8%），取 15。"
+        ),
     )
 
     # ---- 优化开关 ----
@@ -225,7 +252,11 @@ CONSUMED_FIELDS: dict[str, str] = {
     "engine": "custom_voice.server.app:create_engine",
     "device": "custom_voice.inference.stub_engine + cosyvoice_engine",
     "precision": "custom_voice.inference.stub_engine + cosyvoice_engine",
-    "max_concurrent_requests": "custom_voice.server.app:create_engine（Phase 4 接调度器）",
+    "max_concurrent_requests": "custom_voice.server.app:lifespan（Scheduler 并发上限）",
+    "max_queue_size": "custom_voice.server.app:lifespan（Scheduler 队列上限）",
+    "queue_timeout_s": "custom_voice.server.app:lifespan（Scheduler 排队超时）",
+    "stream_enabled": "custom_voice.inference.streaming:StreamPolicy",
+    "stream_char_threshold": "custom_voice.inference.streaming:StreamPolicy",
     "request_timeout_s": "custom_voice.server.routes.synthesis",
     "enable_compile": "Phase 4 优化阶段（当前仅记录到 /system/status）",
     "enable_sdpa": "Phase 4 优化阶段（当前仅记录到 /system/status）",
