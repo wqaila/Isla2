@@ -31,7 +31,15 @@ def current_version(db: Database) -> int:
 
 
 def migrate(db: Database) -> int:
-    """执行迁移，返回最终版本号。幂等。"""
+    """执行迁移，返回最终版本号。幂等。
+
+    说明：``SCHEMA_SQL`` 里全部是 ``CREATE ... IF NOT EXISTS``，
+    因此从任意旧版本升级都是「重跑一遍建表脚本 + 补记版本号」，
+    不需要为每个版本写单独的 ALTER 步骤。
+
+    这对新增索引/新增表是安全的；若将来需要给已有表加列
+    （SQLite 的 ``ALTER TABLE ADD COLUMN``），必须在此处按版本分支处理。
+    """
     conn = db.connect()
     applied = current_version(db)
 

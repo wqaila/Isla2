@@ -34,6 +34,20 @@ class ZJY14Error(Exception):
         return payload
 
 
+# ---- 通用 ----
+
+
+class NotFoundError(ZJY14Error):
+    """资源不存在。
+
+    对应 HTTP 404。原本定义在 ``routes/characters.py`` 里，
+    但合成记录、日志等模块也要用，故提升到 core 层统一管理。
+    """
+
+    code = "not_found"
+    http_status = 404
+
+
 # ---- 配置 ----
 
 
@@ -124,6 +138,7 @@ __all__ = [
     "EngineError",
     "EngineNotReadyError",
     "InvalidRequestError",
+    "NotFoundError",
     "SpeakerError",
     "SpeakerNotFoundError",
     "SynthesisError",

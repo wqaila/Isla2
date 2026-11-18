@@ -11,7 +11,8 @@ Phase 1 只建表，不做业务 CRUD（业务在 Phase 3）。
 from __future__ import annotations
 
 #: 当前 schema 版本。每次改表结构必须 +1，并在 MIGRATIONS 里加一步。
-SCHEMA_VERSION = 1
+#: v2：为合成记录查询补索引（voice_id / error_code / 复合时间索引）。
+SCHEMA_VERSION = 2
 
 #: 建表语句。用 IF NOT EXISTS 保证幂等。
 SCHEMA_SQL = """
@@ -95,6 +96,14 @@ CREATE TABLE IF NOT EXISTS synthesis_logs (
 
 CREATE INDEX IF NOT EXISTS idx_synthesis_request ON synthesis_logs(request_id);
 CREATE INDEX IF NOT EXISTS idx_synthesis_created ON synthesis_logs(created_at);
+
+-- v2 新增：合成记录查询需要的索引。
+-- 查询场景：按音色筛选、按错误筛选、按时间倒序分页。
+CREATE INDEX IF NOT EXISTS idx_synthesis_speaker ON synthesis_logs(speaker_id);
+CREATE INDEX IF NOT EXISTS idx_synthesis_emotion ON synthesis_logs(emotion);
+CREATE INDEX IF NOT EXISTS idx_synthesis_error ON synthesis_logs(error_code);
+CREATE INDEX IF NOT EXISTS idx_synthesis_created_desc
+    ON synthesis_logs(created_at DESC, id DESC);
 
 -- 性能指标时序：用于仪表盘
 CREATE TABLE IF NOT EXISTS metrics (

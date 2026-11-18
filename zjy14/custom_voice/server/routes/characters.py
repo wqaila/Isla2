@@ -14,20 +14,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from ...character.repository import Character, CharacterRepository
-from ...core.errors import InvalidRequestError, ZJY14Error
+from ...core.errors import InvalidRequestError, NotFoundError
 from ...core.logging import get_logger
 from ...schemas.character import CharacterCreate, CharacterOut, CharacterUpdate
 from ..deps import get_state
 
 router = APIRouter(prefix="/api/v1/characters", tags=["characters"])
 logger = get_logger("routes.characters")
-
-
-class NotFoundError(ZJY14Error):
-    """资源不存在。"""
-
-    code = "not_found"
-    http_status = 404
 
 
 def _repo(request: Request) -> CharacterRepository:

@@ -21,7 +21,7 @@ from ..db.migrate import migrate
 from ..db.session import Database
 from ..inference.engine import TTSEngine
 from .middleware import RequestIdMiddleware
-from .routes import characters, health, speakers, synthesis, system
+from .routes import characters, health, history, speakers, synthesis, system
 from .state import AppState
 
 logger = get_logger("app")
@@ -204,6 +204,7 @@ def build_app(config: GPUConfig | None = None) -> FastAPI:
     app.include_router(synthesis.router)
     app.include_router(characters.router)
     app.include_router(speakers.router)
+    app.include_router(history.router)
 
     return app
 

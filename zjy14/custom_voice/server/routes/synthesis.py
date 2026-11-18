@@ -23,18 +23,24 @@ logger = get_logger("routes.synthesis")
 
 
 def _record_synthesis(request: Request, req: SynthesisRequest, result) -> None:  # type: ignore[no-untyped-def]
-    """把合成记录写入 SQLite。失败不影响主流程。"""
+    """把成功合成记录写入 SQLite。失败不影响主流程。
+
+    注意 ``speaker_id`` 存的是 voice_id —— 合成记录表的字段名沿用
+    「声音档案」的命名，但 TTS 侧的标识是 voice_id。查询 API 的
+    ``voice_id`` 参数即映射到这一列。
+    """
     try:
         state = get_state(request)
         with state.db.transaction() as tx:
             tx.execute(
                 "INSERT INTO synthesis_logs ("
-                "request_id, text, emotion, style, speed, instruction,"
+                "request_id, speaker_id, text, emotion, style, speed, instruction,"
                 "sample_rate, duration_s, total_ms, first_audio_ms, rtf,"
                 "peak_vram_mb, engine, created_at"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     get_request_id() or result.request_id,
+                    result.voice_id or req.voice_id,
                     req.text,
                     req.emotion or "",
                     req.style or "",
@@ -52,6 +58,44 @@ def _record_synthesis(request: Request, req: SynthesisRequest, result) -> None: 
             )
     except Exception:  # noqa: BLE001
         logger.exception("写入合成记录失败（不影响响应）")
+
+
+def _record_failure(request: Request, req: SynthesisRequest, code: str) -> None:
+    """记录一次失败的合成。
+
+    为什么单独记：查询 API 的 ``only_failed`` 需要真实数据。
+    若只记成功，「失败统计」永远是 0，失去意义。
+    """
+    try:
+        state = get_state(request)
+        with state.db.transaction() as tx:
+            tx.execute(
+                "INSERT INTO synthesis_logs ("
+                "request_id, speaker_id, text, emotion, style, speed, instruction,"
+                "sample_rate, duration_s, total_ms, first_audio_ms, rtf,"
+                "peak_vram_mb, engine, error_code, created_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    get_request_id() or "unknown",
+                    req.voice_id,
+                    req.text,
+                    req.emotion or "",
+                    req.style or "",
+                    req.speed,
+                    req.instruction or "",
+                    0,
+                    0.0,
+                    0.0,
+                    None,
+                    0.0,
+                    None,
+                    "",
+                    code,
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("写入失败记录失败（不影响响应）")
 
 
 @router.post("/synthesize")
@@ -90,7 +134,13 @@ async def synthesize(request: Request, payload: SynthesisRequest) -> Response:
         return state.engine.synthesize(payload)
 
     # 放到线程池，避免阻塞事件循环
-    result = await run_in_threadpool(_do_synth)
+    try:
+        result = await run_in_threadpool(_do_synth)
+    except Exception as exc:  # noqa: BLE001
+        # 记录失败，让查询 API 的 only_failed / 失败统计有真实数据
+        code = getattr(exc, "code", "") or type(exc).__name__
+        _record_failure(request, payload, str(code))
+        raise
     result.request_id = get_request_id()
     elapsed_ms = (time.perf_counter() - started) * 1000
 

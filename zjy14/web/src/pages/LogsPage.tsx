@@ -1,170 +1,307 @@
-/** 日志中心：服务端结构化日志的说明与本地调试指引。
- *
- * 后端日志是 JSON Lines 落在 WSL 本地 ~/zjy14-data/logs/zjy14.log。
- * 浏览器无法直接读该文件，所以本页提供：
- *   1. 日志格式说明
- *   2. 常用排查命令（可复制）
- *   3. 当前会话的合成记录（来自 /api/v1/system/status 与本地历史）
- */
+/** 日志中心：真实日志查询（后端解析 JSON Lines）。 */
 
-import { useCallback, useState } from "react";
-import { systemApi } from "../api/client";
-import { Alert, Card, ErrorBox, Loading, PageHead } from "../components/ui";
-import { useAsync } from "../hooks/useAsync";
+import { useCallback, useEffect, useState } from "react";
+import { describeError, logsApi } from "../api/client";
+import type { LogEntry, LogFile, LogPage } from "../api/types";
+import {
+  Alert,
+  Badge,
+  Card,
+  ErrorBox,
+  Metric,
+  PageHead,
+} from "../components/ui";
 
-const COMMANDS = [
-  {
-    label: "查看最近 50 行",
-    cmd: "tail -n 50 ~/zjy14-data/logs/zjy14.log",
-  },
-  {
-    label: "只看警告与错误",
-    cmd: "grep -E '\"level\": \"(WARNING|ERROR)\"' ~/zjy14-data/logs/zjy14.log | tail -n 30",
-  },
-  {
-    label: "按 request_id 追踪",
-    cmd: "grep '<request_id>' ~/zjy14-data/logs/zjy14.log",
-  },
-  {
-    label: "统计合成耗时",
-    cmd: "grep '合成完成' ~/zjy14-data/logs/zjy14.log | tail -n 20",
-  },
-  {
-    label: "查看音色注册情况",
-    cmd: "grep -E '音色已注册|参考文本校验' ~/zjy14-data/logs/zjy14.log",
-  },
-  {
-    label: "查看文本前端是否启用",
-    cmd: "grep '文本前端' ~/zjy14-data/logs/zjy14.log",
-  },
-];
+const LEVELS = ["INFO", "WARNING", "ERROR"] as const;
+
+function levelKind(level: string): "ok" | "warn" | "err" | "dim" {
+  switch (level) {
+    case "ERROR":
+    case "CRITICAL":
+      return "err";
+    case "WARNING":
+      return "warn";
+    case "INFO":
+      return "ok";
+    default:
+      return "dim";
+  }
+}
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
 
 export default function LogsPage() {
-  const status = useAsync(useCallback(() => systemApi.status(), []));
-  const [copied, setCopied] = useState<string | null>(null);
+  const [page, setPage] = useState<LogPage | null>(null);
+  const [files, setFiles] = useState<LogFile[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const copy = async (cmd: string) => {
+  // 查询条件
+  const [limit, setLimit] = useState(100);
+  const [levels, setLevels] = useState<string[]>([]);
+  const [requestId, setRequestId] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [onlyErrors, setOnlyErrors] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
     try {
-      await navigator.clipboard.writeText(cmd);
-      setCopied(cmd);
-      setTimeout(() => setCopied(null), 1500);
-    } catch {
-      // 剪贴板不可用时降级为选中提示
-      alert("浏览器不允许访问剪贴板，请手动复制");
+      const [p, f] = await Promise.all([
+        logsApi.query({
+          limit,
+          levels,
+          request_id: requestId.trim() || undefined,
+          keyword: keyword.trim() || undefined,
+          only_errors: onlyErrors,
+        }),
+        logsApi.files(),
+      ]);
+      setPage(p);
+      setFiles(f);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setLoading(false);
     }
+  }, [limit, levels, requestId, keyword, onlyErrors]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggleLevel = (lv: string) => {
+    setLevels((prev) =>
+      prev.includes(lv) ? prev.filter((x) => x !== lv) : [...prev, lv],
+    );
   };
 
-  const logPath = status.data?.paths?.["log_dir"] ?? "~/zjy14-data/logs";
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 剪贴板不可用时静默（用户可手动选中）
+    }
+  };
 
   return (
     <>
       <PageHead
         title="日志中心"
-        desc="结构化日志（JSON Lines）落在 WSL 本地，浏览器无法直读，此处提供排查命令。"
+        desc="服务端结构化日志（JSON Lines），由后端解析后返回，浏览器无需读文件。"
       />
 
-      <Alert kind="info">
-        日志路径：<span className="mono">{logPath}/zjy14.log</span>
-        <br />
-        格式：每行一个 JSON，字段含 ts / level / event / request_id / 业务字段。
-        敏感字段（api_key / auth_token）自动脱敏。
-      </Alert>
+      {err && <ErrorBox message={err} />}
 
-      {status.error && <ErrorBox message={status.error} />}
-      {status.loading && <Loading />}
-
-      <Card title="常用排查命令（点击复制）">
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: 200 }}>用途</th>
-              <th>命令</th>
-              <th style={{ width: 90 }}>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {COMMANDS.map((c) => (
-              <tr key={c.label}>
-                <td>{c.label}</td>
-                <td className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
-                  {c.cmd}
-                </td>
-                <td>
-                  <button className="ghost sm" onClick={() => copy(c.cmd)}>
-                    {copied === c.cmd ? "已复制" : "复制"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-
-      <Card title="日志字段说明">
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: 160 }}>字段</th>
-              <th>含义</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td className="mono">ts</td>
-              <td className="dim">ISO8601 时间戳（本地时区）</td>
-            </tr>
-            <tr>
-              <td className="mono">level</td>
-              <td className="dim">INFO / WARNING / ERROR</td>
-            </tr>
-            <tr>
-              <td className="mono">event</td>
-              <td className="dim">事件描述（中文）</td>
-            </tr>
-            <tr>
-              <td className="mono">request_id</td>
-              <td className="dim">
-                请求追踪 ID，由中间件注入，可用响应头 x-request-id 对账
-              </td>
-            </tr>
-            <tr>
-              <td className="mono">voice_id / chars / duration_s</td>
-              <td className="dim">合成业务字段</td>
-            </tr>
-            <tr>
-              <td className="mono">rtf / total_ms</td>
-              <td className="dim">性能指标</td>
-            </tr>
-            <tr>
-              <td className="mono">segments</td>
-              <td className="dim">分句数量（停顿控制生效时会 &gt; 1）</td>
-            </tr>
-            <tr>
-              <td className="mono">emotion_meta</td>
-              <td className="dim">
-                情绪标签（仅记录，不参与合成 —— 见 D1 结论）
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </Card>
-
-      <Card title="数据库中的合成记录">
-        <div className="hint">
-          每次合成都会写入 SQLite 的 <span className="mono">synthesis_logs</span> 表，
-          包含 request_id、文本、参数、时长、RTF、错误码。可用以下命令查询：
+      <Card title="查询条件">
+        <div className="row">
+          <div className="field">
+            <label>条数上限</label>
+            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+              {[50, 100, 200, 500, 1000].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>级别</label>
+            <div style={{ display: "flex", gap: 12, paddingTop: 6 }}>
+              {LEVELS.map((lv) => (
+                <label
+                  key={lv}
+                  style={{ display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={levels.includes(lv)}
+                    onChange={() => toggleLevel(lv)}
+                  />
+                  {lv}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="field">
+            <label>request_id</label>
+            <input
+              value={requestId}
+              onChange={(e) => setRequestId(e.target.value)}
+              placeholder="精确匹配，如 2e1c4dbeec654d8c"
+            />
+          </div>
+          <div className="field">
+            <label>关键词</label>
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="事件或字段值，如 合成完成"
+            />
+          </div>
         </div>
-        <pre style={{ marginTop: 10 }}>
-{`sqlite3 ~/zjy14-data/custom_voice.db \\
-  "SELECT created_at, voice_id, duration_s, rtf, emotion
-   FROM synthesis_logs ORDER BY id DESC LIMIT 20;"`}
-        </pre>
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={onlyErrors}
+              onChange={(e) => setOnlyErrors(e.target.checked)}
+            />
+            只看错误（含异常堆栈）
+          </label>
+          <button onClick={() => void load()} disabled={loading}>
+            {loading ? "查询中…" : "刷新"}
+          </button>
+        </div>
       </Card>
 
-      <Alert kind="warn">
-        日志里不会记录 API Key、令牌或完整音频内容。
-        角色声音仅限用户拥有或明确获授权的素材。
+      {page && (
+        <Card title={`查询结果（${page.count} 条）`}>
+          <div className="grid grid-4" style={{ marginBottom: 12 }}>
+            <Metric label="返回条数" value={page.count} />
+            <Metric label="扫描行数" value={page.scanned} />
+            <Metric label="坏行" value={page.bad_lines} />
+            <Metric label="文件大小" value={fmtSize(page.file_size)} />
+          </div>
+
+          {page.bad_lines > 0 && (
+            <Alert kind="warn">
+              有 {page.bad_lines} 行无法解析（可能是进程被中断导致的截断行）。
+              这些行已跳过，不影响其它日志。
+            </Alert>
+          )}
+
+          {page.has_more && (
+            <div className="hint" style={{ marginBottom: 8 }}>
+              还有更早的日志未显示。可提高「条数上限」或用条件缩小范围。
+            </div>
+          )}
+
+          <div style={{ fontFamily: "var(--mono, monospace)", fontSize: 12 }}>
+            {page.entries.length === 0 ? (
+              <div className="empty">没有匹配的日志</div>
+            ) : (
+              page.entries.map((e) => <LogRow key={`${e.line_no}-${e.ts}`} e={e} onCopy={copy} />)
+            )}
+          </div>
+        </Card>
+      )}
+
+      <Card title={`日志文件（${files.length}）`}>
+        {files.length === 0 ? (
+          <div className="empty">日志目录为空</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th style={{ width: 100 }}>大小</th>
+                <th style={{ width: 180 }}>修改时间</th>
+                <th style={{ width: 80 }}>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              {files.map((f) => (
+                <tr key={f.name}>
+                  <td className="mono" style={{ fontSize: 11 }}>
+                    {f.name}
+                  </td>
+                  <td className="mono">{fmtSize(f.size)}</td>
+                  <td className="mono" style={{ fontSize: 11 }}>
+                    {f.modified_at}
+                  </td>
+                  <td>
+                    {f.is_current ? (
+                      <Badge kind="ok">当前</Badge>
+                    ) : (
+                      <Badge kind="dim">归档</Badge>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Alert kind="info">
+        日志路径：<span className="mono">{page?.path ?? "（未知）"}</span>
+        <br />
+        格式：每行一个 JSON，字段含 ts / level / logger / event / request_id / 业务字段。
+        敏感字段（api_key / auth_token）在写入与读取时各脱敏一次。
       </Alert>
     </>
+  );
+}
+
+function LogRow({ e, onCopy }: { e: LogEntry; onCopy: (t: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const fields = e.fields ?? {};
+  const hasDetail = Object.keys(fields).length > 0 || Boolean(e.exc);
+
+  return (
+    <div
+      style={{
+        borderBottom: "1px solid var(--border)",
+        padding: "6px 0",
+      }}
+    >
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span className="dim" style={{ minWidth: 44 }}>
+          #{e.line_no}
+        </span>
+        <Badge kind={levelKind(e.level)}>{e.level}</Badge>
+        <span className="dim" style={{ fontSize: 11 }}>
+          {e.ts}
+        </span>
+        <span style={{ flex: 1 }}>{e.event}</span>
+        {hasDetail && (
+          <button className="ghost sm" onClick={() => setOpen((v) => !v)}>
+            {open ? "收起" : "详情"}
+          </button>
+        )}
+        {e.request_id && (
+          <button className="ghost sm" onClick={() => onCopy(e.request_id!)}>
+            复制 ID
+          </button>
+        )}
+      </div>
+
+      {e.request_id && (
+        <div className="dim" style={{ fontSize: 11, marginLeft: 52 }}>
+          request_id: <span className="mono">{e.request_id}</span>
+        </div>
+      )}
+
+      {open && (
+        <div style={{ marginLeft: 52, marginTop: 6 }}>
+          <div className="dim" style={{ fontSize: 11, marginBottom: 4 }}>
+            logger: <span className="mono">{e.logger}</span>
+          </div>
+          {Object.keys(fields).length > 0 && (
+            <pre style={{ margin: 0, fontSize: 11 }}>
+              {JSON.stringify(fields, null, 2)}
+            </pre>
+          )}
+          {e.exc && (
+            <pre
+              style={{
+                margin: "6px 0 0",
+                fontSize: 11,
+                color: "var(--err, #f88)",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {e.exc}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

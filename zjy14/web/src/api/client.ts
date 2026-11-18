@@ -11,9 +11,16 @@ import type {
   Character,
   GpuInfo,
   HealthResponse,
+  HistoryPage,
+  HistoryQuery,
+  HistoryStats,
+  LogFile,
+  LogPage,
+  LogQuery,
   QualityReport,
   Speaker,
   SynthesisMeta,
+  SynthesisRecord,
   SynthesisRequest,
   SystemStatus,
 } from "./types";
@@ -278,6 +285,87 @@ export interface StreamSummary {
   firstChunkMs: number;
   totalMs: number;
 }
+
+/** 把查询对象转成 URL 查询串（跳过 undefined / 空数组）。 */
+function toQueryString(params: Record<string, unknown>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === "") continue;
+    if (Array.isArray(v)) {
+      // 数组参数重复传（后端用 list[str] 接收）
+      for (const item of v) {
+        if (item !== undefined && item !== null && item !== "") {
+          sp.append(k, String(item));
+        }
+      }
+    } else if (typeof v === "boolean") {
+      // 只传 true，避免 URL 冗长
+      if (v) sp.append(k, "true");
+    } else {
+      sp.append(k, String(v));
+    }
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
+/** 合成记录查询。 */
+export const historyApi = {
+  /** 分页查询合成记录。 */
+  async list(q: HistoryQuery = {}): Promise<HistoryPage> {
+    const res = await fetch(BASE + "/api/v1/history" + toQueryString({ ...q }));
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as HistoryPage;
+  },
+
+  /** 统计（不受分页影响）。 */
+  async stats(q: Omit<HistoryQuery, "limit" | "cursor"> = {}): Promise<HistoryStats> {
+    const res = await fetch(BASE + "/api/v1/history/stats" + toQueryString({ ...q }));
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as HistoryStats;
+  },
+
+  /** 单条详情。 */
+  async get(id: number): Promise<SynthesisRecord> {
+    const res = await fetch(BASE + `/api/v1/history/${id}`);
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as SynthesisRecord;
+  },
+
+  /** 按 request_id 查（可能多条）。 */
+  async byRequest(requestId: string): Promise<SynthesisRecord[]> {
+    const res = await fetch(
+      BASE + `/api/v1/history/by-request/${encodeURIComponent(requestId)}`,
+    );
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as SynthesisRecord[];
+  },
+
+  /** 清理指定时间之前的记录。 */
+  async purge(before: string): Promise<void> {
+    const res = await fetch(BASE + "/api/v1/history" + toQueryString({ before }), {
+      method: "DELETE",
+    });
+    if (!res.ok) await parseError(res);
+  },
+};
+
+/** 日志查询。 */
+export const logsApi = {
+  /** 查询日志（最新在前）。 */
+  async query(q: LogQuery = {}): Promise<LogPage> {
+    const res = await fetch(BASE + "/api/v1/logs" + toQueryString({ ...q }));
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as LogPage;
+  },
+
+  /** 日志文件列表（含轮转归档）。 */
+  async files(): Promise<LogFile[]> {
+    const res = await fetch(BASE + "/api/v1/logs/files");
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as LogFile[];
+  },
+};
 
 /** 把 ApiError 转成可展示的文本（含 detail 摘要）。 */
 export function describeError(e: unknown): string {

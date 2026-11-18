@@ -556,8 +556,21 @@ class CosyVoiceEngine:
         return out
 
     def _warmup(self) -> None:
-        """预热：跑两次短合成，让 CUDA kernel 就绪。"""
-        voice = self._pick_voice(self._config.default_voice_id)
+        """预热：跑两次短合成，让 CUDA kernel 就绪。
+
+        注意：这里**不能**用 ``_pick_voice(default_voice_id)``。
+        配置里的默认音色可能不存在于当前音色集合（如测试环境只有
+        ``testvoice`` 而配置写 ``elysia``）。预热只需任意一个可用音色，
+        用配置值会因「未知音色报错」而阻断启动。
+
+        未指定音色时的兜底逻辑仍由 ``_pick_voice`` 负责，
+        此处直接取第一个可用音色。
+        """
+        if not self._voices:
+            logger.warning("没有可用音色，跳过预热")
+            return
+
+        voice = next(iter(self._voices))
         info = self._voices[voice]
         for _ in range(2):
             self._reset_hop_len()
@@ -574,13 +587,44 @@ class CosyVoiceEngine:
             except Exception:  # noqa: BLE001
                 logger.exception("预热失败（不阻断启动）")
 
-    def _pick_voice(self, voice_id: str | None) -> str:
-        """选择音色，未指定或不存在时回退到默认。"""
-        if voice_id and voice_id in self._voices:
-            return voice_id
-        if self._config.default_voice_id in self._voices:
-            return self._config.default_voice_id
-        return next(iter(self._voices))
+    def _pick_voice(self, voice_id: str | None, *, explicit: bool = True) -> str:
+        """选择音色。
+
+        **显式指定的音色不存在时必须报错，不能静默回退到默认。**
+
+        早期版本对未知 voice_id 直接回退到 default_voice_id，
+        表现为：调用方指定「角色A」却听到「角色B」的声音，且 HTTP 200。
+        这是典型的静默失效 —— 不报错、不崩溃，但结果是错的。
+        （对比 StubEngine 一直返回 400，两者行为不一致也是缺陷。）
+
+        :param voice_id: 请求里的音色标识
+        :param explicit: 调用方是否**显式**传了该字段。
+            为 False 时用引擎配置的默认音色。
+            为什么要这个参数：``SynthesisRequest.voice_id`` 的默认值是
+            ``"elysia"``（契约要求，不能改成 None），所以「没传」和
+            「传了 elysia」在值上无法区分。引擎必须靠
+            ``req.model_fields_set`` 判断，否则配置默认音色与 Schema
+            默认值不一致时会误报「未知音色」。
+        """
+        from ..core.errors import InvalidRequestError
+
+        if not self._voices:
+            raise InvalidRequestError("没有任何可用音色，请先注册声音档案")
+
+        # 未显式指定：用配置的默认音色，配置值不存在则取第一个可用
+        if not explicit or voice_id is None or not voice_id.strip():
+            if self._config.default_voice_id in self._voices:
+                return self._config.default_voice_id
+            return next(iter(self._voices))
+
+        vid = voice_id.strip()
+        if vid in self._voices:
+            return vid
+
+        raise InvalidRequestError(
+            f"未知音色 {vid!r}，可用: {sorted(self._voices)}",
+            detail={"voice_id": vid, "available": sorted(self._voices)},
+        )
 
     def is_ready(self) -> bool:
         return self._ready
@@ -692,7 +736,9 @@ class CosyVoiceEngine:
         if not self._ready:
             raise EngineNotReadyError("引擎尚未加载完成，请稍后重试")
 
-        voice = self._pick_voice(req.voice_id)
+        voice = self._pick_voice(
+            req.voice_id, explicit="voice_id" in req.model_fields_set
+        )
         info = self._voices[voice]
 
         expr = self._resolve_expression(req)
@@ -761,7 +807,9 @@ class CosyVoiceEngine:
         if not self._ready:
             raise EngineNotReadyError("引擎尚未加载完成，请稍后重试")
 
-        voice = self._pick_voice(req.voice_id)
+        voice = self._pick_voice(
+            req.voice_id, explicit="voice_id" in req.model_fields_set
+        )
         info = self._voices[voice]
         expr = self._resolve_expression(req)
 

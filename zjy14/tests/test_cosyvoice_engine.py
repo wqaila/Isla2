@@ -262,7 +262,9 @@ def test_hop_len_reset_disabled(fake_cosyvoice, config) -> None:
     e.load()
     inst = _FakeCosyVoice3.instances[-1]
     inst.model.token_hop_len = 100
-    e.synthesize(SynthesisRequest(text="测试" * 5, voice_id="testvoice"))
+    # 用引擎实际注册的音色（此 fixture 下是 elysia，不是 testvoice）
+    voice = e.list_voices()[0]
+    e.synthesize(SynthesisRequest(text="测试" * 5, voice_id=voice))
     assert inst.model.token_hop_len == 100
 
 
@@ -304,9 +306,47 @@ def test_synthesize_returns_wav(engine) -> None:  # type: ignore[no-untyped-def]
     assert r.duration_s > 0
 
 
-def test_synthesize_unknown_voice_falls_back(engine) -> None:  # type: ignore[no-untyped-def]
-    """未知音色回退到默认，而不是直接报错（决策：安全默认值）。"""
-    r = engine.synthesize(SynthesisRequest(text="测试" * 5, voice_id="nobody"))
+def test_synthesize_unknown_voice_raises(engine) -> None:  # type: ignore[no-untyped-def]
+    """未知音色必须报错，不能静默回退到默认。
+
+    这条曾经是「回退到默认」的断言（决策：安全默认值），
+    但那会造成静默失效：调用方指定「角色A」，实际听到「角色B」，
+    且 HTTP 返回 200。2026-11-18 改为报错，与 StubEngine 行为一致。
+    """
+    from custom_voice.core.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as ei:
+        engine.synthesize(SynthesisRequest(text="测试" * 5, voice_id="nobody"))
+    assert "未知音色" in str(ei.value)
+    assert "nobody" in str(ei.value)
+
+
+def test_stream_unknown_voice_raises(engine) -> None:  # type: ignore[no-untyped-def]
+    """流式路径同样不能静默回退。"""
+    from custom_voice.core.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError):
+        list(engine.synthesize_stream(
+            SynthesisRequest(text="测试" * 5, voice_id="nobody")))
+
+
+def test_unspecified_voice_uses_engine_default(engine) -> None:  # type: ignore[no-untyped-def]
+    """不传 voice_id 时，引擎应使用「配置的默认音色」，而不是 Schema 的硬编码默认值。
+
+    这是本次修未知音色时暴露的真实设计问题：
+    ``SynthesisRequest.voice_id`` 的默认值是 ``"elysia"``（为兼容 zjy13 契约），
+    但引擎里注册的音色可能不是它（如测试环境只有 ``testvoice``）。
+    若引擎把「Schema 默认值」当成「调用方显式指定」，就会报未知音色。
+
+    正确语义：
+      - 调用方**显式**传了不存在的音色 -> 报错（不能静默换声音）
+      - 调用方**没传**（拿到的是 Schema 默认值）-> 用引擎配置的默认音色
+    """
+    req = SynthesisRequest(text="测试" * 5)
+    # 确认 Schema 默认值确实是 elysia（契约要求，不能改）
+    assert req.voice_id == "elysia"
+
+    r = engine.synthesize(req)
     assert r.voice_id in engine.list_voices()
 
 

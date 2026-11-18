@@ -180,6 +180,110 @@ export interface ApiErrorBody {
   detail?: Record<string, unknown>;
 }
 
+/** 一条合成记录（GET /api/v1/history） */
+export interface SynthesisRecord {
+  id: number;
+  request_id: string;
+  text: string;
+  voice_id: string;
+  character_id: string | null;
+  speaker_id: string | null;
+  emotion: string;
+  style: string;
+  speed: number;
+  instruction: string;
+  sample_rate: number;
+  duration_s: number;
+  total_ms: number;
+  first_audio_ms: number | null;
+  rtf: number;
+  peak_vram_mb: number | null;
+  engine: string;
+  error_code: string;
+  created_at: string;
+}
+
+/** 合成记录分页结果 */
+export interface HistoryPage {
+  items: SynthesisRecord[];
+  next_cursor: string | null;
+  has_more: boolean;
+  count: number;
+}
+
+/** 合成记录统计 */
+export interface HistoryStats {
+  total: number;
+  success: number;
+  failed: number;
+  success_rate: number;
+  total_audio_s: number;
+  total_synth_s: number;
+  rtf_median: number;
+  rtf_mean: number;
+  rtf_min: number;
+  rtf_max: number;
+  by_voice: Record<string, number>;
+  by_error: Record<string, number>;
+  first_at: string | null;
+  last_at: string | null;
+}
+
+/** 合成记录查询参数 */
+export interface HistoryQuery {
+  voice_id?: string;
+  character_id?: string;
+  emotion?: string;
+  only_failed?: boolean;
+  only_success?: boolean;
+  text_contains?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+/** 一条日志 */
+export interface LogEntry {
+  ts: string;
+  level: string;
+  logger: string;
+  event: string;
+  request_id?: string;
+  line_no: number;
+  exc?: string;
+  fields?: Record<string, unknown>;
+}
+
+/** 日志查询结果 */
+export interface LogPage {
+  entries: LogEntry[];
+  count: number;
+  scanned: number;
+  bad_lines: number;
+  has_more: boolean;
+  path: string;
+  file_size: number;
+}
+
+/** 日志文件信息 */
+export interface LogFile {
+  name: string;
+  size: number;
+  modified_at: string;
+  is_current: boolean;
+}
+
+/** 日志查询参数 */
+export interface LogQuery {
+  limit?: number;
+  levels?: string[];
+  request_id?: string;
+  keyword?: string;
+  logger_name?: string;
+  only_errors?: boolean;
+}
+
 /** 官方情绪标签（仅元数据） */
 export const EMOTIONS = [
   { value: "neutral", label: "中性" },

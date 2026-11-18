@@ -3,7 +3,7 @@
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
 
-**当前阶段：前端流式完成（Phase 8）**
+**当前阶段：合成记录与日志查询 API 完成**
 
 ---
 
@@ -124,6 +124,40 @@ POST   /api/v1/speakers/{id}/validate   重新做质量检测
 | 静音 | > 60% |
 | 信噪比 | < 15dB（动态范围足够时才判） |
 | 音量 | RMS < -35 dBFS |
+
+### 合成记录与日志
+
+```text
+GET    /api/v1/history                 分页查询（游标分页，最新在前）
+GET    /api/v1/history/stats           统计（成功/失败、RTF、按音色分组）
+GET    /api/v1/history/{id}            单条详情
+GET    /api/v1/history/by-request/{rid}  按 request_id 查
+DELETE /api/v1/history?before=...      按时间清理（204）
+
+GET    /api/v1/logs                    日志查询（解析 JSON Lines）
+GET    /api/v1/logs/files              日志文件列表（含轮转归档）
+```
+
+**分页用游标不用 OFFSET**：合成记录持续写入，OFFSET 分页会重复或跳过行。
+把上一页返回的 `next_cursor` 原样传回即可。
+
+**查询参数**（history）：`voice_id` / `character_id` / `emotion` /
+`only_failed` / `only_success` / `text_contains` / `since` / `until` /
+`limit`（≤200）/ `cursor`。
+
+**查询参数**（logs）：`limit`（≤1000）/ `level`（可重复传）/
+`request_id` / `keyword` / `logger_name` / `only_errors`。
+
+```bash
+# 只看失败的合成
+curl -s "localhost:50001/api/v1/history?only_failed=true"
+
+# 看错误日志
+curl -s "localhost:50001/api/v1/logs?level=ERROR&limit=20"
+
+# 按 request_id 追踪一次请求（rid 从合成响应头 x-request-id 取）
+curl -s "localhost:50001/api/v1/logs?request_id=<rid>"
+```
 
 **安全校验**：路径必须绝对、不含 `..`、文件存在、扩展名在白名单内。
 
@@ -248,6 +282,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | **故障排查手册** |
 | [19_PHASE8_STREAM_UI.md](docs/19_PHASE8_STREAM_UI.md) | **前端流式播放 + 真机联调准备** |
 | [20_DAILY_SUMMARY_2026-11-16.md](docs/20_DAILY_SUMMARY_2026-11-16.md) | **当日总结（成果·不足·缺陷）** |
+| [21_HISTORY_LOGS_API.md](docs/21_HISTORY_LOGS_API.md) | **合成记录与日志查询 API** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |
