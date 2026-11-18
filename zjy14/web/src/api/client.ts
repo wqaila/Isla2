@@ -10,6 +10,7 @@ import type {
   ApiErrorBody,
   Character,
   CleanupRecord,
+  DeviceSnapshot,
   GpuInfo,
   HealthResponse,
   HistoryPage,
@@ -431,6 +432,48 @@ export const logsApi = {
     if (!res.ok) await parseError(res);
     return (await res.json()) as LogFile[];
   },
+};
+
+// ----------------------------------------------------------------------
+// 设备状态监控
+// ----------------------------------------------------------------------
+//
+// 数据来自 **zjy13 的 WebSocket 服务**，不是 zjy14。
+// zjy13 在 :8765 上同时提供 WS 与只读 HTTP（/api/devices）。
+// 因为端口不同，属于跨域请求 —— zjy13 侧已返回
+// Access-Control-Allow-Origin: *，所以浏览器可直接读。
+//
+// 基址可通过 VITE_ZJY13_BASE 覆盖（默认 http://127.0.0.1:8765）。
+
+const ZJY13_BASE =
+  (import.meta.env.VITE_ZJY13_BASE as string | undefined) ??
+  "http://127.0.0.1:8765";
+
+export const deviceApi = {
+  /** 拉取一次设备状态快照。 */
+  async snapshot(baseUrl = ZJY13_BASE, signal?: AbortSignal): Promise<DeviceSnapshot> {
+    const res = await fetch(`${baseUrl}/api/devices`, { signal });
+    if (!res.ok) {
+      throw new ApiError(
+        `设备监控服务返回 ${res.status}`,
+        `http_${res.status}`,
+        res.status,
+      );
+    }
+    return (await res.json()) as DeviceSnapshot;
+  },
+
+  /** 健康检查（极简，用于判断监控服务是否在跑）。 */
+  async health(baseUrl = ZJY13_BASE, signal?: AbortSignal): Promise<{ ok: boolean; active: number }> {
+    const res = await fetch(`${baseUrl}/api/devices/health`, { signal });
+    if (!res.ok) {
+      throw new ApiError(`健康检查失败 ${res.status}`, `http_${res.status}`, res.status);
+    }
+    return (await res.json()) as { ok: boolean; active: number };
+  },
+
+  /** 当前使用的基址（供 UI 显示）。 */
+  baseUrl: ZJY13_BASE,
 };
 
 /** 把 ApiError 转成可展示的文本（含 detail 摘要）。 */

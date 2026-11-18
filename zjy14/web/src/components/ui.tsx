@@ -16,7 +16,8 @@ export function Card({
   children,
   actions,
 }: {
-  title?: string;
+  /** 卡片标题。接受 ReactNode 以便带状态徽章（设备监控页需要）。 */
+  title?: ReactNode;
   children: ReactNode;
   actions?: ReactNode;
 }) {
@@ -44,10 +45,17 @@ export function Metric({
   label,
   value,
   unit,
+  hint,
 }: {
   label: string;
   value: ReactNode;
   unit?: string;
+  /**
+   * 指标下方的补充说明（灰色小字）。
+   * 用途：标注「偏慢」「已超阈值」「等待中」这类状态判断，
+   * 避免把判断塞进 value 里导致数字与说明混在一起。
+   */
+  hint?: ReactNode;
 }) {
   return (
     <div className="metric">
@@ -56,6 +64,14 @@ export function Metric({
         {value}
         {unit && <span className="metric-unit">{unit}</span>}
       </div>
+      {hint && (
+        <div
+          className="dim"
+          style={{ fontSize: 10, marginTop: 2, lineHeight: 1.3 }}
+        >
+          {hint}
+        </div>
+      )}
     </div>
   );
 }

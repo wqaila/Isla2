@@ -301,6 +301,126 @@ export interface LogQuery {
   file_name?: string;
 }
 
+// ----------------------------------------------------------------------
+// 设备状态监控（数据来自 zjy13 的 /api/devices）
+// ----------------------------------------------------------------------
+
+/** 对话状态（与 zjy13 server/ws/states.py 的 State 枚举一致） */
+export type DeviceState =
+  | "idle"
+  | "recording"
+  | "asr_processing"
+  | "llm_processing"
+  | "tts_processing"
+  | "filler"
+  | "playing"
+  | "error";
+
+/** 本轮各阶段耗时（毫秒）。未完成的阶段为 null。 */
+export interface DeviceTimings {
+  asr_ms: number | null;
+  llm_first_ms: number | null;
+  llm_total_ms: number | null;
+  tts_first_ms: number | null;
+  playback_ms: number | null;
+}
+
+/** 音频下发进度 */
+export interface DeviceAudioProgress {
+  expect_bytes: number;
+  expect_frames: number;
+  sent_bytes: number;
+  sent_frames: number;
+  /** 0–1；流式（expect_frames=0）时为 null */
+  progress: number | null;
+  /** 流式模式：总长未知 */
+  streaming: boolean;
+}
+
+/** 一条错误记录 */
+export interface DeviceError {
+  code: string;
+  message: string;
+  at: string;
+  turn_id?: string | null;
+}
+
+/** 单个设备（一块板子）的运行时状态 */
+export interface DeviceClient {
+  session_id: string;
+  device_id: string;
+  peer: string;
+  hello_done: boolean;
+  connected_s: number;
+
+  state: DeviceState | string;
+  state_elapsed_ms: number;
+  turn_id: string;
+  turn_seq: number;
+  is_busy: boolean;
+
+  last_heartbeat_s: number;
+  heartbeat_ok: boolean;
+
+  audio: DeviceAudioProgress;
+
+  filler_session_open: boolean;
+  dialogue_turns: number;
+  turns_done: number;
+
+  last_asr_text: string;
+  last_reply_text: string;
+
+  timings: DeviceTimings;
+
+  last_error: string | null;
+  errors_recent: DeviceError[];
+
+  /** 快照生成失败时的占位字段 */
+  error?: string;
+}
+
+/** 服务端信息 */
+export interface DeviceServerInfo {
+  host: string;
+  port: number;
+  character_id: string;
+  character_name: string;
+  uptime_s: number;
+  max_connections: number;
+  access_token_required: boolean;
+  audio_in_sample_rate: number;
+  audio_in_channels: number;
+  audio_out_sample_rate: number;
+  protocol_version: number;
+  filler_available: boolean;
+  mean_latency_s: number | null;
+}
+
+/** 计数器 */
+export interface DeviceCounters {
+  active: number;
+  total_connections: number;
+  rejected_connections: number;
+  total_turns: number;
+  total_errors: number;
+}
+
+/** GET /api/devices 的完整快照 */
+export interface DeviceSnapshot {
+  server: DeviceServerInfo;
+  clients: DeviceClient[];
+  counters: DeviceCounters;
+}
+
+/** 监控服务配置（前端侧，不来自后端） */
+export interface MonitorConfig {
+  /** zjy13 监控端点基址，如 http://127.0.0.1:8765 */
+  baseUrl: string;
+  /** 轮询间隔（毫秒） */
+  intervalMs: number;
+}
+
 /** 官方情绪标签（仅元数据） */
 export const EMOTIONS = [
   { value: "neutral", label: "中性" },

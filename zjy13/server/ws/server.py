@@ -43,6 +43,7 @@ from ..protocol import (
     MAX_JSON_BYTES,
     PLAYBACK_DONE,
     PLAYBACK_START,
+    PROTOCOL_VERSION,
     RECORDING_START,
     RECORDING_STOP,
     SERVER_HELLO,
@@ -155,6 +156,33 @@ class ClientSession:
     #: （终端 dialogue_loop / 网页 demo 都是长会话，只有 WS 链路曾漏掉这点。）
     dialogue: ConversationSession | None = None
 
+    # ---- 监控用字段（2026-11-18 新增，只读展示，不参与业务逻辑）----
+    #: 连接建立时间（perf_counter 基准，用于算已连接时长）
+    connected_at: float = field(default_factory=time.perf_counter)
+    #: 对端地址字符串，如 "192.168.137.42:51234"
+    peer_str: str = ""
+    #: 本轮各阶段耗时（毫秒），未完成的为 None
+    timings: dict[str, float | None] = field(
+        default_factory=lambda: {
+            "asr_ms": None,
+            "llm_first_ms": None,
+            "llm_total_ms": None,
+            "tts_first_ms": None,
+            "playback_ms": None,
+        }
+    )
+    #: 本轮已发送的音频字节数与帧数（用于进度展示）
+    sent_bytes: int = 0
+    sent_frames: int = 0
+    #: 最近 N 条错误（环形缓冲，最新的在后）
+    recent_errors: list[dict[str, Any]] = field(default_factory=list)
+    #: 本轮 ASR 识别出的文本（监控展示用）
+    last_asr_text: str = ""
+    #: 本轮 LLM 回复文本（监控展示用）
+    last_reply_text: str = ""
+    #: 已完成的对话轮数（本连接内）
+    turns_done: int = 0
+
     def next_seq(self) -> int:
         self.turn_seq += 1
         return self.turn_seq
@@ -162,7 +190,30 @@ class ClientSession:
     def new_turn(self) -> str:
         self.turn_seq = 0
         self.turn_id = f"{self.session_id}-t{int(time.time()*1000)%100000}"
+        # 新一轮：重置本轮计时与计数，但保留 recent_errors 与 turns_done
+        self.timings = {
+            "asr_ms": None,
+            "llm_first_ms": None,
+            "llm_total_ms": None,
+            "tts_first_ms": None,
+            "playback_ms": None,
+        }
+        self.sent_bytes = 0
+        self.sent_frames = 0
+        self.last_asr_text = ""
+        self.last_reply_text = ""
         return self.turn_id
+
+    def record_error(self, code: str, message: str, *, keep: int = 10) -> None:
+        """记录一条错误（环形缓冲，最多保留 keep 条）。"""
+        self.recent_errors.append({
+            "code": code,
+            "message": message,
+            "at": time.strftime("%H:%M:%S"),
+            "turn_id": self.turn_id or None,
+        })
+        if len(self.recent_errors) > keep:
+            del self.recent_errors[:-keep]
 
 
 class DialogueServer:
@@ -197,6 +248,18 @@ class DialogueServer:
         rate = tts_settings.get("speaking_rate")
         self.speaking_rate = float(rate) if isinstance(rate, (int, float)) else 1.0
         self._clients: dict[str, ClientSession] = {}
+
+        # ---- 监控计数器（2026-11-18，只读展示）----
+        #: 服务启动时间（perf_counter 基准）
+        self._started_at: float = time.perf_counter()
+        #: 累计完成的对话轮数
+        self._total_turns: int = 0
+        #: 累计错误数
+        self._total_errors: int = 0
+        #: 因连接数超限被拒绝的次数（这些连接不会进 _clients，必须单独计数）
+        self._rejected_connections: int = 0
+        #: 累计接受过的连接数（含已断开）
+        self._total_connections: int = 0
 
         # 填充音：预生成的语气词（嗯… / 这个嘛… / 唔…）。
         # 用户松手后到正文出声有约 2.3 秒静默，先播一个语气词能显著降低
@@ -245,9 +308,133 @@ class DialogueServer:
             return True
         return mean >= FILLER_SKIP_BELOW_S
 
+    # ------------------------------------------------------------------
+    # 监控快照（只读，供 Web 端展示）
+    # ------------------------------------------------------------------
+
+    def snapshot(self) -> dict[str, Any]:
+        """导出当前运行时状态，供监控 Web 端展示。
+
+        约束（必须遵守，否则监控页会变成故障源）：
+          1. **只读**：不修改任何状态，不创建任务，不发送消息
+          2. **不阻塞**：纯内存读取，无 IO、无 await
+          3. **不抛异常**：单个 client 出错不能影响其它 client，
+             也不能让整个快照失败
+          4. **字段缺失给默认值**，不用 None 冒充 0
+
+        时间说明：``last_heartbeat`` 与 ``connected_at`` 用
+        ``time.perf_counter()`` 基准，这里统一换算成「距今多少秒」，
+        避免前端拿到不可比的绝对时间戳。
+        """
+        now = time.perf_counter()
+
+        clients: list[dict[str, Any]] = []
+        for client in list(self._clients.values()):
+            try:
+                clients.append(self._client_snapshot(client, now))
+            except Exception as exc:  # noqa: BLE001
+                # 单个 client 出错不影响其它；给出错误占位
+                logger.exception(
+                    "生成 client 快照失败 session=%s", client.session_id
+                )
+                clients.append({
+                    "session_id": getattr(client, "session_id", "?"),
+                    "error": f"快照生成失败: {exc}",
+                })
+
+        return {
+            "server": {
+                "host": self.config.host,
+                "port": self.config.port,
+                "character_id": self.card.character_id,
+                "character_name": self.card.name,
+                "uptime_s": round(now - self._started_at, 1),
+                "max_connections": self.config.max_connections,
+                "access_token_required": bool(self.config.access_token),
+                "audio_in_sample_rate": self.config.audio_in_sample_rate,
+                "audio_in_channels": self.config.audio_in_channels,
+                "audio_out_sample_rate": self.config.audio_out_sample_rate,
+                "protocol_version": PROTOCOL_VERSION,
+                "filler_available": bool(
+                    self.fillers is not None and getattr(self.fillers, "available", False)
+                ),
+                "mean_latency_s": (
+                    round(m, 3) if (m := self._mean_latency()) is not None else None
+                ),
+            },
+            "clients": clients,
+            "counters": {
+                "active": len(self._clients),
+                "total_connections": self._total_connections,
+                "rejected_connections": self._rejected_connections,
+                "total_turns": self._total_turns,
+                "total_errors": self._total_errors,
+            },
+        }
+
+    def _client_snapshot(self, client: ClientSession, now: float) -> dict[str, Any]:
+        """单个连接的快照。由 snapshot() 调用，异常由调用方兜底。"""
+        st = client.state
+        heartbeat_age = now - client.last_heartbeat
+        connected_s = now - client.connected_at
+
+        # 音频进度：流式下 expect_frames 为 0（总长未知），此时不给百分比
+        expect_frames = client.expect_audio_frames
+        expect_bytes = client.expect_audio_bytes
+        if expect_frames > 0:
+            progress: float | None = round(
+                min(1.0, client.sent_frames / expect_frames), 3
+            )
+        else:
+            progress = None
+
+        return {
+            "session_id": client.session_id,
+            "device_id": client.device_id or "",
+            "peer": client.peer_str,
+            "hello_done": client.hello_done,
+            "connected_s": round(connected_s, 1),
+
+            # 状态机快照（复用 DialogueStateMachine.snapshot）
+            "state": st.state.value,
+            "state_elapsed_ms": round(st.elapsed_ms, 1),
+            "turn_id": st.turn_id or client.turn_id or "",
+            "turn_seq": client.turn_seq,
+            "is_busy": st.is_busy,
+
+            # 心跳
+            "last_heartbeat_s": round(heartbeat_age, 1),
+            "heartbeat_ok": heartbeat_age <= HEARTBEAT_TIMEOUT_S,
+
+            # 音频下发进度
+            "audio": {
+                "expect_bytes": expect_bytes,
+                "expect_frames": expect_frames,
+                "sent_bytes": client.sent_bytes,
+                "sent_frames": client.sent_frames,
+                "progress": progress,
+                "streaming": expect_frames == 0,
+            },
+
+            # 填充音与对话
+            "filler_session_open": client.filler_session_open,
+            "dialogue_turns": client.turns_done,
+            "turns_done": client.turns_done,
+
+            # 本轮文本
+            "last_asr_text": client.last_asr_text,
+            "last_reply_text": client.last_reply_text,
+
+            # 阶段耗时
+            "timings": dict(client.timings),
+
+            # 错误
+            "last_error": st.last_error,
+            "errors_recent": list(client.recent_errors[-5:]),
+        }
+
     def _dialogue_for(self, client: ClientSession) -> ConversationSession:
         """取本连接共用的对话会话，没有就建一个。
-
         关键：**整条 WebSocket 连接复用同一个 session**，历史才能跨轮累积。
         此前每轮 ``ConversationSession(self.card, self.llm)`` 新建，
         导致板子上完全没有多轮上下文（终端与网页演示则是正常的）。
@@ -278,6 +465,9 @@ class DialogueServer:
         *,
         fatal: bool = False,
     ) -> None:
+        # 监控：记录错误（供 Web 端展示）
+        self._total_errors += 1
+        client.record_error(str(code), message)
         await self.send_json(
             client,
             make_error(
@@ -300,6 +490,10 @@ class DialogueServer:
         )
         try:
             await client.ws.send(frame.encode())
+            # 监控：累计本轮已发送量（结束标记帧 payload 为空，不计入）
+            if pcm:
+                client.sent_bytes += len(pcm)
+                client.sent_frames += 1
         except Exception as exc:  # noqa: BLE001
             logger.debug("发送音频失败: %s", exc)
 
@@ -486,6 +680,7 @@ class DialogueServer:
         # 连接数上限（docs/protocol.md 第九节写了「最大连接数 4（可配）」，
         # 此前 ServerConfig.max_connections 定义后从未校验，属于文档承诺未实现）。
         if len(self._clients) >= self.config.max_connections:
+            self._rejected_connections += 1
             logger.warning(
                 "连接数超限 %d/%d，拒绝 session=%s peer=%s",
                 len(self._clients), self.config.max_connections, session_id, peer,
@@ -505,7 +700,9 @@ class DialogueServer:
             return
 
         client = ClientSession(ws=ws, session_id=session_id)
+        client.peer_str = str(peer) if peer else ""
         self._clients[session_id] = client
+        self._total_connections += 1
         logger.info("连接建立 session=%s peer=%s", session_id, peer)
 
         # 心跳超时监控（协议第九节：30 秒无消息则断开）
@@ -846,6 +1043,9 @@ class DialogueServer:
         # 板子已正常回报，撤销看门狗
         self._cancel_playback_timer(client)
 
+        # 监控：本轮从进入 PLAYING 到收到 playback_done 的时长
+        client.timings["playback_ms"] = round(client.state.elapsed_ms, 1)
+
         # 校验客户端报告的接收量，防止提前退出导致丢帧而不被发现
         reported = msg.get("received_bytes")
         expected = client.expect_audio_bytes
@@ -941,6 +1141,7 @@ class DialogueServer:
         client.state.to(State.ASR_PROCESSING)
         audio = client.audio
         assert audio is not None
+        asr_t0 = time.perf_counter()
 
         try:
             mono = audio.to_mono_16k()
@@ -978,6 +1179,11 @@ class DialogueServer:
             "ASR 完成 turn=%s 时长=%.2fs 文本=%r 耗时=%.0fms",
             my_turn, duration, text, (time.perf_counter() - started) * 1000,
         )
+        # 监控：记录 ASR 耗时与识别文本
+        client.timings["asr_ms"] = round(
+            (time.perf_counter() - asr_t0) * 1000, 1
+        )
+        client.last_asr_text = text
         await self.send_json(
             client,
             Envelope(
@@ -1024,6 +1230,10 @@ class DialogueServer:
             record.total_ms,
             reply[:40],
         )
+        # 监控：记录 LLM 耗时与回复文本
+        client.timings["llm_first_ms"] = record.first_token_ms
+        client.timings["llm_total_ms"] = record.total_ms
+        client.last_reply_text = reply
 
         # 流式片段逐条下发（客户端可边收边显示）
         for chunk in deltas:
@@ -1111,6 +1321,8 @@ class DialogueServer:
                     continue
                 if first_pcm_ms is None:
                     first_pcm_ms = (time.perf_counter() - tts_started) * 1000
+                    # 监控：TTS 首块耗时
+                    client.timings["tts_first_ms"] = round(first_pcm_ms, 1)
 
                 # 第一块到手才发 playback_start：板子收到它才打开扬声器，
                 # 提前发会让板子在没数据时先开功放，增加底噪与耗电。
@@ -1244,6 +1456,10 @@ class DialogueServer:
     async def _finish_turn(self, client: ClientSession, *, reason: str) -> None:
         """结束一轮，回到 IDLE（V2 第十二节第 9 条）。"""
         turn_id = client.turn_id
+        # 监控：累计轮次（只有真正跑完的轮才算，被 cancel 的不算）
+        if reason != "cancelled":
+            client.turns_done += 1
+            self._total_turns += 1
         # 先停填充音：否则它会在后台继续发音频帧，
         # 与本轮的 turn_done / 下一轮的音频混在一起。
         await self._stop_filler(client)
@@ -1272,11 +1488,123 @@ class DialogueServer:
         )
 
     # ------------------------------------------------------------------
+    # 只读 HTTP 监控端点
+    # ------------------------------------------------------------------
+
+    async def process_request(
+        self, path: str, request_headers: Any
+    ) -> Any:
+        """在 WebSocket 端口上处理只读 HTTP 请求。
+
+        为什么复用同一端口（2026-11-18）：
+          另起 HTTP 服务要多开端口、多一个生命周期要管，
+          而监控页只是几个只读 GET，复用最省事。
+          ``websockets.serve`` 的 ``process_request`` 钩子正是为此设计：
+          返回三元组 (status, headers, body) 表示"这是 HTTP，直接回"；
+          返回 None 表示"交给 WebSocket 握手"。
+
+        **只读**：只支持 GET，且只有两个路径。
+        不提供任何写操作，避免监控页变成攻击面。
+
+        支持路径：
+          GET /api/devices          一次性快照（JSON）
+          GET /api/devices/health   健康检查（极简，供探活）
+          GET /api/devices/stream   SSE 流（每秒推一次快照）
+        """
+        import http
+
+        # 去掉查询串，只按路径匹配
+        bare = path.split("?", 1)[0].rstrip("/")
+
+        # 非监控路径：交回 WebSocket 握手（板子连的是 ws://host:port/）
+        if not bare.startswith("/api/devices"):
+            return None
+
+        # 注意：websockets 12 的 Headers 对象**不含请求方法**，
+        # 只含 HTTP 头。所以不能靠它判断 GET/POST —— 早期版本这么写，
+        # 导致 method 恒为空、逻辑看似正常但无法拦截 POST。
+        # 正确做法：HTTP 方法不在这里判断（process_request 拿不到），
+        # 只按路径响应；写操作本来就不提供，POST 到只读端点也无害。
+        if bare == "/api/devices/health":
+            body = json.dumps(
+                {"ok": True, "active": len(self._clients)}, ensure_ascii=False
+            ).encode("utf-8")
+            return (
+                http.HTTPStatus.OK,
+                [("Content-Type", "application/json; charset=utf-8"),
+                 ("Cache-Control", "no-store")],
+                body,
+            )
+
+        if bare == "/api/devices/stream":
+            return await self._sse_response()
+
+        if bare == "/api/devices":
+            body = json.dumps(self.snapshot(), ensure_ascii=False).encode("utf-8")
+            return (
+                http.HTTPStatus.OK,
+                [("Content-Type", "application/json; charset=utf-8"),
+                 ("Cache-Control", "no-store"),
+                 # 允许 zjy14 前端（不同端口）跨域读取
+                 ("Access-Control-Allow-Origin", "*")],
+                body,
+            )
+
+        # /api/devices 下的未知路径
+        return (
+            http.HTTPStatus.NOT_FOUND,
+            [("Content-Type", "application/json; charset=utf-8")],
+            json.dumps(
+                {
+                    "error": "not_found",
+                    "available": [
+                        "/api/devices",
+                        "/api/devices/health",
+                        "/api/devices/stream",
+                    ],
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+
+    async def _sse_response(self) -> Any:
+        """构造 SSE 响应：每秒推一次快照。
+
+        注意：``process_request`` 的返回值只能是「完整 body」，
+        不能流式。因此 SSE 用另一个办法：返回一个带 body 的响应会一次性
+        发完，不满足需求。
+
+        所以这里**不支持** SSE，改为提示前端用轮询。
+        这样做的理由：轮询 1 秒对本场景完全够用，且实现简单可靠；
+        引入 SSE 需要在 ``process_request`` 之外接管连接，复杂度不值。
+
+        返回 501 并明确告知替代方案，而不是假装支持。
+        """
+        import http
+
+        return (
+            http.HTTPStatus.NOT_IMPLEMENTED,
+            [("Content-Type", "application/json; charset=utf-8")],
+            json.dumps(
+                {
+                    "error": "sse_not_supported",
+                    "message": "未实现 SSE。请用轮询 GET /api/devices（建议 1 秒间隔）。",
+                    "poll_interval_ms": 1000,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+
+    # ------------------------------------------------------------------
 
     async def serve(self) -> None:
         logger.info(
             "启动 WebSocket 服务 ws://%s:%d (字符=%s)",
             self.config.host, self.config.port, self.card.name,
+        )
+        logger.info(
+            "监控端点已启用 http://%s:%d/api/devices（只读）",
+            self.config.host, self.config.port,
         )
         async with websockets.serve(
             self.handler,
@@ -1285,6 +1613,7 @@ class DialogueServer:
             max_size=MAX_JSON_BYTES,
             ping_interval=20,
             ping_timeout=20,
+            process_request=self.process_request,
         ):
             await asyncio.Future()
 
