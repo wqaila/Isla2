@@ -9,6 +9,7 @@
 import type {
   ApiErrorBody,
   Character,
+  CleanupRecord,
   GpuInfo,
   HealthResponse,
   HistoryPage,
@@ -339,6 +340,40 @@ export const historyApi = {
     );
     if (!res.ok) await parseError(res);
     return (await res.json()) as SynthesisRecord[];
+  },
+
+  /** 清理审计记录。 */
+  async cleanupHistory(limit = 20): Promise<CleanupRecord[]> {
+    const res = await fetch(
+      BASE + "/api/v1/history/cleanup-history" + toQueryString({ limit }),
+    );
+    if (!res.ok) await parseError(res);
+    return (await res.json()) as CleanupRecord[];
+  },
+
+  /** 导出查询结果为文件并触发浏览器下载。 */
+  async exportFile(q: HistoryQuery, fmt: "csv" | "json" = "csv"): Promise<void> {
+    const res = await fetch(
+      BASE + "/api/v1/history/export" + toQueryString({ ...q, fmt }),
+    );
+    if (!res.ok) await parseError(res);
+
+    // 从 content-disposition 取文件名，取不到就用时间戳兜底
+    const cd = res.headers.get("content-disposition") ?? "";
+    const m = /filename="?([^";]+)"?/.exec(cd);
+    const filename =
+      m?.[1] ?? `synthesis-history-${new Date().toISOString().slice(0, 10)}.${fmt}`;
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // 延迟释放，确保下载已开始
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
 
   /** 清理指定时间之前的记录。 */

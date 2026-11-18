@@ -80,7 +80,8 @@ class LogQuery:
 
     #: 返回条数上限
     limit: int = DEFAULT_LOG_LINES
-    #: 级别过滤（可多个），空表示全部
+    #: 级别过滤（可多个），空表示全部。
+    #: 支持模糊：传 "WARN" 也能匹配 "WARNING"（见 _match）。
     levels: list[str] = field(default_factory=list)
     #: 按 request_id 精确过滤
     request_id: str | None = None
@@ -90,6 +91,9 @@ class LogQuery:
     logger_name: str | None = None
     #: 是否只返回带异常的
     only_errors: bool = False
+    #: 指定日志文件名（含归档，如 zjy14.log.2026-11-16）。
+    #: None 表示读当前日志。见 available_log_files()。
+    file_name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +103,7 @@ class LogQuery:
             "keyword": self.keyword,
             "logger_name": self.logger_name,
             "only_errors": self.only_errors,
+            "file_name": self.file_name,
         }
 
 
@@ -130,9 +135,27 @@ class LogResult:
         }
 
 
-def log_file_path() -> Path:
-    """当前日志文件路径。"""
-    return log_dir() / LOG_FILENAME
+def log_file_path(file_name: str | None = None) -> Path:
+    """日志文件路径。
+
+    :param file_name: 指定文件名（含归档）。None 表示当前日志。
+    :raises ValueError: 文件名非法（含路径分隔符或不在日志目录内）
+    """
+    if not file_name:
+        return log_dir() / LOG_FILENAME
+
+    # 安全校验：只允许日志目录下的文件名，拒绝路径穿越。
+    # 允许的形式：zjy14.log、zjy14.log.2026-11-16
+    name = file_name.strip()
+    if not name:
+        return log_dir() / LOG_FILENAME
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"非法日志文件名：{file_name!r}")
+    if not name.startswith(LOG_FILENAME):
+        raise ValueError(
+            f"日志文件名必须以 {LOG_FILENAME!r} 开头：{file_name!r}"
+        )
+    return log_dir() / name
 
 
 def _redact(obj: Any) -> Any:
@@ -250,8 +273,11 @@ def _iter_tail_lines(path: Path, max_lines: int) -> Iterator[tuple[int, str]]:
 
 
 def query_logs(q: LogQuery) -> LogResult:
-    """查询日志。最新在前。"""
-    path = log_file_path()
+    """查询日志。最新在前。
+
+    :raises ValueError: 指定的日志文件名非法（由 log_file_path 抛出）
+    """
+    path = log_file_path(q.file_name)
     result = LogResult(path=str(path))
 
     if not path.is_file():
@@ -260,7 +286,7 @@ def query_logs(q: LogQuery) -> LogResult:
     result.file_size = path.stat().st_size
     limit = max(1, min(q.limit, MAX_LOG_LINES))
 
-    levels = {lv.upper() for lv in q.levels if lv}
+    levels = [lv.upper() for lv in q.levels if lv]
     keyword = (q.keyword or "").lower()
 
     # 多读一些，因为过滤会丢弃一部分
@@ -284,14 +310,29 @@ def query_logs(q: LogQuery) -> LogResult:
     return result
 
 
+def _level_matches(entry_level: str, wanted: list[str]) -> bool:
+    """级别匹配。
+
+    支持模糊：传 ``WARN`` 能匹配 ``WARNING``，传 ``ERR`` 能匹配 ``ERROR``。
+    为什么：用户手输时很少写全，早期版本用精确匹配导致
+    ``?level=WARN`` 返回 0 条却不报错，容易误判「没有警告」。
+
+    规则：wanted 里的任一值是 entry_level 的前缀（或相等）即匹配。
+    """
+    if not wanted:
+        return True
+    lv = entry_level.upper()
+    return any(lv == w or lv.startswith(w) for w in wanted)
+
+
 def _match(
     e: LogEntry,
-    levels: set[str],
+    levels: list[str],
     q: LogQuery,
     keyword: str,
 ) -> bool:
     """判断一条日志是否满足条件。"""
-    if levels and e.level.upper() not in levels:
+    if not _level_matches(e.level, levels):
         return False
     if q.only_errors and not e.exc and e.level.upper() not in ("ERROR", "CRITICAL"):
         return False

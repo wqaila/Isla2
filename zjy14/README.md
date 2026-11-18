@@ -130,12 +130,14 @@ POST   /api/v1/speakers/{id}/validate   重新做质量检测
 ```text
 GET    /api/v1/history                 分页查询（游标分页，最新在前）
 GET    /api/v1/history/stats           统计（成功/失败、RTF、按音色分组）
+GET    /api/v1/history/export          导出 CSV / JSON（带筛选）
+GET    /api/v1/history/cleanup-history 清理审计记录
 GET    /api/v1/history/{id}            单条详情
 GET    /api/v1/history/by-request/{rid}  按 request_id 查
 DELETE /api/v1/history?before=...      按时间清理（204）
 
 GET    /api/v1/logs                    日志查询（解析 JSON Lines）
-GET    /api/v1/logs/files              日志文件列表（含轮转归档）
+GET    /api/v1/logs/files              日志文件列表（含轮转归档，可指定 file_name 查询）
 ```
 
 **分页用游标不用 OFFSET**：合成记录持续写入，OFFSET 分页会重复或跳过行。
@@ -283,6 +285,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [19_PHASE8_STREAM_UI.md](docs/19_PHASE8_STREAM_UI.md) | **前端流式播放 + 真机联调准备** |
 | [20_DAILY_SUMMARY_2026-11-16.md](docs/20_DAILY_SUMMARY_2026-11-16.md) | **当日总结（成果·不足·缺陷）** |
 | [21_HISTORY_LOGS_API.md](docs/21_HISTORY_LOGS_API.md) | **合成记录与日志查询 API** |
+| [22_HISTORY_ENHANCEMENTS.md](docs/22_HISTORY_ENHANCEMENTS.md) | **历史记录四个限制的补齐（FTS/导出/归档/自动清理）** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |

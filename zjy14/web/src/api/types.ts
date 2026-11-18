@@ -237,10 +237,20 @@ export interface HistoryQuery {
   only_failed?: boolean;
   only_success?: boolean;
   text_contains?: string;
+  text_search?: string;
   since?: string;
   until?: string;
   limit?: number;
   cursor?: string;
+}
+
+/** 一条清理审计记录 */
+export interface CleanupRecord {
+  kind: string;
+  cutoff: string;
+  removed: number;
+  triggered_by: string;
+  created_at: string;
 }
 
 /** 一条日志 */
@@ -282,6 +292,7 @@ export interface LogQuery {
   keyword?: string;
   logger_name?: string;
   only_errors?: boolean;
+  file_name?: string;
 }
 
 /** 官方情绪标签（仅元数据） */

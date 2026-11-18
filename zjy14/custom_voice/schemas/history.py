@@ -85,7 +85,10 @@ class HistoryQuery(BaseModel):
     only_failed: bool = Field(default=False, description="只看失败的。")
     only_success: bool = Field(default=False, description="只看成功的。")
     text_contains: str | None = Field(
-        default=None, max_length=200, description="文本模糊匹配。"
+        default=None, max_length=200, description="文本模糊匹配（LIKE，无索引）。"
+    )
+    text_search: str | None = Field(
+        default=None, max_length=200, description="全文搜索（FTS5 索引）。"
     )
     since: str | None = Field(default=None, description="时间下界（ISO8601，含）。")
     until: str | None = Field(default=None, description="时间上界（ISO8601，含）。")
@@ -96,6 +99,16 @@ class HistoryQuery(BaseModel):
         description=f"每页条数（1–{MAX_PAGE_SIZE}）。",
     )
     cursor: str | None = Field(default=None, description="上一页返回的 next_cursor。")
+
+
+class CleanupRecordOut(BaseModel):
+    """一条清理审计记录。"""
+
+    kind: str = Field(description="清理类型：synthesis / logs")
+    cutoff: str = Field(description="清理的时间界线")
+    removed: int = Field(description="删除条数")
+    triggered_by: str = Field(description="manual / scheduled")
+    created_at: str = Field(description="清理发生时间")
 
 
 class LogEntryOut(BaseModel):
@@ -158,6 +171,7 @@ class LogFileOut(BaseModel):
 
 
 __all__ = [
+    "CleanupRecordOut",
     "HistoryPageOut",
     "HistoryQuery",
     "HistoryStatsOut",

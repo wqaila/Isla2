@@ -23,12 +23,14 @@ class AppState:
         db: Database,
         speaker_cache: Any | None = None,
         scheduler: Any | None = None,
+        cleanup: Any | None = None,
     ) -> None:
         self.config = config
         self.engine = engine
         self.db = db
         self.speaker_cache = speaker_cache
         self.scheduler = scheduler
+        self.cleanup = cleanup
         self.started_at = time.time()
 
 

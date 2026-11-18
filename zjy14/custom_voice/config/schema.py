@@ -122,6 +122,32 @@ class GPUConfig(BaseModel):
         ),
     )
 
+    # ---- 历史记录与日志 ----
+    history_retain_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        description=(
+            "合成记录保留天数。0 表示不自动清理。"
+            "超过此天数的记录会被后台线程定期删除。"
+        ),
+    )
+    log_retain_days: int = Field(
+        default=14,
+        ge=0,
+        le=3650,
+        description=(
+            "归档日志文件保留天数。0 表示不删除。"
+            "只删 zjy14.log.YYYY-MM-DD 形式的归档，不动当前日志。"
+        ),
+    )
+    cleanup_interval_hours: float = Field(
+        default=24.0,
+        gt=0,
+        le=720,
+        description="自动清理的间隔小时数。最小值会被钳到 1 分钟。",
+    )
+
     # ---- 优化开关 ----
     # 以下 3 个开关经实测后已移除，理由记录在此避免以后重复添加：
     #   enable_sdpa     PyTorch 2.8 默认已启用 flash/mem_efficient SDPA
@@ -260,6 +286,9 @@ CONSUMED_FIELDS: dict[str, str] = {
     "text_frontend": "custom_voice.inference.cosyvoice_engine:_setup_text_frontend",
     "default_voice_id": "custom_voice.inference.cosyvoice_engine:synthesize",
     "min_text_ratio": "custom_voice.inference.cosyvoice_engine:_check_text_ratio",
+    "history_retain_days": "custom_voice.history.cleanup:CleanupScheduler",
+    "log_retain_days": "custom_voice.history.cleanup:CleanupScheduler",
+    "cleanup_interval_hours": "custom_voice.history.cleanup:CleanupScheduler",
     "host": "custom_voice.server.app:run",
     "port": "custom_voice.server.app:run",
     "auth_token": "custom_voice.config.schema:_guard_non_loopback",

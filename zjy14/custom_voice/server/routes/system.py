@@ -38,6 +38,18 @@ def _bridge_compat() -> dict:
         return {"error": "读取失败"}
 
 
+def _cleanup_stats(state) -> dict:  # type: ignore[no-untyped-def]
+    """读取自动清理状态。未启用时返回明确说明。"""
+    sched = getattr(state, "cleanup", None)
+    if sched is None:
+        return {"enabled": False, "reason": "清理调度器未初始化"}
+    try:
+        return sched.stats()
+    except Exception:  # noqa: BLE001
+        logger.exception("读取清理状态失败")
+        return {"enabled": False, "reason": "读取失败"}
+
+
 @router.get("/status")
 async def status(request: Request) -> dict:
     """服务状态摘要：版本、配置、路径、引擎、运行时长。"""
@@ -84,6 +96,8 @@ async def status(request: Request) -> dict:
         },
         # 调度器实时统计（并发/队列/拒绝/超时）
         "scheduler": _scheduler_stats(state),
+        # 自动清理状态（保留期、上次运行、线程存活）
+        "cleanup": _cleanup_stats(state),
         # 与 zjy13 设备协议的兼容对照（证明不重复造轮子）
         "bridge": _bridge_compat(),
         "config_sources": describe_config_sources(),

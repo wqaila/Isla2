@@ -3,6 +3,8 @@
 端点：
     GET  /api/v1/history                     合成记录分页查询
     GET  /api/v1/history/stats               合成记录统计
+    GET  /api/v1/history/export              导出 CSV / JSON
+    GET  /api/v1/history/cleanup-history     清理审计记录
     GET  /api/v1/history/{record_id}         单条记录详情
     GET  /api/v1/history/by-request/{rid}    按 request_id 查（一个请求可能多条）
     DELETE /api/v1/history                   按时间清理旧记录
@@ -14,6 +16,7 @@
   - 分页用游标，不用 OFFSET（记录持续写入，OFFSET 会重复/跳过）
   - 日志反向读取，只取需要的条数，大文件不卡
   - 敏感字段在写入时已脱敏，读取时再兜底过滤一遍
+  - 全文搜索走 FTS5 索引；FTS 不可用时自动降级到 LIKE
 """
 
 from __future__ import annotations
@@ -25,11 +28,13 @@ from ...core.errors import InvalidRequestError, NotFoundError
 from ...core.logging import get_logger
 from ...history import logs as log_reader
 from ...history.repository import (
+    EXPORT_MAX_ROWS,
     MAX_PAGE_SIZE,
     QueryFilter,
     SynthesisHistoryRepository,
 )
 from ...schemas.history import (
+    CleanupRecordOut,
     HistoryPageOut,
     HistoryQuery,
     HistoryStatsOut,
@@ -55,6 +60,7 @@ def _to_filter(q: HistoryQuery) -> QueryFilter:
         only_failed=q.only_failed,
         only_success=q.only_success,
         text_contains=q.text_contains,
+        text_search=q.text_search,
         since=q.since,
         until=q.until,
         limit=q.limit,
@@ -75,7 +81,12 @@ async def list_history(
     emotion: str | None = Query(default=None, description="按情绪标签筛选"),
     only_failed: bool = Query(default=False, description="只看失败的"),
     only_success: bool = Query(default=False, description="只看成功的"),
-    text_contains: str | None = Query(default=None, description="文本模糊匹配"),
+    text_contains: str | None = Query(
+        default=None, description="文本模糊匹配（LIKE，无索引）"
+    ),
+    text_search: str | None = Query(
+        default=None, description="全文搜索（FTS5 索引，比 LIKE 快）"
+    ),
     since: str | None = Query(default=None, description="时间下界（ISO8601）"),
     until: str | None = Query(default=None, description="时间上界（ISO8601）"),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE, description="每页条数"),
@@ -84,6 +95,9 @@ async def list_history(
     """分页查询合成记录，按时间倒序（最新在前）。
 
     分页用游标：把上一页返回的 ``next_cursor`` 原样传回来即可。
+
+    ``text_search`` 走全文索引（FTS5），``text_contains`` 走 LIKE。
+    前者快，后者支持任意子串；同时给时以 ``text_search`` 为准。
     """
     if only_failed and only_success:
         raise InvalidRequestError(
@@ -98,6 +112,7 @@ async def list_history(
         only_failed=only_failed,
         only_success=only_success,
         text_contains=text_contains,
+        text_search=text_search,
         since=since,
         until=until,
         limit=limit,
@@ -127,6 +142,7 @@ async def history_stats(
     only_failed: bool = Query(default=False),
     only_success: bool = Query(default=False),
     text_contains: str | None = Query(default=None),
+    text_search: str | None = Query(default=None),
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
 ) -> HistoryStatsOut:
@@ -142,11 +158,87 @@ async def history_stats(
         only_failed=only_failed,
         only_success=only_success,
         text_contains=text_contains,
+        text_search=text_search,
         since=since,
         until=until,
     )
     s = _repo(request).stats(_to_filter(q))
     return HistoryStatsOut(**s.to_dict())
+
+
+@router.get("/history/export")
+async def export_history(
+    request: Request,
+    fmt: str = Query(default="csv", pattern="^(csv|json)$", description="csv 或 json"),
+    voice_id: str | None = Query(default=None),
+    character_id: str | None = Query(default=None),
+    emotion: str | None = Query(default=None),
+    only_failed: bool = Query(default=False),
+    only_success: bool = Query(default=False),
+    text_contains: str | None = Query(default=None),
+    text_search: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    max_rows: int = Query(
+        default=10000,
+        ge=1,
+        le=EXPORT_MAX_ROWS,
+        description=f"最大导出行数（上限 {EXPORT_MAX_ROWS}）",
+    ),
+) -> Response:
+    """导出当前筛选条件下的合成记录。
+
+    返回文件下载（CSV 带 UTF-8 BOM，Excel 可直接打开中文）。
+
+    注意路由顺序：``/history/export`` 必须在 ``/history/{record_id}`` 之前。
+    """
+    q = HistoryQuery(
+        voice_id=voice_id,
+        character_id=character_id,
+        emotion=emotion,
+        only_failed=only_failed,
+        only_success=only_success,
+        text_contains=text_contains,
+        text_search=text_search,
+        since=since,
+        until=until,
+    )
+    body, mime, filename = _repo(request).export(
+        _to_filter(q), fmt=fmt, max_rows=max_rows
+    )
+
+    logger.info(
+        "导出合成记录",
+        extra={
+            "extra_fields": {
+                "format": fmt,
+                "bytes": len(body),
+                "filename": filename,
+            }
+        },
+    )
+
+    return Response(
+        content=body,
+        media_type=mime,
+        headers={
+            "content-disposition": f'attachment; filename="{filename}"',
+            "x-export-rows": str(body.count(b"\n")) if fmt == "csv" else "?",
+        },
+    )
+
+
+@router.get("/history/cleanup-history", response_model=list[CleanupRecordOut])
+async def cleanup_history(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=200),
+) -> list[CleanupRecordOut]:
+    """清理审计记录（谁在什么时候删了多少）。
+
+    注意路由顺序：必须在 ``/history/{record_id}`` 之前。
+    """
+    rows = _repo(request).cleanup_history(limit=limit)
+    return [CleanupRecordOut(**r) for r in rows]
 
 
 @router.get("/history/by-request/{request_id}", response_model=list[SynthesisRecordOut])
@@ -180,11 +272,12 @@ async def purge_history(
     """清理指定时间之前的合成记录。
 
     用于定期维护，避免表无限增长。
-    返回 204，不返回删除条数（保持 REST 语义；需要条数可先查 stats）。
+    返回 204，不返回删除条数（保持 REST 语义；需要条数可查 stats
+    或 cleanup-history）。
     """
     if not before.strip():
         raise InvalidRequestError("before 不能为空")
-    removed = _repo(request).delete_before(before.strip())
+    removed = _repo(request).delete_before(before.strip(), triggered_by="manual")
     logger.info(
         "清理合成记录",
         extra={"extra_fields": {"before": before, "removed": removed}},
@@ -200,11 +293,18 @@ async def purge_history(
 @router.get("/logs", response_model=LogPageOut)
 async def query_logs(
     limit: int = Query(default=100, ge=1, le=log_reader.MAX_LOG_LINES),
-    level: list[str] | None = Query(default=None, description="级别过滤，可重复传"),
+    level: list[str] | None = Query(
+        default=None,
+        description="级别过滤，可重复传。支持模糊：WARN 匹配 WARNING",
+    ),
     request_id: str | None = Query(default=None),
     keyword: str | None = Query(default=None),
     logger_name: str | None = Query(default=None),
     only_errors: bool = Query(default=False),
+    file_name: str | None = Query(
+        default=None,
+        description="指定日志文件（含归档，如 zjy14.log.2026-11-16）。默认当前日志",
+    ),
 ) -> LogPageOut:
     """查询服务日志（最新在前）。
 
@@ -212,6 +312,9 @@ async def query_logs(
     浏览器无需直接读文件。
 
     注意：``level`` 可重复传多个值，如 ``?level=WARNING&level=ERROR``。
+    级别支持前缀匹配（``WARN`` -> ``WARNING``）。
+
+    ``file_name`` 可指定归档文件，取值来自 ``/logs/files``。
     """
     q = log_reader.LogQuery(
         limit=limit,
@@ -220,8 +323,14 @@ async def query_logs(
         keyword=keyword,
         logger_name=logger_name,
         only_errors=only_errors,
+        file_name=file_name,
     )
-    result = log_reader.query_logs(q)
+    try:
+        result = log_reader.query_logs(q)
+    except ValueError as exc:
+        # 非法文件名（路径穿越等）-> 400
+        raise InvalidRequestError(str(exc)) from exc
+
     return LogPageOut(**result.to_dict())
 
 

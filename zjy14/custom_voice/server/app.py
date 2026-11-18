@@ -154,10 +154,38 @@ def build_app(config: GPUConfig | None = None) -> FastAPI:
             },
         )
 
-        app.state.zjy14 = AppState(cfg, engine, db, speaker_cache, scheduler)
+        # 自动清理：按保留期删除过期合成记录与归档日志
+        from ..history.cleanup import CleanupScheduler
+
+        cleanup = CleanupScheduler(
+            db,
+            retain_days=cfg.history_retain_days,
+            log_retain_days=cfg.log_retain_days,
+            interval_hours=cfg.cleanup_interval_hours,
+            enabled=cfg.history_retain_days > 0,
+        )
+        cleanup.start()
+
+        # v3 迁移：把已有记录补进全文索引（幂等，空库时为 0 行）
+        try:
+            from ..history.repository import SynthesisHistoryRepository
+
+            indexed = SynthesisHistoryRepository(db).rebuild_fts()
+            logger.info(
+                "全文索引已就绪",
+                extra={"extra_fields": {"indexed_rows": indexed}},
+            )
+        except Exception:  # noqa: BLE001
+            # FTS 不可用不应阻断启动；查询会自动降级到 LIKE
+            logger.exception("全文索引初始化失败（查询将降级为 LIKE）")
+
+        app.state.zjy14 = AppState(
+            cfg, engine, db, speaker_cache, scheduler, cleanup
+        )
         try:
             yield
         finally:
+            cleanup.stop()
             engine.shutdown()
             db.close()
             logger.info("服务已关闭")

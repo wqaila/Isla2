@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from ..db.session import Database
@@ -28,6 +29,13 @@ MAX_PAGE_SIZE = 200
 
 #: 默认页大小
 DEFAULT_PAGE_SIZE = 50
+
+#: 导出最大行数。防止一次导出拉爆内存（按每行约 1KB 估算，10 万行约 100MB）。
+EXPORT_MAX_ROWS = 100_000
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 @dataclass(slots=True)
@@ -116,6 +124,12 @@ def _get(row: sqlite3.Row, keys: Any, name: str, default: Any = None) -> Any:
     return row[name] if name in keys else default
 
 
+#: FTS5 trigram 分词器要求查询串至少这么长。
+#: 实测：2 字查询返回 0，3 字起正常（见 probe/_check_trigram_exact.py）。
+#: 短于此值时自动降级到 LIKE。
+FTS_MIN_QUERY_LEN = 3
+
+
 @dataclass(slots=True)
 class QueryFilter:
     """合成记录查询条件。所有字段可选。"""
@@ -130,8 +144,10 @@ class QueryFilter:
     only_failed: bool = False
     #: 只看成功的
     only_success: bool = False
-    #: 文本模糊匹配
+    #: 文本模糊匹配（LIKE，无索引）
     text_contains: str | None = None
+    #: 全文搜索（FTS5，走索引）。与 text_contains 互斥，优先用本项。
+    text_search: str | None = None
     #: 时间下界（ISO8601，含）
     since: str | None = None
     #: 时间上界（ISO8601，含）
@@ -149,6 +165,7 @@ class QueryFilter:
             "only_failed": self.only_failed,
             "only_success": self.only_success,
             "text_contains": self.text_contains,
+            "text_search": self.text_search,
             "since": self.since,
             "until": self.until,
             "limit": self.limit,
@@ -282,7 +299,17 @@ class SynthesisHistoryRepository:
         params.append(limit + 1)
 
         conn = self._db.connect()
-        rows = conn.execute(sql, params).fetchall()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            # FTS 查询语法/索引异常时降级到 LIKE，保证功能不整体失败。
+            # 只在用全文搜索时可能发生（_fts_query 已做转义，理论上不该走到这）。
+            if not f.text_search:
+                raise
+            fallback = QueryFilter(**{**f.to_dict(), "text_search": None,
+                                      "text_contains": f.text_search,
+                                      "cursor": None, "limit": f.limit})
+            return self.query(fallback)
 
         has_more = len(rows) > limit
         rows = rows[:limit]
@@ -416,27 +443,141 @@ class SynthesisHistoryRepository:
     # 维护
     # ------------------------------------------------------------------
 
-    def delete_before(self, cutoff_iso: str) -> int:
+    def delete_before(
+        self, cutoff_iso: str, *, triggered_by: str = "manual"
+    ) -> int:
         """删除指定时间之前的记录，返回删除条数。
 
         用于定期清理，避免表无限增长。
+        每次清理都写入 ``cleanup_logs`` 审计表（谁在什么时候删了多少）。
+
+        :param triggered_by: manual / scheduled，用于事后区分人工与自动清理
         """
         conn = self._db.connect()
         with self._db.transaction() as tx:
             cur = tx.execute(
                 "DELETE FROM synthesis_logs WHERE created_at < ?", (cutoff_iso,)
             )
-            return cur.rowcount or 0
+            removed = cur.rowcount or 0
+            tx.execute(
+                "INSERT INTO cleanup_logs (kind, cutoff, removed, triggered_by,"
+                " created_at) VALUES (?,?,?,?,?)",
+                ("synthesis", cutoff_iso, removed, triggered_by, _now()),
+            )
+            return removed
+
+    def cleanup_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """读取清理审计记录（最新在前）。"""
+        conn = self._db.connect()
+        rows = conn.execute(
+            "SELECT kind, cutoff, removed, triggered_by, created_at"
+            " FROM cleanup_logs ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def export(
+        self, f: QueryFilter, *, fmt: str = "csv", max_rows: int = EXPORT_MAX_ROWS
+    ) -> tuple[bytes, str, str]:
+        """导出查询结果为 CSV 或 JSON。
+
+        为什么不用分页接口逐页拉：调用方（前端/脚本）不该自己拼装导出文件，
+        而且导出常常需要「当前筛选条件下的全部数据」。
+
+        :return: (内容字节, MIME 类型, 建议文件名)
+        """
+        import csv
+        import io
+
+        # 导出走不分页的查询，但仍受 max_rows 限制，防止拉爆内存
+        export_filter = QueryFilter(
+            voice_id=f.voice_id,
+            character_id=f.character_id,
+            emotion=f.emotion,
+            only_failed=f.only_failed,
+            only_success=f.only_success,
+            text_contains=f.text_contains,
+            text_search=f.text_search,
+            since=f.since,
+            until=f.until,
+            limit=min(max_rows, MAX_PAGE_SIZE),
+            cursor=None,
+        )
+
+        rows: list[SynthesisRecord] = []
+        cursor: str | None = None
+        while len(rows) < max_rows:
+            export_filter.cursor = cursor
+            page = self.query(export_filter)
+            rows.extend(page.items)
+            if not page.has_more or not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        rows = rows[:max_rows]
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+        if fmt == "json":
+            payload = {
+                "exported_at": _now(),
+                "count": len(rows),
+                "filter": f.to_dict(),
+                "items": [r.to_dict() for r in rows],
+            }
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            return body, "application/json", f"synthesis-history-{stamp}.json"
+
+        # CSV：用 UTF-8 BOM，让 Excel 正确识别中文
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "id", "request_id", "voice_id", "text", "emotion", "style",
+            "speed", "instruction", "sample_rate", "duration_s", "total_ms",
+            "first_audio_ms", "rtf", "peak_vram_mb", "engine", "error_code",
+            "created_at",
+        ])
+        for r in rows:
+            writer.writerow([
+                r.id, r.request_id, r.voice_id, r.text, r.emotion, r.style,
+                r.speed, r.instruction, r.sample_rate, r.duration_s, r.total_ms,
+                r.first_audio_ms, r.rtf, r.peak_vram_mb, r.engine, r.error_code,
+                r.created_at,
+            ])
+        body = ("\ufeff" + buf.getvalue()).encode("utf-8")
+        return body, "text/csv; charset=utf-8", f"synthesis-history-{stamp}.csv"
 
     def count(self) -> int:
         conn = self._db.connect()
         row = conn.execute("SELECT COUNT(*) AS n FROM synthesis_logs").fetchone()
         return int(row["n"] or 0)
 
+    def rebuild_fts(self) -> int:
+        """重建全文索引。
+
+        用于两种情况：
+          1. 从 v2 升级到 v3 时，已有记录不在 FTS 表里
+          2. 索引损坏
+
+        :return: 重建后的索引行数
+        """
+        conn = self._db.connect()
+        with self._db.transaction() as tx:
+            tx.execute("INSERT INTO synthesis_fts(synthesis_fts) VALUES ('rebuild')")
+        row = conn.execute("SELECT COUNT(*) AS n FROM synthesis_fts").fetchone()
+        return int(row["n"] or 0)
+
     # ------------------------------------------------------------------
 
     def _build_where(self, f: QueryFilter) -> tuple[list[str], list[Any]]:
-        """构造 WHERE 子句。全部参数化，不拼接用户输入。"""
+        """构造 WHERE 子句。全部参数化，不拼接用户输入。
+
+        全文搜索（text_search）用 FTS5 子查询，走倒排索引；
+        模糊匹配（text_contains）用 LIKE，无索引但支持任意子串。
+
+        **自动降级**：FTS5 的 trigram 分词器要求查询串 >= 3 字符
+        （实测 2 字返回 0 条）。短查询自动改用 LIKE，保证结果正确。
+        调用方不需要关心这个细节。
+        """
         where: list[str] = []
         params: list[Any] = []
 
@@ -454,9 +595,25 @@ class SynthesisHistoryRepository:
             where.append("error_code != ''")
         if f.only_success:
             where.append("error_code = ''")
-        if f.text_contains:
+
+        # 全文搜索：够长才走 FTS，否则降级 LIKE
+        if f.text_search:
+            term = f.text_search.strip()
+            if len(term) >= FTS_MIN_QUERY_LEN:
+                where.append(
+                    "id IN ("
+                    " SELECT rowid FROM synthesis_fts WHERE synthesis_fts MATCH ?"
+                    ")"
+                )
+                params.append(_fts_query(term))
+            else:
+                # trigram 对 2 字查询无效，用 LIKE 保证正确性
+                where.append("(text LIKE ? OR instruction LIKE ?)")
+                params.extend([f"%{term}%", f"%{term}%"])
+        elif f.text_contains:
             where.append("text LIKE ?")
             params.append(f"%{f.text_contains}%")
+
         if f.since:
             where.append("created_at >= ?")
             params.append(f.since)
@@ -467,8 +624,28 @@ class SynthesisHistoryRepository:
         return where, params
 
 
+def _fts_query(raw: str) -> str:
+    """把用户输入转成 FTS5 查询串。
+
+    为什么要处理：FTS5 有特殊语法（``*`` ``"`` ``-`` ``AND`` ``NEAR`` 等），
+    直接传入任意文本会抛 ``sqlite3.OperationalError: fts5: syntax error``。
+    例如用户搜 ``C++`` 或 ``"未闭合引号`` 都会炸。
+
+    做法：按空白切词，每个词用双引号包起来（引号内的特殊字符失去语义），
+    词之间默认 AND。这样既能搜中文整句（unicode61 按字切分），
+    也不会因特殊字符报错。
+    """
+    tokens = [t for t in raw.split() if t]
+    if not tokens:
+        return '""'
+    # 转义内部双引号（FTS5 用 "" 表示一个字面引号）
+    quoted = ['"' + t.replace('"', '""') + '"' for t in tokens]
+    return " ".join(quoted)
+
+
 __all__ = [
     "DEFAULT_PAGE_SIZE",
+    "EXPORT_MAX_ROWS",
     "MAX_PAGE_SIZE",
     "Page",
     "QueryFilter",

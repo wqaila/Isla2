@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { describeError, historyApi } from "../api/client";
-import type { HistoryPage, HistoryQuery, HistoryStats, SynthesisRecord } from "../api/types";
+import type {
+  CleanupRecord,
+  HistoryPage,
+  HistoryQuery,
+  HistoryStats,
+  SynthesisRecord,
+} from "../api/types";
 import {
   Alert,
   Badge,
@@ -15,13 +21,15 @@ import {
 export default function HistoryPage() {
   const [page, setPage] = useState<HistoryPage | null>(null);
   const [stats, setStats] = useState<HistoryStats | null>(null);
+  const [cleanup, setCleanup] = useState<CleanupRecord[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // 查询条件
   const [voiceId, setVoiceId] = useState("");
   const [emotion, setEmotion] = useState("");
-  const [textContains, setTextContains] = useState("");
+  const [textSearch, setTextSearch] = useState("");
   const [onlyFailed, setOnlyFailed] = useState(false);
   const [limit, setLimit] = useState(20);
 
@@ -34,12 +42,12 @@ export default function HistoryPage() {
     (c?: string): HistoryQuery => ({
       voice_id: voiceId.trim() || undefined,
       emotion: emotion.trim() || undefined,
-      text_contains: textContains.trim() || undefined,
+      text_search: textSearch.trim() || undefined,
       only_failed: onlyFailed || undefined,
       limit,
       cursor: c,
     }),
-    [voiceId, emotion, textContains, onlyFailed, limit],
+    [voiceId, emotion, textSearch, onlyFailed, limit],
   );
 
   /** 首次查询 / 换条件：重置列表。 */
@@ -47,17 +55,19 @@ export default function HistoryPage() {
     setLoading(true);
     setErr(null);
     try {
-      const [p, s] = await Promise.all([
+      const [p, s, cl] = await Promise.all([
         historyApi.list(buildQuery()),
         historyApi.stats({
           voice_id: voiceId.trim() || undefined,
           emotion: emotion.trim() || undefined,
-          text_contains: textContains.trim() || undefined,
+          text_search: textSearch.trim() || undefined,
           only_failed: onlyFailed || undefined,
         }),
+        historyApi.cleanupHistory(5),
       ]);
       setPage(p);
       setStats(s);
+      setCleanup(cl);
       setItems(p.items);
       setCursor(p.next_cursor);
       setHasMore(p.has_more);
@@ -66,7 +76,7 @@ export default function HistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [buildQuery, voiceId, emotion, textContains, onlyFailed]);
+  }, [buildQuery, voiceId, emotion, textSearch, onlyFailed]);
 
   /** 加载更多：用游标追加。 */
   const loadMore = useCallback(async () => {
@@ -84,6 +94,22 @@ export default function HistoryPage() {
       setLoading(false);
     }
   }, [cursor, loading, buildQuery]);
+
+  /** 导出当前筛选结果。 */
+  const doExport = useCallback(
+    async (fmt: "csv" | "json") => {
+      setExporting(true);
+      setErr(null);
+      try {
+        await historyApi.exportFile(buildQuery(), fmt);
+      } catch (e) {
+        setErr(describeError(e));
+      } finally {
+        setExporting(false);
+      }
+    },
+    [buildQuery],
+  );
 
   useEffect(() => {
     void reload();
@@ -169,11 +195,11 @@ export default function HistoryPage() {
             />
           </div>
           <div className="field">
-            <label>文本包含</label>
+            <label>文本搜索</label>
             <input
-              value={textContains}
-              onChange={(e) => setTextContains(e.target.value)}
-              placeholder="模糊匹配"
+              value={textSearch}
+              onChange={(e) => setTextSearch(e.target.value)}
+              placeholder="全文搜索（≥3 字走索引，短词自动降级）"
             />
           </div>
           <div className="field">
@@ -200,6 +226,23 @@ export default function HistoryPage() {
           <button onClick={() => void reload()} disabled={loading}>
             {loading ? "查询中…" : "查询"}
           </button>
+          <button
+            className="ghost"
+            onClick={() => void doExport("csv")}
+            disabled={exporting}
+          >
+            {exporting ? "导出中…" : "导出 CSV"}
+          </button>
+          <button
+            className="ghost"
+            onClick={() => void doExport("json")}
+            disabled={exporting}
+          >
+            导出 JSON
+          </button>
+        </div>
+        <div className="hint" style={{ marginTop: 6 }}>
+          导出会带上当前筛选条件（不含分页），CSV 带 UTF-8 BOM 可直接用 Excel 打开。
         </div>
       </Card>
 
@@ -268,6 +311,49 @@ export default function HistoryPage() {
         见 <span className="mono">docs/13_D1_EMOTION_VERDICT.md</span>。
         真正生效的是语速、音量、停顿与自然语言指令。
       </Alert>
+
+      {cleanup.length > 0 && (
+        <Card title={`自动清理记录（最近 ${cleanup.length} 次）`}>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 100 }}>类型</th>
+                <th style={{ width: 200 }}>清理界线</th>
+                <th style={{ width: 90 }}>删除条数</th>
+                <th style={{ width: 100 }}>触发方式</th>
+                <th>时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cleanup.map((c, i) => (
+                <tr key={`${c.created_at}-${i}`}>
+                  <td className="mono">{c.kind}</td>
+                  <td className="mono" style={{ fontSize: 11 }}>
+                    {c.cutoff}
+                  </td>
+                  <td className="mono">{c.removed}</td>
+                  <td>
+                    {c.triggered_by === "scheduled" ? (
+                      <Badge kind="dim">自动</Badge>
+                    ) : (
+                      <Badge kind="ok">手动</Badge>
+                    )}
+                  </td>
+                  <td className="mono" style={{ fontSize: 11 }}>
+                    {c.created_at}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="hint" style={{ marginTop: 8 }}>
+            清理由后台线程按保留期定期执行，也可通过{" "}
+            <span className="mono">DELETE /api/v1/history?before=...</span> 手动触发。
+            保留期在 <span className="mono">configs/gpu.yaml</span> 的{" "}
+            <span className="mono">history_retain_days</span> 配置。
+          </div>
+        </Card>
+      )}
     </>
   );
 }

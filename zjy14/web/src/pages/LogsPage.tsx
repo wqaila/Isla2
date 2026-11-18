@@ -46,6 +46,7 @@ export default function LogsPage() {
   const [requestId, setRequestId] = useState("");
   const [keyword, setKeyword] = useState("");
   const [onlyErrors, setOnlyErrors] = useState(false);
+  const [fileName, setFileName] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +59,7 @@ export default function LogsPage() {
           request_id: requestId.trim() || undefined,
           keyword: keyword.trim() || undefined,
           only_errors: onlyErrors,
+          file_name: fileName || undefined,
         }),
         logsApi.files(),
       ]);
@@ -68,7 +70,7 @@ export default function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [limit, levels, requestId, keyword, onlyErrors]);
+  }, [limit, levels, requestId, keyword, onlyErrors, fileName]);
 
   useEffect(() => {
     void load();
@@ -134,6 +136,22 @@ export default function LogsPage() {
               onChange={(e) => setRequestId(e.target.value)}
               placeholder="精确匹配，如 2e1c4dbeec654d8c"
             />
+          </div>
+          <div className="field">
+            <label>日志文件</label>
+            <select value={fileName} onChange={(e) => setFileName(e.target.value)}>
+              <option value="">当前日志（zjy14.log）</option>
+              {files
+                .filter((f) => !f.is_current)
+                .map((f) => (
+                  <option key={f.name} value={f.name}>
+                    {f.name}（{fmtSize(f.size)}）
+                  </option>
+                ))}
+            </select>
+            <div className="hint" style={{ marginTop: 4 }}>
+              可查历史归档（按天轮转生成）
+            </div>
           </div>
           <div className="field">
             <label>关键词</label>
