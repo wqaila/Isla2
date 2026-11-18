@@ -90,6 +90,10 @@ class HistoryQuery(BaseModel):
     text_search: str | None = Field(
         default=None, max_length=200, description="全文搜索（FTS5 索引）。"
     )
+    order_by: str = Field(
+        default="time",
+        description="排序：time（时间倒序）/ relevance（相关度，仅 FTS 有效）。",
+    )
     since: str | None = Field(default=None, description="时间下界（ISO8601，含）。")
     until: str | None = Field(default=None, description="时间上界（ISO8601，含）。")
     limit: int = Field(
@@ -106,8 +110,12 @@ class CleanupRecordOut(BaseModel):
 
     kind: str = Field(description="清理类型：synthesis / logs")
     cutoff: str = Field(description="清理的时间界线")
-    removed: int = Field(description="删除条数")
+    removed: int = Field(description="删除条数（logs 类型为文件数）")
     triggered_by: str = Field(description="manual / scheduled")
+    detail: dict[str, Any] = Field(
+        default_factory=dict,
+        description="额外信息，如被删除的文件名列表。",
+    )
     created_at: str = Field(description="清理发生时间")
 
 
@@ -122,6 +130,10 @@ class LogEntryOut(BaseModel):
     line_no: int = 0
     exc: str | None = None
     fields: dict[str, Any] = Field(default_factory=dict)
+    source_file: str = Field(
+        default="",
+        description="来源文件名。跨文件搜索时用于区分是哪天的日志。",
+    )
 
 
 class LogQueryParams(BaseModel):

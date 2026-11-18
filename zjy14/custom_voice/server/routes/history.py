@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
+from starlette.responses import StreamingResponse
 
 from ...core.errors import InvalidRequestError, NotFoundError
 from ...core.logging import get_logger
@@ -87,17 +88,29 @@ async def list_history(
     text_search: str | None = Query(
         default=None, description="全文搜索（FTS5 索引，比 LIKE 快）"
     ),
+    order_by: str = Query(
+        default="time",
+        pattern="^(time|relevance)$",
+        description=(
+            "排序：time 按时间倒序（默认）；"
+            "relevance 按相关度（仅 text_search 走 FTS 时有效）"
+        ),
+    ),
     since: str | None = Query(default=None, description="时间下界（ISO8601）"),
     until: str | None = Query(default=None, description="时间上界（ISO8601）"),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE, description="每页条数"),
     cursor: str | None = Query(default=None, description="上一页的 next_cursor"),
 ) -> HistoryPageOut:
-    """分页查询合成记录，按时间倒序（最新在前）。
+    """分页查询合成记录。
 
-    分页用游标：把上一页返回的 ``next_cursor`` 原样传回来即可。
+    默认按时间倒序（最新在前），用游标分页：
+    把上一页返回的 ``next_cursor`` 原样传回来即可。
 
     ``text_search`` 走全文索引（FTS5），``text_contains`` 走 LIKE。
     前者快，后者支持任意子串；同时给时以 ``text_search`` 为准。
+
+    ``order_by=relevance`` 时按 FTS5 的 bm25 相关度排序。
+    此时**没有游标**（相关度与时间无关），翻页用 has_more 判断。
     """
     if only_failed and only_success:
         raise InvalidRequestError(
@@ -113,6 +126,7 @@ async def list_history(
         only_success=only_success,
         text_contains=text_contains,
         text_search=text_search,
+        order_by=order_by,
         since=since,
         until=until,
         limit=limit,
@@ -185,13 +199,20 @@ async def export_history(
         le=EXPORT_MAX_ROWS,
         description=f"最大导出行数（上限 {EXPORT_MAX_ROWS}）",
     ),
-) -> Response:
-    """导出当前筛选条件下的合成记录。
+) -> StreamingResponse:
+    """导出当前筛选条件下的合成记录（流式）。
 
     返回文件下载（CSV 带 UTF-8 BOM，Excel 可直接打开中文）。
 
+    **流式响应**：边查边写，内存不随行数增长。
+    响应头 ``x-export-total`` 给出预计总行数，前端可显示进度。
+
     注意路由顺序：``/history/export`` 必须在 ``/history/{record_id}`` 之前。
     """
+    from starlette.concurrency import run_in_threadpool
+
+    repo = _repo(request)
+
     q = HistoryQuery(
         voice_id=voice_id,
         character_id=character_id,
@@ -203,29 +224,57 @@ async def export_history(
         since=since,
         until=until,
     )
-    body, mime, filename = _repo(request).export(
-        _to_filter(q), fmt=fmt, max_rows=max_rows
-    )
+    f = _to_filter(q)
+
+    # 先算总数（用于 x-export-total），同时决定实际导出量
+    total = await run_in_threadpool(repo.count_for_export, f)
+    effective = min(total, max_rows)
+
+    stamp = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).strftime("%Y%m%d-%H%M%S")
+    filename = f"synthesis-history-{stamp}.{fmt}"
+    mime = "application/json" if fmt == "json" else "text/csv; charset=utf-8"
+
+    async def gen():  # noqa: ANN202
+        # iter_export 是同步生成器，用线程池逐块取，避免阻塞事件循环
+        it = repo.iter_export(f, fmt=fmt, max_rows=max_rows)
+        while True:
+            chunk = await run_in_threadpool(_next_or_none, it)
+            if chunk is None:
+                break
+            yield chunk.encode("utf-8")
 
     logger.info(
         "导出合成记录",
         extra={
             "extra_fields": {
                 "format": fmt,
-                "bytes": len(body),
+                "total": total,
+                "exported": effective,
+                "max_rows": max_rows,
                 "filename": filename,
             }
         },
     )
 
-    return Response(
-        content=body,
+    return StreamingResponse(
+        gen(),
         media_type=mime,
         headers={
             "content-disposition": f'attachment; filename="{filename}"',
-            "x-export-rows": str(body.count(b"\n")) if fmt == "csv" else "?",
+            "x-export-total": str(total),
+            "x-export-limit": str(max_rows),
         },
     )
+
+
+def _next_or_none(it):  # noqa: ANN001, ANN202
+    """从同步生成器取下一个元素，耗尽时返回 None（供 run_in_threadpool 使用）。"""
+    try:
+        return next(it)
+    except StopIteration:
+        return None
 
 
 @router.get("/history/cleanup-history", response_model=list[CleanupRecordOut])
@@ -303,7 +352,10 @@ async def query_logs(
     only_errors: bool = Query(default=False),
     file_name: str | None = Query(
         default=None,
-        description="指定日志文件（含归档，如 zjy14.log.2026-11-16）。默认当前日志",
+        description=(
+            "指定日志文件（含归档，如 zjy14.log.2026-11-16）。"
+            "默认当前日志。传 '*' 或 'all' 表示跨全部文件搜索"
+        ),
     ),
 ) -> LogPageOut:
     """查询服务日志（最新在前）。
@@ -315,6 +367,7 @@ async def query_logs(
     级别支持前缀匹配（``WARN`` -> ``WARNING``）。
 
     ``file_name`` 可指定归档文件，取值来自 ``/logs/files``。
+    传 ``*`` 或 ``all`` 时跨全部日志文件搜索（结果带 ``source_file`` 标识来源）。
     """
     q = log_reader.LogQuery(
         limit=limit,

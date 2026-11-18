@@ -56,6 +56,8 @@ class LogEntry:
     exc: str = ""
     #: 行号（从 1 开始，便于定位）
     line_no: int = 0
+    #: 来源文件名（跨文件搜索时用于区分是哪天的日志）
+    source_file: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -71,6 +73,8 @@ class LogEntry:
             d["exc"] = self.exc
         if self.fields:
             d["fields"] = self.fields
+        if self.source_file:
+            d["source_file"] = self.source_file
         return d
 
 
@@ -277,6 +281,10 @@ def query_logs(q: LogQuery) -> LogResult:
 
     :raises ValueError: 指定的日志文件名非法（由 log_file_path 抛出）
     """
+    # 跨文件搜索：file_name 为 "*" 或 "all" 时，遍历所有日志文件
+    if q.file_name in ("*", "all"):
+        return _query_all_files(q)
+
     path = log_file_path(q.file_name)
     result = LogResult(path=str(path))
 
@@ -302,12 +310,76 @@ def query_logs(q: LogQuery) -> LogResult:
         if not _match(entry, levels, q, keyword):
             continue
 
+        entry.source_file = path.name
         result.entries.append(entry)
         if len(result.entries) >= limit:
             result.has_more = True
             break
 
     return result
+
+
+def _query_all_files(q: LogQuery) -> LogResult:
+    """跨全部日志文件搜索（当前 + 归档），最新文件优先。
+
+    为什么需要：排查历史问题时经常不知道是哪天的日志。
+    要求用户先查文件列表、再逐个文件查，效率太低。
+
+    实现：按修改时间倒序排列文件，逐个用同样条件查，
+    累加到 limit 为止。因为每个文件内部已是最新在前，
+    所以结果整体近似「时间倒序」（跨文件的边界处可能有轻微乱序，
+    这在排查场景下可接受）。
+
+    代价：最坏情况会扫完所有文件。因此 limit 会约束总量，
+    且单文件扫描预算保持不变，不会因为文件多而爆炸。
+    """
+    files = _log_files_by_mtime_desc()
+    result = LogResult(path=f"({len(files)} 个文件)")
+
+    limit = max(1, min(q.limit, MAX_LOG_LINES))
+    levels = [lv.upper() for lv in q.levels if lv]
+    keyword = (q.keyword or "").lower()
+    scan_budget = min(limit * 20 + 200, 20000)
+
+    for path in files:
+        if len(result.entries) >= limit:
+            result.has_more = True
+            break
+        if not path.is_file():
+            continue
+
+        result.file_size += path.stat().st_size
+        remaining = limit - len(result.entries)
+
+        for line_no, line in _iter_tail_lines(path, scan_budget):
+            if remaining <= 0:
+                result.has_more = True
+                break
+            result.scanned += 1
+            entry = _parse_line(line, line_no)
+            if entry is None:
+                result.bad_lines += 1
+                continue
+            if not _match(entry, levels, q, keyword):
+                continue
+            entry.source_file = path.name
+            result.entries.append(entry)
+            remaining -= 1
+
+    return result
+
+
+def _log_files_by_mtime_desc() -> list[Path]:
+    """按修改时间倒序列出日志文件（当前 + 归档）。"""
+    d = log_dir()
+    if not d.is_dir():
+        return []
+    files = [p for p in d.glob("zjy14.log*") if p.is_file()]
+    # 当前日志永远排最前（它最新）
+    files.sort(
+        key=lambda p: (p.name != LOG_FILENAME, -p.stat().st_mtime),
+    )
+    return files
 
 
 def _level_matches(entry_level: str, wanted: list[str]) -> bool:

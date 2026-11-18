@@ -286,6 +286,7 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [20_DAILY_SUMMARY_2026-11-16.md](docs/20_DAILY_SUMMARY_2026-11-16.md) | **当日总结（成果·不足·缺陷）** |
 | [21_HISTORY_LOGS_API.md](docs/21_HISTORY_LOGS_API.md) | **合成记录与日志查询 API** |
 | [22_HISTORY_ENHANCEMENTS.md](docs/22_HISTORY_ENHANCEMENTS.md) | **历史记录四个限制的补齐（FTS/导出/归档/自动清理）** |
+| [23_HISTORY_ROUND2.md](docs/23_HISTORY_ROUND2.md) | **第二轮补齐（跨文件搜索/相关度排序/导出进度/日志审计）** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |

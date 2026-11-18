@@ -32,6 +32,8 @@ export default function HistoryPage() {
   const [textSearch, setTextSearch] = useState("");
   const [onlyFailed, setOnlyFailed] = useState(false);
   const [limit, setLimit] = useState(20);
+  const [orderBy, setOrderBy] = useState<"time" | "relevance">("time");
+  const [exportInfo, setExportInfo] = useState<string | null>(null);
 
   // 累积加载（游标分页）
   const [items, setItems] = useState<SynthesisRecord[]>([]);
@@ -43,11 +45,12 @@ export default function HistoryPage() {
       voice_id: voiceId.trim() || undefined,
       emotion: emotion.trim() || undefined,
       text_search: textSearch.trim() || undefined,
+      order_by: orderBy,
       only_failed: onlyFailed || undefined,
       limit,
       cursor: c,
     }),
-    [voiceId, emotion, textSearch, onlyFailed, limit],
+    [voiceId, emotion, textSearch, orderBy, onlyFailed, limit],
   );
 
   /** 首次查询 / 换条件：重置列表。 */
@@ -100,10 +103,16 @@ export default function HistoryPage() {
     async (fmt: "csv" | "json") => {
       setExporting(true);
       setErr(null);
+      setExportInfo("正在导出…");
       try {
-        await historyApi.exportFile(buildQuery(), fmt);
+        await historyApi.exportFile(buildQuery(), fmt, ({ total, limit: cap }) => {
+          const n = Math.min(total, cap);
+          setExportInfo(`正在导出 ${n} 条${total > cap ? `（共 ${total}，上限 ${cap}）` : ""}…`);
+        });
+        setExportInfo(null);
       } catch (e) {
         setErr(describeError(e));
+        setExportInfo(null);
       } finally {
         setExporting(false);
       }
@@ -203,6 +212,19 @@ export default function HistoryPage() {
             />
           </div>
           <div className="field">
+            <label>排序</label>
+            <select
+              value={orderBy}
+              onChange={(e) => setOrderBy(e.target.value as "time" | "relevance")}
+            >
+              <option value="time">按时间（最新在前）</option>
+              <option value="relevance">按相关度（需全文搜索）</option>
+            </select>
+            <div className="hint" style={{ marginTop: 4 }}>
+              相关度需搜索词 ≥3 字才生效，否则自动回退时间排序
+            </div>
+          </div>
+          <div className="field">
             <label>每页条数</label>
             <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
               {[10, 20, 50, 100].map((n) => (
@@ -243,6 +265,12 @@ export default function HistoryPage() {
         </div>
         <div className="hint" style={{ marginTop: 6 }}>
           导出会带上当前筛选条件（不含分页），CSV 带 UTF-8 BOM 可直接用 Excel 打开。
+          {exportInfo && (
+            <>
+              <br />
+              <span className="mono">{exportInfo}</span>
+            </>
+          )}
         </div>
       </Card>
 
@@ -319,31 +347,50 @@ export default function HistoryPage() {
               <tr>
                 <th style={{ width: 100 }}>类型</th>
                 <th style={{ width: 200 }}>清理界线</th>
-                <th style={{ width: 90 }}>删除条数</th>
+                <th style={{ width: 90 }}>删除数量</th>
                 <th style={{ width: 100 }}>触发方式</th>
                 <th>时间</th>
               </tr>
             </thead>
             <tbody>
-              {cleanup.map((c, i) => (
-                <tr key={`${c.created_at}-${i}`}>
-                  <td className="mono">{c.kind}</td>
-                  <td className="mono" style={{ fontSize: 11 }}>
-                    {c.cutoff}
-                  </td>
-                  <td className="mono">{c.removed}</td>
-                  <td>
-                    {c.triggered_by === "scheduled" ? (
-                      <Badge kind="dim">自动</Badge>
-                    ) : (
-                      <Badge kind="ok">手动</Badge>
-                    )}
-                  </td>
-                  <td className="mono" style={{ fontSize: 11 }}>
-                    {c.created_at}
-                  </td>
-                </tr>
-              ))}
+              {cleanup.map((c, i) => {
+                const files = Array.isArray(c.detail?.files)
+                  ? (c.detail.files as string[])
+                  : [];
+                return (
+                  <tr key={`${c.created_at}-${i}`}>
+                    <td>
+                      {c.kind === "logs" ? (
+                        <Badge kind="warn">日志文件</Badge>
+                      ) : (
+                        <Badge kind="dim">合成记录</Badge>
+                      )}
+                    </td>
+                    <td className="mono" style={{ fontSize: 11 }}>
+                      {c.cutoff}
+                    </td>
+                    <td className="mono">
+                      {c.removed}
+                      {c.kind === "logs" ? " 个文件" : " 条"}
+                    </td>
+                    <td>
+                      {c.triggered_by === "scheduled" ? (
+                        <Badge kind="dim">自动</Badge>
+                      ) : (
+                        <Badge kind="ok">手动</Badge>
+                      )}
+                    </td>
+                    <td className="mono" style={{ fontSize: 11 }}>
+                      {c.created_at}
+                      {files.length > 0 && (
+                        <div className="dim" style={{ fontSize: 10 }}>
+                          删除：{files.join(", ")}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           <div className="hint" style={{ marginTop: 8 }}>
@@ -351,6 +398,8 @@ export default function HistoryPage() {
             <span className="mono">DELETE /api/v1/history?before=...</span> 手动触发。
             保留期在 <span className="mono">configs/gpu.yaml</span> 的{" "}
             <span className="mono">history_retain_days</span> 配置。
+            <br />
+            日志文件清理也会记入审计（含被删文件名），不再只记合成记录。
           </div>
         </Card>
       )}

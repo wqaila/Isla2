@@ -13,7 +13,21 @@ from __future__ import annotations
 #: 当前 schema 版本。每次改表结构必须 +1，并在 MIGRATIONS 里加一步。
 #: v2：为合成记录查询补索引（voice_id / error_code / 复合时间索引）。
 #: v3：合成记录全文索引（FTS5）+ 清理审计表。
-SCHEMA_VERSION = 3
+#: v4：cleanup_logs 加 detail 列（记录被删除的文件名等）。
+SCHEMA_VERSION = 4
+
+#: 给「已有表」加列的迁移步骤。
+#:
+#: 为什么需要单独一份：``SCHEMA_SQL`` 全是 ``CREATE ... IF NOT EXISTS``，
+#: 对**已存在**的表不会补新列。``ALTER TABLE ADD COLUMN`` 在 SQLite 里
+#: 重复执行会报 "duplicate column name"，因此这里必须按版本判断 + 容错。
+#:
+#: 格式：(目标版本, 语句)。执行时若报 duplicate column 则跳过。
+ALTER_STATEMENTS: list[tuple[int, str]] = [
+    (4, "ALTER TABLE cleanup_logs ADD COLUMN detail TEXT NOT NULL DEFAULT ''"),
+]
+
+__all__ = ["ALTER_STATEMENTS", "SCHEMA_SQL", "SCHEMA_VERSION"]
 
 #: 建表语句。用 IF NOT EXISTS 保证幂等。
 SCHEMA_SQL = """
@@ -159,13 +173,16 @@ CREATE TABLE IF NOT EXISTS metrics (
 
 CREATE INDEX IF NOT EXISTS idx_metrics_name_created ON metrics(name, created_at);
 
--- 自动清理记录：记录每次清理的时间与条数，便于事后审计
+-- 自动清理记录：记录每次清理的时间与条数，便于事后审计。
+-- kind: synthesis（合成记录）/ logs（归档日志文件）
+-- detail: 额外信息（如被删除的文件名列表），JSON
 CREATE TABLE IF NOT EXISTS cleanup_logs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     kind                TEXT NOT NULL,           -- synthesis / logs
     cutoff              TEXT NOT NULL,           -- 清理的时间界线
-    removed             INTEGER NOT NULL,        -- 删除条数
+    removed             INTEGER NOT NULL,        -- 删除条数（或文件数）
     triggered_by        TEXT NOT NULL DEFAULT '',-- manual / scheduled
+    detail              TEXT NOT NULL DEFAULT '',-- JSON，如被删文件名
     created_at          TEXT NOT NULL
 );
 
@@ -178,4 +195,21 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 """
 
-__all__ = ["SCHEMA_SQL", "SCHEMA_VERSION"]
+#: 当前 schema 版本。每次改表结构必须 +1，并在 MIGRATIONS 里加一步。
+#: v2：为合成记录查询补索引（voice_id / error_code / 复合时间索引）。
+#: v3：合成记录全文索引（FTS5）+ 清理审计表。
+#: v4：cleanup_logs 加 detail 列（记录被删除的文件名等）。
+SCHEMA_VERSION = 4
+
+#: 给「已有表」加列的迁移步骤。
+#:
+#: 为什么需要单独一份：``SCHEMA_SQL`` 全是 ``CREATE ... IF NOT EXISTS``，
+#: 对**已存在**的表不会补新列。``ALTER TABLE ADD COLUMN`` 在 SQLite 里
+#: 重复执行会报 "duplicate column name"，因此这里必须按版本判断 + 容错。
+#:
+#: 格式：(目标版本, 语句)。执行时若报 duplicate column 则跳过。
+ALTER_STATEMENTS: list[tuple[int, str]] = [
+    (4, "ALTER TABLE cleanup_logs ADD COLUMN detail TEXT NOT NULL DEFAULT ''"),
+]
+
+__all__ = ["ALTER_STATEMENTS", "SCHEMA_SQL", "SCHEMA_VERSION"]

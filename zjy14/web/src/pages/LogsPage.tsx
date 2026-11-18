@@ -141,6 +141,7 @@ export default function LogsPage() {
             <label>日志文件</label>
             <select value={fileName} onChange={(e) => setFileName(e.target.value)}>
               <option value="">当前日志（zjy14.log）</option>
+              <option value="*">全部文件（跨文件搜索）</option>
               {files
                 .filter((f) => !f.is_current)
                 .map((f) => (
@@ -150,7 +151,7 @@ export default function LogsPage() {
                 ))}
             </select>
             <div className="hint" style={{ marginTop: 4 }}>
-              可查历史归档（按天轮转生成）
+              选「全部文件」可跨归档搜索，结果会标注来源
             </div>
           </div>
           <div className="field">
@@ -293,6 +294,16 @@ function LogRow({ e, onCopy }: { e: LogEntry; onCopy: (t: string) => void }) {
       {e.request_id && (
         <div className="dim" style={{ fontSize: 11, marginLeft: 52 }}>
           request_id: <span className="mono">{e.request_id}</span>
+          {e.source_file && (
+            <span style={{ marginLeft: 12 }}>
+              来源: <span className="mono">{e.source_file}</span>
+            </span>
+          )}
+        </div>
+      )}
+      {!e.request_id && e.source_file && (
+        <div className="dim" style={{ fontSize: 11, marginLeft: 52 }}>
+          来源: <span className="mono">{e.source_file}</span>
         </div>
       )}
 

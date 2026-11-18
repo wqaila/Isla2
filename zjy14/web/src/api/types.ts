@@ -238,6 +238,8 @@ export interface HistoryQuery {
   only_success?: boolean;
   text_contains?: string;
   text_search?: string;
+  /** time（时间倒序，默认）/ relevance（相关度，仅 FTS 有效） */
+  order_by?: "time" | "relevance";
   since?: string;
   until?: string;
   limit?: number;
@@ -250,6 +252,8 @@ export interface CleanupRecord {
   cutoff: string;
   removed: number;
   triggered_by: string;
+  /** 额外信息，如被删除的文件名列表 */
+  detail: Record<string, unknown>;
   created_at: string;
 }
 
@@ -263,6 +267,8 @@ export interface LogEntry {
   line_no: number;
   exc?: string;
   fields?: Record<string, unknown>;
+  /** 来源文件名（跨文件搜索时用于区分是哪天的日志） */
+  source_file?: string;
 }
 
 /** 日志查询结果 */

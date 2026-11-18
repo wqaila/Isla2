@@ -351,12 +351,29 @@ export const historyApi = {
     return (await res.json()) as CleanupRecord[];
   },
 
-  /** 导出查询结果为文件并触发浏览器下载。 */
-  async exportFile(q: HistoryQuery, fmt: "csv" | "json" = "csv"): Promise<void> {
+  /** 导出查询结果为文件并触发浏览器下载。
+   *
+   * 后端是流式响应，会先给出 ``x-export-total``（预计总行数）。
+   * 这里把总数回调出去，让页面能显示「正在导出 N 条」。
+   *
+   * 为什么不用 XHR 的 onprogress：
+   *   fetch 的 ReadableStream 在浏览器里拿不到总字节数
+   *   （content-length 未知，因为是流式生成），
+   *   但后端知道总行数，用它做进度提示更准确。
+   */
+  async exportFile(
+    q: HistoryQuery,
+    fmt: "csv" | "json" = "csv",
+    onProgress?: (info: { total: number; limit: number }) => void,
+  ): Promise<void> {
     const res = await fetch(
       BASE + "/api/v1/history/export" + toQueryString({ ...q, fmt }),
     );
     if (!res.ok) await parseError(res);
+
+    const total = Number(res.headers.get("x-export-total") ?? 0);
+    const limit = Number(res.headers.get("x-export-limit") ?? 0);
+    onProgress?.({ total, limit });
 
     // 从 content-disposition 取文件名，取不到就用时间戳兜底
     const cd = res.headers.get("content-disposition") ?? "";
@@ -364,7 +381,22 @@ export const historyApi = {
     const filename =
       m?.[1] ?? `synthesis-history-${new Date().toISOString().slice(0, 10)}.${fmt}`;
 
-    const blob = await res.blob();
+    // 流式读取并累积，避免一次性占大内存
+    const reader = res.body?.getReader();
+    const parts: Uint8Array[] = [];
+    if (reader) {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) parts.push(value);
+      }
+    } else {
+      parts.push(new Uint8Array(await res.arrayBuffer()));
+    }
+
+    const blob = new Blob(parts as BlobPart[], {
+      type: res.headers.get("content-type") ?? "application/octet-stream",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -372,7 +404,6 @@ export const historyApi = {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    // 延迟释放，确保下载已开始
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
 

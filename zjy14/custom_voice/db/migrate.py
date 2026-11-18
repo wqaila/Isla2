@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from ..core.logging import get_logger
-from .models import SCHEMA_SQL, SCHEMA_VERSION
+from .models import ALTER_STATEMENTS, SCHEMA_SQL, SCHEMA_VERSION
 from .session import Database
 
 logger = get_logger("db.migrate")
@@ -30,17 +30,45 @@ def current_version(db: Database) -> int:
     return int(row["v"]) if row and row["v"] is not None else 0
 
 
+def _apply_alters(db: Database, from_version: int) -> None:
+    """执行需要 ALTER 的迁移步骤。
+
+    ``SCHEMA_SQL`` 的 ``CREATE TABLE IF NOT EXISTS`` 对已存在的表不会补新列，
+    所以「给旧表加列」必须单独处理。
+
+    容错：SQLite 的 ``ALTER TABLE ADD COLUMN`` 重复执行会报
+    "duplicate column name"。若列已存在（例如上次迁移中断后重跑），
+    跳过即可，不应视为失败。
+    """
+    conn = db.connect()
+    for target, stmt in ALTER_STATEMENTS:
+        if from_version >= target:
+            continue
+        try:
+            conn.execute(stmt)
+            logger.info(
+                "schema 加列完成",
+                extra={"extra_fields": {"version": target, "sql": stmt}},
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "duplicate column" in str(exc).lower():
+                logger.debug(
+                    "列已存在，跳过",
+                    extra={"extra_fields": {"version": target}},
+                )
+                continue
+            raise
+
+
 def migrate(db: Database) -> int:
     """执行迁移，返回最终版本号。幂等。
 
-    说明：``SCHEMA_SQL`` 里全部是 ``CREATE ... IF NOT EXISTS``，
-    因此从任意旧版本升级都是「重跑一遍建表脚本 + 补记版本号」，
-    不需要为每个版本写单独的 ALTER 步骤。
-
-    这对新增索引/新增表是安全的；若将来需要给已有表加列
-    （SQLite 的 ``ALTER TABLE ADD COLUMN``），必须在此处按版本分支处理。
+    流程：
+      1. 若已是最新，直接返回
+      2. 跑 ``SCHEMA_SQL``（全 IF NOT EXISTS，安全重复执行）
+      3. 跑 ``ALTER_STATEMENTS``（给已有表补列，按版本跳过 + 容错）
+      4. 记录版本号
     """
-    conn = db.connect()
     applied = current_version(db)
 
     if applied >= SCHEMA_VERSION:
@@ -52,6 +80,9 @@ def migrate(db: Database) -> int:
 
     # 建表脚本必须用 executescript（会隐式提交），不能放在 transaction() 内
     db.executescript(SCHEMA_SQL)
+
+    # 给已有表补列（必须在建表之后，因为可能引用新表）
+    _apply_alters(db, applied)
 
     with db.transaction() as tx:
         tx.execute(

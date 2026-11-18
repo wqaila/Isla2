@@ -161,7 +161,12 @@ class CleanupScheduler:
                 return
 
     def run_once(self, *, triggered_by: str = "manual") -> dict[str, Any]:
-        """执行一次清理，返回结果摘要。"""
+        """执行一次清理，返回结果摘要。
+
+        两类清理都写审计（``cleanup_logs`` 表）：
+          - synthesis：删除的合成记录条数
+          - logs：删除的归档日志文件名列表（detail 列存 JSON）
+        """
         from .repository import SynthesisHistoryRepository
 
         started = time.perf_counter()
@@ -173,6 +178,17 @@ class CleanupScheduler:
             removed_rows = repo.delete_before(cutoff, triggered_by=triggered_by)
 
         removed_files = purge_archived_logs(self._log_retain_days)
+
+        # 日志文件删除也要审计 —— 之前只记合成记录，删文件无迹可查
+        if removed_files:
+            log_cutoff = cutoff_iso(self._log_retain_days)
+            repo.record_cleanup(
+                kind="logs",
+                cutoff=log_cutoff,
+                removed=len(removed_files),
+                triggered_by=triggered_by,
+                detail={"files": removed_files},
+            )
 
         elapsed_ms = (time.perf_counter() - started) * 1000
         summary = {

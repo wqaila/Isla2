@@ -148,6 +148,10 @@ class QueryFilter:
     text_contains: str | None = None
     #: 全文搜索（FTS5，走索引）。与 text_contains 互斥，优先用本项。
     text_search: str | None = None
+    #: 排序方式：
+    #:   "time"    按时间倒序（默认，最新在前）
+    #:   "relevance" 按相关度（仅当用 text_search 且走 FTS 索引时有效）
+    order_by: str = "time"
     #: 时间下界（ISO8601，含）
     since: str | None = None
     #: 时间上界（ISO8601，含）
@@ -166,6 +170,7 @@ class QueryFilter:
             "only_success": self.only_success,
             "text_contains": self.text_contains,
             "text_search": self.text_search,
+            "order_by": self.order_by,
             "since": self.since,
             "until": self.until,
             "limit": self.limit,
@@ -273,12 +278,30 @@ class SynthesisHistoryRepository:
     # ------------------------------------------------------------------
 
     def query(self, f: QueryFilter) -> Page:
-        """按条件分页查询，按时间倒序（最新在前）。"""
+        """按条件分页查询。
+
+        排序有两种：
+          - ``order_by="time"``（默认）：按时间倒序，用 ``(created_at, id)``
+            游标分页。记录持续写入时不会重复或跳过。
+          - ``order_by="relevance"``：按 FTS5 的 ``bm25`` 相关度排序。
+            **此时不能用时间游标**（相关度与时间无关），改用 offset 分页。
+            offset 在数据增长时可能重复，但相关度排序本身就是「一次搜索」
+            场景，翻页深度有限，可接受。
+
+        相关度排序只在「用 text_search 且查询长度够走 FTS」时生效，
+        否则自动回退到时间排序（LIKE 没有相关度概念）。
+        """
         limit = max(1, min(f.limit, MAX_PAGE_SIZE))
+        use_relevance = (
+            f.order_by == "relevance"
+            and bool(f.text_search)
+            and len((f.text_search or "").strip()) >= FTS_MIN_QUERY_LEN
+        )
+
         where, params = self._build_where(f)
 
-        # 游标条件：取「比游标更旧」的记录
-        if f.cursor:
+        # 游标条件（仅时间排序）：取「比游标更旧」的记录
+        if f.cursor and not use_relevance:
             try:
                 c_time, c_id = decode_cursor(f.cursor)
             except ValueError:
@@ -294,29 +317,66 @@ class SynthesisHistoryRepository:
         )
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
-        # 多取一条用于判断 has_more
-        params.append(limit + 1)
+
+        if use_relevance:
+            # FTS5 的 bm25() 越小越相关，升序即「最相关在前」。
+            #
+            # 关键：bm25() 必须在**直接查 FTS 表的那个 SELECT 里**调用，
+            # 不能在 JOIN 的外层用 `bm25(synthesis_fts)` —— 那时
+            # synthesis_fts 不是可见的表名，会报 "no such column"。
+            # 正确写法是在子查询里算 rank 并带出来。
+            sql = (
+                "SELECT s.id, s.request_id, s.text, s.character_id, s.speaker_id,"
+                " s.emotion, s.style, s.speed, s.instruction, s.sample_rate,"
+                " s.duration_s, s.total_ms, s.first_audio_ms, s.rtf,"
+                " s.peak_vram_mb, s.engine, s.error_code, s.created_at"
+                " FROM synthesis_logs s"
+                " JOIN ("
+                "   SELECT rowid AS rid, bm25(synthesis_fts) AS rank"
+                "   FROM synthesis_fts WHERE synthesis_fts MATCH ?"
+                " ) fts ON s.id = fts.rid"
+            )
+            fts_param = _fts_query((f.text_search or "").strip())
+            rest_where = where
+            rest_params = params
+            if rest_where:
+                sql += " WHERE " + " AND ".join(rest_where)
+            sql += " ORDER BY fts.rank ASC, s.created_at DESC LIMIT ? OFFSET ?"
+            params = [fts_param, *rest_params, limit + 1, 0]
+        else:
+            sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+            params.append(limit + 1)
 
         conn = self._db.connect()
         try:
             rows = conn.execute(sql, params).fetchall()
         except sqlite3.OperationalError:
             # FTS 查询语法/索引异常时降级到 LIKE，保证功能不整体失败。
-            # 只在用全文搜索时可能发生（_fts_query 已做转义，理论上不该走到这）。
             if not f.text_search:
                 raise
-            fallback = QueryFilter(**{**f.to_dict(), "text_search": None,
-                                      "text_contains": f.text_search,
-                                      "cursor": None, "limit": f.limit})
+            fallback = QueryFilter(
+                voice_id=f.voice_id,
+                character_id=f.character_id,
+                emotion=f.emotion,
+                only_failed=f.only_failed,
+                only_success=f.only_success,
+                text_contains=f.text_search,
+                text_search=None,
+                order_by="time",
+                since=f.since,
+                until=f.until,
+                limit=f.limit,
+                cursor=None,
+            )
             return self.query(fallback)
 
         has_more = len(rows) > limit
         rows = rows[:limit]
         items = [SynthesisRecord.from_row(r) for r in rows]
 
+        # 相关度排序下没有游标（顺序与时间无关），用 has_more 提示还有更多
         next_cursor = None
-        if has_more and items:
+        if has_more and items and not use_relevance:
             last = items[-1]
             next_cursor = encode_cursor(last.created_at, last.id)
 
@@ -461,36 +521,83 @@ class SynthesisHistoryRepository:
             removed = cur.rowcount or 0
             tx.execute(
                 "INSERT INTO cleanup_logs (kind, cutoff, removed, triggered_by,"
-                " created_at) VALUES (?,?,?,?,?)",
-                ("synthesis", cutoff_iso, removed, triggered_by, _now()),
+                " detail, created_at) VALUES (?,?,?,?,?,?)",
+                ("synthesis", cutoff_iso, removed, triggered_by, "", _now()),
             )
             return removed
+
+    def record_cleanup(
+        self,
+        *,
+        kind: str,
+        cutoff: str,
+        removed: int,
+        triggered_by: str = "manual",
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """写入一条清理审计记录。
+
+        为什么单独提供：日志文件清理不在 ``delete_before`` 里
+        （那是数据库操作），但同样需要审计。
+        """
+        with self._db.transaction() as tx:
+            tx.execute(
+                "INSERT INTO cleanup_logs (kind, cutoff, removed, triggered_by,"
+                " detail, created_at) VALUES (?,?,?,?,?,?)",
+                (
+                    kind,
+                    cutoff,
+                    removed,
+                    triggered_by,
+                    json.dumps(detail, ensure_ascii=False) if detail else "",
+                    _now(),
+                ),
+            )
 
     def cleanup_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """读取清理审计记录（最新在前）。"""
         conn = self._db.connect()
         rows = conn.execute(
-            "SELECT kind, cutoff, removed, triggered_by, created_at"
+            "SELECT kind, cutoff, removed, triggered_by, detail, created_at"
             " FROM cleanup_logs ORDER BY id DESC LIMIT ?",
             (max(1, min(limit, 200)),),
         ).fetchall()
-        return [dict(r) for r in rows]
 
-    def export(
-        self, f: QueryFilter, *, fmt: str = "csv", max_rows: int = EXPORT_MAX_ROWS
-    ) -> tuple[bytes, str, str]:
-        """导出查询结果为 CSV 或 JSON。
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            raw = d.get("detail") or ""
+            try:
+                d["detail"] = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                d["detail"] = {"raw": raw}
+            out.append(d)
+        return out
 
-        为什么不用分页接口逐页拉：调用方（前端/脚本）不该自己拼装导出文件，
-        而且导出常常需要「当前筛选条件下的全部数据」。
+    def iter_export(
+        self,
+        f: QueryFilter,
+        *,
+        fmt: str = "csv",
+        max_rows: int = EXPORT_MAX_ROWS,
+        page_size: int = MAX_PAGE_SIZE,
+    ):  # noqa: ANN201
+        """流式导出：逐页产出文本块。
 
-        :return: (内容字节, MIME 类型, 建议文件名)
+        与 ``export()`` 的区别：
+          - ``export()`` 一次性返回全部字节，适合小数据
+          - ``iter_export()`` 边查边产出，适合大数据（内存不随行数增长）
+
+        用途：HTTP 层用 StreamingResponse 包起来，浏览器能边收边写盘，
+        用户不会看到"卡住不动"。同时前端可以读 ``x-export-total`` 头
+        显示总行数。
+
+        :param page_size: 内部每次查多少行（影响首个块的延迟）
         """
         import csv
         import io
 
-        # 导出走不分页的查询，但仍受 max_rows 限制，防止拉爆内存
-        export_filter = QueryFilter(
+        base = QueryFilter(
             voice_id=f.voice_id,
             character_id=f.character_id,
             emotion=f.emotion,
@@ -498,36 +605,42 @@ class SynthesisHistoryRepository:
             only_success=f.only_success,
             text_contains=f.text_contains,
             text_search=f.text_search,
+            order_by=f.order_by,
             since=f.since,
             until=f.until,
-            limit=min(max_rows, MAX_PAGE_SIZE),
+            limit=min(page_size, MAX_PAGE_SIZE),
             cursor=None,
         )
 
-        rows: list[SynthesisRecord] = []
-        cursor: str | None = None
-        while len(rows) < max_rows:
-            export_filter.cursor = cursor
-            page = self.query(export_filter)
-            rows.extend(page.items)
-            if not page.has_more or not page.next_cursor:
-                break
-            cursor = page.next_cursor
-        rows = rows[:max_rows]
-
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-
         if fmt == "json":
-            payload = {
-                "exported_at": _now(),
-                "count": len(rows),
-                "filter": f.to_dict(),
-                "items": [r.to_dict() for r in rows],
-            }
-            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-            return body, "application/json", f"synthesis-history-{stamp}.json"
+            # JSON 流式：先输出头部，再逐条输出，最后收尾。
+            # 注意分隔符处理 —— 第一条前不加逗号。
+            yield '{\n  "exported_at": ' + json.dumps(_now())
+            yield ',\n  "filter": ' + json.dumps(f.to_dict(), ensure_ascii=False)
+            yield ',\n  "items": [\n'
 
-        # CSV：用 UTF-8 BOM，让 Excel 正确识别中文
+            emitted = 0
+            cursor: str | None = None
+            while emitted < max_rows:
+                base.cursor = cursor
+                page = self.query(base)
+                for r in page.items:
+                    if emitted >= max_rows:
+                        break
+                    if emitted:
+                        yield ",\n"
+                    yield "    " + json.dumps(
+                        r.to_dict(), ensure_ascii=False, default=str
+                    )
+                    emitted += 1
+                if not page.has_more or not page.next_cursor:
+                    break
+                cursor = page.next_cursor
+
+            yield f"\n  ],\n  \"count\": {emitted}\n}}\n"
+            return
+
+        # CSV 流式：先 BOM + 表头，再逐行
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow([
@@ -536,15 +649,60 @@ class SynthesisHistoryRepository:
             "first_audio_ms", "rtf", "peak_vram_mb", "engine", "error_code",
             "created_at",
         ])
-        for r in rows:
-            writer.writerow([
-                r.id, r.request_id, r.voice_id, r.text, r.emotion, r.style,
-                r.speed, r.instruction, r.sample_rate, r.duration_s, r.total_ms,
-                r.first_audio_ms, r.rtf, r.peak_vram_mb, r.engine, r.error_code,
-                r.created_at,
-            ])
-        body = ("\ufeff" + buf.getvalue()).encode("utf-8")
+        yield "\ufeff" + buf.getvalue()
+
+        emitted = 0
+        cursor = None
+        while emitted < max_rows:
+            base.cursor = cursor
+            page = self.query(base)
+            if not page.items:
+                break
+
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            for r in page.items:
+                if emitted >= max_rows:
+                    break
+                writer.writerow([
+                    r.id, r.request_id, r.voice_id, r.text, r.emotion, r.style,
+                    r.speed, r.instruction, r.sample_rate, r.duration_s,
+                    r.total_ms, r.first_audio_ms, r.rtf, r.peak_vram_mb,
+                    r.engine, r.error_code, r.created_at,
+                ])
+                emitted += 1
+            yield buf.getvalue()
+
+            if not page.has_more or not page.next_cursor:
+                break
+            cursor = page.next_cursor
+
+    def export(
+        self, f: QueryFilter, *, fmt: str = "csv", max_rows: int = EXPORT_MAX_ROWS
+    ) -> tuple[bytes, str, str]:
+        """导出查询结果为 CSV 或 JSON（一次性返回全部字节）。
+
+        为什么不用分页接口逐页拉：调用方（前端/脚本）不该自己拼装导出文件，
+        而且导出常常需要「当前筛选条件下的全部数据」。
+
+        大数据建议用 ``iter_export()``（流式），避免内存峰值。
+
+        :return: (内容字节, MIME 类型, 建议文件名)
+        """
+        chunks = list(self.iter_export(f, fmt=fmt, max_rows=max_rows))
+        body = "".join(chunks).encode("utf-8")
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        if fmt == "json":
+            return body, "application/json", f"synthesis-history-{stamp}.json"
         return body, "text/csv; charset=utf-8", f"synthesis-history-{stamp}.csv"
+
+    def count_for_export(self, f: QueryFilter) -> int:
+        """导出前的总数估算（用于 x-export-total 头）。
+
+        复用 stats 的 COUNT 查询，但忽略分页。
+        """
+        return self.stats(f).total
 
     def count(self) -> int:
         conn = self._db.connect()
