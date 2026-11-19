@@ -46,6 +46,8 @@ export default function App() {
           CosyVoice3 · RTX 5070
           <br />
           路线乙（无情绪控制）
+          <br />
+          <em>愿群星为你闪耀，百花为你绽放 ♪</em>
         </div>
       </aside>
 

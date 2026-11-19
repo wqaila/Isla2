@@ -1,17 +1,65 @@
-/** 全局样式。中文界面优先，暗色主题。 */
+/** 全局样式 —— 爱莉希雅（Elysia）主题。
+ *
+ * ## 设计依据
+ *
+ * 取自《崩坏3》爱莉希雅的角色设定（「粉色妖精小姐♪」「人之律者」）：
+ *
+ * - **主色调是粉色**。官方原画设计明确「首先就想到要用粉色来作为这个角色
+ *   的主色调」，且最终定调为「粉白」。
+ * - **紫白过渡**。英桀制服是白色上衣 + 黑色袖套披肩 + 许多**紫色**装饰；
+ *   律者形态的礼服带水晶、魔法、植物元素。
+ * - **花 / 蝴蝶 / 群星**。台词里反复出现「百花绽放」「群星闪耀」，
+ *   原画集描述「像花朵一样绽放，像蝴蝶一样起飞」。
+ * - **♪ 音符**。她的台词几乎句句带 ♪，是最具辨识度的符号。
+ * - **刻印「真我」**（Ego），位次 Ⅱ。
+ *
+ * ## 取舍
+ *
+ * 这是**运维监控界面**，不是角色展示页。所以：
+ * - 保持暗色底，保证长时间盯盘不刺眼、数字可读
+ * - 粉色只用于强调（主色/激活态/焦点），不大面积铺色
+ * - 装饰元素克制：用渐变、微光、低透明度纹样，不干扰数据阅读
+ */
 
 :root {
-  --bg: #0f1115;
-  --bg-soft: #161a22;
-  --bg-card: #1c212b;
-  --border: #2a3040;
-  --text: #e4e7ec;
-  --text-dim: #9aa3b2;
-  --accent: #5b8def;
-  --ok: #3fb950;
-  --warn: #d29922;
-  --err: #f85149;
-  --radius: 8px;
+  /* ---- 底色：带紫调的深色，而非纯黑 ---- */
+  --bg: #100b16;
+  --bg-soft: #171020;
+  --bg-card: #1e1629;
+  --bg-elev: #251a33;
+  --border: #342541;
+  --border-soft: #2a1e36;
+
+  /* ---- 文字 ---- */
+  --text: #f2e8f2;
+  --text-dim: #a99bb8;
+
+  /* ---- 爱莉希雅主色板 ---- */
+  /* 粉色：主强调色（原画主色调） */
+  --elysia-pink: #e88bb5;
+  --elysia-pink-soft: #f5aecb;
+  --elysia-pink-deep: #c76a96;
+  /* 淡紫：英桀制服的紫色装饰 */
+  --elysia-lilac: #a78bfa;
+  --elysia-lilac-soft: #c4b1ff;
+  /* 近白的粉：律者形态的「粉白」定调 */
+  --elysia-cream: #ffe8f2;
+
+  --accent: var(--elysia-pink);
+  --accent-2: var(--elysia-lilac);
+
+  /* ---- 语义色（保持可辨识，向主题靠拢） ---- */
+  --ok: #5fd39a;
+  --warn: #e9c46a;
+  --err: #f0707f;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+
+  /* 主渐变：粉 → 紫（用于品牌名、激活态、进度） */
+  --grad-brand: linear-gradient(120deg, #f5aecb 0%, #e88bb5 40%, #a78bfa 100%);
+  --grad-soft: linear-gradient(135deg, rgba(232, 139, 181, 0.14), rgba(167, 139, 250, 0.1));
+
   font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC",
     "Hiragino Sans GB", sans-serif;
 }
@@ -32,11 +80,52 @@ body {
   color: var(--text);
   font-size: 14px;
   line-height: 1.6;
+
+  /* 背景氛围：两团极淡的粉紫光晕，模拟「群星与花海」的柔光。
+     用 fixed 让它不随内容滚动，避免长页面上出现断层。 */
+  background-image:
+    radial-gradient(900px 600px at 12% -8%, rgba(232, 139, 181, 0.09), transparent 62%),
+    radial-gradient(760px 520px at 92% 8%, rgba(167, 139, 250, 0.08), transparent 60%),
+    radial-gradient(700px 700px at 50% 108%, rgba(245, 174, 203, 0.05), transparent 65%);
+  background-attachment: fixed;
 }
 
 a {
   color: var(--accent);
   text-decoration: none;
+  transition: color 0.15s;
+}
+
+a:hover {
+  color: var(--elysia-pink-soft);
+}
+
+/* 选中文字用粉色，呼应主题 */
+::selection {
+  background: rgba(232, 139, 181, 0.32);
+  color: #fff;
+}
+
+/* 滚动条：细窄的粉紫渐变，避免默认灰条破坏氛围 */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(232, 139, 181, 0.45), rgba(167, 139, 250, 0.45));
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(232, 139, 181, 0.7), rgba(167, 139, 250, 0.7));
+  background-clip: content-box;
 }
 
 /* ---- 布局 ---- */
@@ -47,77 +136,166 @@ a {
 }
 
 .sidebar {
-  width: 208px;
+  width: 214px;
   flex-shrink: 0;
-  background: var(--bg-soft);
-  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, #1a1224 0%, #150f1e 100%);
+  border-right: 1px solid var(--border-soft);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  position: relative;
+}
+
+/* 侧栏右缘一道粉紫细光，暗示「绽放」的边界 */
+.sidebar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 1px;
+  height: 100%;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(232, 139, 181, 0.5) 22%,
+    rgba(167, 139, 250, 0.45) 62%,
+    transparent
+  );
+  pointer-events: none;
 }
 
 .brand {
-  padding: 18px 16px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 20px 16px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  position: relative;
+}
+
+/* 品牌区右下角的 ♪ —— 爱莉希雅台词几乎句句带这个符号 */
+.brand::after {
+  content: "♪";
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  font-size: 18px;
+  color: var(--elysia-pink);
+  opacity: 0.55;
+  line-height: 1;
 }
 
 .brand h1 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  /* 渐变文字：粉 → 紫 */
+  background: var(--grad-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  /* 渐变文字在部分浏览器需要这个才不显示成透明块 */
+  width: fit-content;
 }
 
 .brand p {
-  margin: 4px 0 0;
-  font-size: 12px;
+  margin: 5px 0 0;
+  font-size: 11px;
   color: var(--text-dim);
+  letter-spacing: 0.3px;
 }
 
 .nav {
-  padding: 8px;
+  padding: 10px 9px;
   flex: 1;
 }
 
 .nav a {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-size: 13px;
   margin-bottom: 2px;
+  position: relative;
+  transition: background 0.15s, color 0.15s, padding-left 0.15s;
+}
+
+/* 每个导航项前的小圆点，激活时变成粉色并放大 —— 轻量装饰，不抢注意力 */
+.nav a::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  flex-shrink: 0;
+  transition: all 0.15s;
 }
 
 .nav a:hover {
-  background: var(--bg-card);
+  background: rgba(232, 139, 181, 0.08);
   color: var(--text);
 }
 
+.nav a:hover::before {
+  opacity: 0.8;
+  background: var(--elysia-pink);
+}
+
 .nav a.active {
-  background: var(--accent);
+  background: linear-gradient(90deg, rgba(232, 139, 181, 0.22), rgba(167, 139, 250, 0.12));
   color: #fff;
+  font-weight: 500;
+  box-shadow: inset 2px 0 0 var(--elysia-pink);
+}
+
+.nav a.active::before {
+  opacity: 1;
+  background: var(--elysia-pink-soft);
+  box-shadow: 0 0 6px var(--elysia-pink);
+  width: 5px;
+  height: 5px;
 }
 
 .sidebar-foot {
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--border-soft);
   font-size: 11px;
   color: var(--text-dim);
+  line-height: 1.7;
+  opacity: 0.85;
 }
 
 .main {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px 48px;
+  padding: 26px 30px 56px;
 }
 
 .page-head {
   margin-bottom: 20px;
+  position: relative;
+  padding-left: 13px;
+}
+
+/* 标题左侧一道粉紫竖条 —— 呼应刻印的「印记」意象 */
+.page-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--grad-brand);
 }
 
 .page-head h2 {
   margin: 0 0 6px;
-  font-size: 20px;
+  font-size: 21px;
   font-weight: 600;
+  letter-spacing: 0.2px;
 }
 
 .page-head p {
@@ -134,6 +312,31 @@ a {
   border-radius: var(--radius);
   padding: 16px 18px;
   margin-bottom: 16px;
+  position: relative;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* 卡片顶部一道极淡的粉紫渐变线，像花瓣的边 */
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 18px;
+  right: 18px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(232, 139, 181, 0.35),
+    rgba(167, 139, 250, 0.25),
+    transparent
+  );
+  pointer-events: none;
+}
+
+.card:hover {
+  border-color: rgba(232, 139, 181, 0.32);
+  box-shadow: 0 2px 18px rgba(232, 139, 181, 0.07);
 }
 
 .card h3 {
@@ -141,6 +344,21 @@ a {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* 卡片标题前的菱形 —— 律者礼服上的水晶 / 刻印意象 */
+.card h3::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  background: var(--grad-brand);
+  transform: rotate(45deg);
+  border-radius: 1px;
+  flex-shrink: 0;
+  opacity: 0.85;
 }
 
 .grid {
@@ -160,9 +378,29 @@ a {
 
 .metric {
   background: var(--bg-soft);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   border-radius: var(--radius);
   padding: 12px 14px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+
+/* 指标块右下角一团极淡光晕 */
+.metric::after {
+  content: "";
+  position: absolute;
+  right: -18px;
+  bottom: -18px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(232, 139, 181, 0.13), transparent 70%);
+  pointer-events: none;
+}
+
+.metric:hover {
+  border-color: rgba(232, 139, 181, 0.28);
 }
 
 .metric-label {
@@ -175,6 +413,9 @@ a {
   font-size: 20px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  color: var(--text);
+  position: relative;
+  z-index: 1;
 }
 
 .metric-unit {
@@ -195,17 +436,26 @@ th,
 td {
   text-align: left;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 th {
   color: var(--text-dim);
   font-weight: 500;
   font-size: 12px;
+  letter-spacing: 0.2px;
+}
+
+tbody tr {
+  transition: background 0.12s;
 }
 
 tbody tr:hover {
-  background: var(--bg-soft);
+  background: rgba(232, 139, 181, 0.05);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
 }
 
 /* ---- 表单 ---- */
@@ -223,18 +473,78 @@ textarea {
   width: 100%;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   padding: 7px 10px;
   font-size: 13px;
   font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--elysia-pink);
+  box-shadow: 0 0 0 3px rgba(232, 139, 181, 0.13);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(169, 155, 184, 0.55);
+}
+
+/* 滑块 / 单选 / 复选：浏览器默认是系统蓝，与粉紫主题不搭。
+ * accent-color 一行就能让原生控件跟随主题，不必自己画。 */
+input[type="range"],
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--elysia-pink);
+  cursor: pointer;
+}
+
+/* range 的轨道在部分浏览器不受 accent-color 影响，补一层。
+ * 只改轨道底色，不重画滑块 —— 保持原生手感。 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(232, 139, 181, 0.55),
+    rgba(167, 139, 250, 0.4)
+  );
+  box-shadow: none;
+}
+
+input[type="range"]:focus {
+  box-shadow: none;
+  border-color: transparent;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--elysia-pink-soft);
+  border: 2px solid #2a0f1d;
+  box-shadow: 0 0 6px rgba(232, 139, 181, 0.6);
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--elysia-pink-soft);
+  border: 2px solid #2a0f1d;
+  box-shadow: 0 0 6px rgba(232, 139, 181, 0.6);
+  cursor: pointer;
 }
 
 textarea {
@@ -260,37 +570,58 @@ textarea {
 /* ---- 按钮 ---- */
 
 button {
-  background: var(--accent);
+  background: var(--grad-brand);
   border: none;
-  border-radius: 6px;
-  color: #fff;
+  border-radius: var(--radius-sm);
+  color: #2a0f1d;
   padding: 8px 16px;
   font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+  transition: filter 0.15s, transform 0.1s, box-shadow 0.15s;
 }
 
 button:hover:not(:disabled) {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
+  box-shadow: 0 2px 14px rgba(232, 139, 181, 0.3);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+  filter: grayscale(0.4);
 }
 
 button.ghost {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text);
+  font-weight: 500;
+}
+
+button.ghost:hover:not(:disabled) {
+  border-color: var(--elysia-pink);
+  color: var(--elysia-pink-soft);
+  box-shadow: none;
+  background: rgba(232, 139, 181, 0.07);
 }
 
 button.danger {
-  background: var(--err);
+  background: linear-gradient(120deg, #f0707f, #d94f68);
+  color: #fff;
+}
+
+button.danger:hover:not(:disabled) {
+  box-shadow: 0 2px 14px rgba(240, 112, 127, 0.32);
 }
 
 button.sm {
-  padding: 4px 10px;
+  padding: 4px 11px;
   font-size: 12px;
 }
 
@@ -298,30 +629,36 @@ button.sm {
 
 .badge {
   display: inline-block;
-  padding: 1px 8px;
+  padding: 1px 9px;
   border-radius: 10px;
   font-size: 11px;
   line-height: 18px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .badge-ok {
-  background: rgba(63, 185, 80, 0.15);
+  background: rgba(95, 211, 154, 0.14);
   color: var(--ok);
+  border: 1px solid rgba(95, 211, 154, 0.28);
 }
 
 .badge-warn {
-  background: rgba(210, 153, 34, 0.15);
+  background: rgba(233, 196, 106, 0.14);
   color: var(--warn);
+  border: 1px solid rgba(233, 196, 106, 0.28);
 }
 
 .badge-err {
-  background: rgba(248, 81, 73, 0.15);
+  background: rgba(240, 112, 127, 0.14);
   color: var(--err);
+  border: 1px solid rgba(240, 112, 127, 0.28);
 }
 
 .badge-dim {
-  background: rgba(154, 163, 178, 0.15);
+  background: rgba(169, 155, 184, 0.12);
   color: var(--text-dim);
+  border: 1px solid rgba(169, 155, 184, 0.2);
 }
 
 /* ---- 提示 ---- */
@@ -337,24 +674,29 @@ button.sm {
   border-radius: var(--radius);
   font-size: 13px;
   margin-bottom: 14px;
+  border-left-width: 3px;
+  border-left-style: solid;
 }
 
 .alert-warn {
-  background: rgba(210, 153, 34, 0.1);
-  border: 1px solid rgba(210, 153, 34, 0.35);
-  color: #e3b341;
+  background: rgba(233, 196, 106, 0.09);
+  border: 1px solid rgba(233, 196, 106, 0.3);
+  border-left-color: var(--warn);
+  color: #f0d08a;
 }
 
 .alert-err {
-  background: rgba(248, 81, 73, 0.1);
-  border: 1px solid rgba(248, 81, 73, 0.35);
-  color: #ff7b72;
+  background: rgba(240, 112, 127, 0.09);
+  border: 1px solid rgba(240, 112, 127, 0.3);
+  border-left-color: var(--err);
+  color: #ff9aa5;
 }
 
 .alert-info {
-  background: rgba(91, 141, 239, 0.1);
-  border: 1px solid rgba(91, 141, 239, 0.35);
-  color: #79a8ff;
+  background: var(--grad-soft);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  border-left-color: var(--elysia-lilac);
+  color: #d3c4ff;
 }
 
 /* ---- 其它 ---- */
@@ -375,18 +717,29 @@ button.sm {
   font-size: 13px;
 }
 
+/* 空状态的花形装饰，比纯文字温和 */
+.empty::before {
+  content: "✿";
+  display: block;
+  font-size: 22px;
+  margin-bottom: 8px;
+  color: var(--elysia-pink);
+  opacity: 0.35;
+}
+
 .audio-list audio {
   width: 100%;
   height: 32px;
   margin-top: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .spinner {
   display: inline-block;
   width: 13px;
   height: 13px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
+  border: 2px solid rgba(232, 139, 181, 0.25);
+  border-top-color: var(--elysia-pink);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   vertical-align: -2px;
@@ -409,10 +762,66 @@ button.sm {
 pre {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   overflow-x: auto;
   font-size: 12px;
   line-height: 1.6;
   margin: 0;
+  color: var(--elysia-cream);
+}
+
+/* 代码块内的等宽文字略微降低亮度，避免抢眼 */
+pre code {
+  color: var(--text-dim);
+}
+
+/* ===================================================================
+ * 爱莉希雅装饰元素
+ *
+ * 克制使用：只在品牌区与页面底部出现，不进数据区。
+ * =================================================================== */
+
+/** 侧栏底部的「群星 · 百花」题词。 */
+.sidebar-foot em {
+  font-style: normal;
+  background: var(--grad-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 500;
+}
+
+/** 可选的页面题词条：一行小字 + 花瓣装饰。 */
+.elysia-quote {
+  margin: 26px 0 4px;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  background: var(--grad-soft);
+  border: 1px solid rgba(232, 139, 181, 0.16);
+  font-size: 12.5px;
+  color: var(--elysia-cream);
+  opacity: 0.9;
+  text-align: center;
+  letter-spacing: 0.4px;
+  position: relative;
+}
+
+.elysia-quote::before,
+.elysia-quote::after {
+  content: "❀";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  color: var(--elysia-pink);
+  opacity: 0.5;
+}
+
+.elysia-quote::before {
+  left: 14px;
+}
+
+.elysia-quote::after {
+  right: 14px;
 }
