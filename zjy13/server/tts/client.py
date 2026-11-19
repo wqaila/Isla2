@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import struct
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +26,19 @@ from typing import Any
 import httpx
 
 logger = logging.getLogger("tts.client")
+
+#: 记住多少个「已完成 turn」用于去重。
+#:
+#: 去重的目的只是挡住紧随其后的重复调用（看门狗重试、误触发的重入），
+#: 保留最近若干条足够。设为无界会让长会话下内存只增不减。
+COMPLETED_TURNS_KEEP = 64
+
+#: 单条流式音频块的字节上限。
+#:
+#: 协议规定单块 ≤ 48KB（见 protocol/messages.py 的 MAX_AUDIO_CHUNK_BYTES），
+#: 这里留一倍余量。作用：若对端发来损坏/异常的长度字段，客户端**立刻报错**，
+#: 而不是把整个缓冲区无限撑大、一直等到 120s 读超时才失败。
+MAX_STREAM_CHUNK_BYTES = 96 * 1024
 
 
 class TTSError(RuntimeError):
@@ -116,6 +131,18 @@ class TTSConfig:
     connect_timeout_s: float = 5.0
     output_dir: Path = Path("logs/tts")
     default_voice: str = "elysia"
+    #: 停顿档位（仅 zjy14 引擎支持，老引擎会忽略这个字段）。
+    #:
+    #: 2026-11-19 新增。为什么必须**显式**传：
+    #:   zjy14 的 `pause_profile` 默认值是 `natural`（180ms），
+    #:   它会把回复按标点切成多段、**每段独立调用模型合成**，再插入静音。
+    #:   而 zjy13 原来的引擎是整段一次合成。
+    #:   也就是说：不传这个字段，升级到 zjy14 后韵律和音色连续性会
+    #:   悄悄发生变化，且短段还容易触发音色漂移。
+    #:
+    #: 这里默认 `none`（整段合成），与 zjy13 原有听感一致；
+    #: 想要更自然的句间停顿，把 TTS_PAUSE_PROFILE 设成 natural/relaxed 即可。
+    pause_profile: str = "none"
 
     @classmethod
     def from_env(cls) -> "TTSConfig":
@@ -133,6 +160,9 @@ class TTSConfig:
             connect_timeout_s=float(env("TTS_CONNECT_TIMEOUT_S", "5")),
             output_dir=Path(env("TTS_OUTPUT_DIR", "logs/tts")),
             default_voice=env("TTS_VOICE_ID", "elysia"),
+            # 显式传 none（整段合成），保持与 zjy13 原引擎一致的听感。
+            # 想要句间停顿可设 TTS_PAUSE_PROFILE=natural / relaxed。
+            pause_profile=env("TTS_PAUSE_PROFILE", "none"),
         )
 
     @property
@@ -176,7 +206,13 @@ class TTSClient:
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._active_turns: set[str] = set()
-        self._completed_turns: set[str] = set()
+        #: 已完成的 turn（用于拒绝重复合成）。
+        #:
+        #: 2026-11-19：改成**有界**的 OrderedDict。原来是无界 set，
+        #: 长会话下只增不减（`reset_turn` 无人调用），内存持续增长。
+        #: 去重的目的只是「挡住紧随其后的重复调用」，保留最近若干条足够，
+        #: 不必记住整个进程生命周期的所有 turn。
+        self._completed_turns: OrderedDict[str, None] = OrderedDict()
         #: 最近一次流式合成的采样率（从响应头 x-sample-rate 读取）。
         #: 流式接口是「裸 PCM」，调用方必须知道采样率才能正确下发，
         #: 而首块到达时就要发 playback_start，所以这里缓存最近一次的值。
@@ -258,6 +294,11 @@ class TTSClient:
             "text": text,
             "voice_id": voice_id or self.config.default_voice,
             "speed": speed,
+            # 显式指定停顿档位，避免依赖服务端默认值。
+            # zjy14 默认是 natural（180ms 分段），与 zjy13 原引擎的
+            # 整段合成听感不同；显式传 none 保持行为一致。
+            # 老引擎不认识这个字段会忽略，不会报错。
+            "pause_profile": self.config.pause_profile,
         }
 
         started = time.perf_counter()
@@ -280,9 +321,11 @@ class TTSClient:
 
         total_ms = (time.perf_counter() - started) * 1000
 
-        if response.status_code == 400:
+        if response.status_code in (400, 422):
+            # 422 = FastAPI/pydantic 的参数校验失败（与 400 同义：不可重试）
             raise TTSBadRequestError(
-                f"TTS 参数错误: {response.text[:300]}", status_code=400
+                f"TTS 参数错误（{response.status_code}）: {response.text[:300]}",
+                status_code=response.status_code,
             )
         if response.status_code >= 500:
             raise TTSError(
@@ -315,7 +358,7 @@ class TTSClient:
             sample_rate, duration = _probe_wav(out_path)
 
         rtf = (total_ms / 1000) / duration if duration > 0 else 0.0
-        self._completed_turns.add(turn_key)
+        self._mark_completed(turn_key)
 
         logger.info(
             "tts ok turn=%s dur=%.2fs total=%.0fms rtf=%.3f",
@@ -336,7 +379,19 @@ class TTSClient:
 
     def reset_turn(self, turn_id: str) -> None:
         """允许显式重试同一 turn。"""
-        self._completed_turns.discard(turn_id)
+        self._completed_turns.pop(turn_id, None)
+
+    def _mark_completed(self, turn_key: str) -> None:
+        """把 turn 标记为已完成，并维持最近 N 条的有界窗口。
+
+        为什么有界（2026-11-19）：去重的目的只是挡住「紧随其后的重复调用」，
+        不需要记住整个进程生命周期的所有 turn。原实现是无界 set，
+        长会话下只增不减（`reset_turn` 从未被调用），内存缓慢增长。
+        """
+        self._completed_turns[turn_key] = None
+        self._completed_turns.move_to_end(turn_key)
+        while len(self._completed_turns) > COMPLETED_TURNS_KEEP:
+            self._completed_turns.popitem(last=False)
 
     # ------------------------------------------------------------------
     # 流式合成
@@ -372,19 +427,48 @@ class TTSClient:
             "text": text,
             "voice_id": voice_id or self.config.default_voice,
             "speed": speed,
+            # 显式指定停顿档位，避免依赖服务端默认值。
+            # zjy14 默认是 natural（180ms 分段），与 zjy13 原引擎的
+            # 整段合成听感不同；显式传 none 保持行为一致。
+            # 老引擎不认识这个字段会忽略，不会报错。
+            "pause_profile": self.config.pause_profile,
         }
 
         try:
             async with client.stream(
                 "POST", self.config.stream_url, json=payload
             ) as response:
-                if response.status_code == 400:
+                if response.status_code in (400, 422):
+                    # 422 也要当成「参数错误」，不能落进泛 TTSError。
+                    #
+                    # 2026-11-19 修复：zjy14 用 FastAPI + pydantic 做参数校验，
+                    # 校验失败返回的是 **422**（不是 400）。原来只认 400，
+                    # 于是「文本过长 / 语速越界 / 音色名非法」这类**不可重试**
+                    # 的错误被归成 TTSError，而 ws/server.py 把它当作
+                    # retryable 的 TTS_FAILED —— 会白白重试，还掩盖了真实原因。
                     body = await response.aread()
                     raise TTSBadRequestError(
-                        f"TTS 参数错误: {body[:300]!r}", status_code=400
+                        f"TTS 参数错误（{response.status_code}）: {body[:300]!r}",
+                        status_code=response.status_code,
                     )
                 if response.status_code == 503:
-                    raise TTSUnavailableError("TTS 模型未加载")
+                    # 503 有多个来源，不能一律说成「模型未加载」：
+                    #   - engine_not_ready：模型还在加载
+                    #   - queue_timeout  ：推理队列满，等待超时（2026-11-19 新增）
+                    # 读响应体把 code/message 带出来，否则排查时会被误导
+                    # （曾把「排队超时」误读成「模型没加载」，白查一轮）。
+                    body = await response.aread()
+                    detail = ""
+                    try:
+                        err = json.loads(body.decode("utf-8", "replace"))
+                        code = err.get("code") or ""
+                        msg = err.get("message") or ""
+                        detail = f"{code}: {msg}" if code or msg else ""
+                    except (ValueError, AttributeError):
+                        detail = body[:200].decode("utf-8", "replace")
+                    raise TTSUnavailableError(
+                        f"TTS 服务暂时不可用（503）{('：' + detail) if detail else ''}"
+                    )
                 if response.status_code == 404:
                     # 老版本服务端没有流式接口：明确告知，由调用方决定回退
                     raise TTSUnavailableError(
@@ -436,12 +520,20 @@ class TTSClient:
 
 async def _iter_length_prefixed(
     byte_iter: AsyncIterator[bytes],
+    *,
+    max_chunk_bytes: int = MAX_STREAM_CHUNK_BYTES,
 ) -> AsyncIterator[bytes | None]:
     """解析「4 字节大端长度 + 负载」的分块流。
 
     长度 0 表示结束，此时产出一次 ``None`` 供调用方确认「流是完整的」。
     这样能区分「正常结束」与「连接中途断掉」——后者不产出 None，
     调用方据此报错，避免把截断的音频当成完整回复播出去。
+
+    ``max_chunk_bytes``（2026-11-19 新增）：
+      长度字段来自对端，不能无条件信任。原来没有上限校验，
+      一旦读到损坏的长度（比如 0xFFFFFFFF），`buf` 会一直等下去：
+      内存无界增长，直到 120s 读超时才失败 —— 期间毫无提示。
+      协议规定单块 ≤ 48KB，这里超限直接抛错，让故障立刻可见。
     """
     buf = bytearray()
     async for chunk in byte_iter:
@@ -454,6 +546,12 @@ async def _iter_length_prefixed(
                 del buf[:4]
                 yield None
                 return
+            if length > max_chunk_bytes:
+                raise TTSError(
+                    f"TTS 流式分块长度异常：声明 {length} 字节，"
+                    f"超过上限 {max_chunk_bytes}（协议规定单块 ≤ 48KB）。"
+                    "对端可能发送了损坏的数据。"
+                )
             if len(buf) < 4 + length:
                 break
             payload = bytes(buf[4:4 + length])
