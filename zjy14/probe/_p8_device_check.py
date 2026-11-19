@@ -1,17 +1,22 @@
 """真机联调诊断：检查设备链路是否就绪。
 
-背景：当前环境没有 ESP32 设备连接（只有 COM1/COM2 虚拟串口）。
 本脚本用于**设备接上后**快速定位问题，按链路顺序逐段检查：
 
   ESP32 固件 ──WS──> zjy13 ws/server.py ──HTTP──> zjy14 /synthesize_stream
-     (1)                  (2)                          (3)
+     (3)                  (2)                          (1)
 
 检查项：
   1. zjy14 服务是否就绪（端口、引擎、音色）
-  2. zjy13 WS 服务是否在跑（端口）
-  3. 串口是否有 ESP32 设备
+  2. zjy13 WS 服务是否在跑（端口 + /api/devices 里有没有真机在线）
+  3. 串口是否有 ESP32 设备（WSL 侧视角，仅供参考）
   4. 协议契约是否对齐（采样率、帧大小、路径）
-  5. 完整链路模拟：zjy14 流式 → 协议帧 → 模拟设备消费
+  5. zjy13 的 TTS_BASE_URL 是否指向 zjy14
+  6. 完整链路模拟：zjy14 流式 → 协议帧 → 模拟设备消费
+
+端口说明（历史踩坑）：
+  zjy13 的 **设备接入** WS 服务默认跑在 **8765**；
+  50000 是 zjy13 自己那套旧 TTS 服务的端口，两者不是一回事。
+  早期本脚本把 [2] 写成检查 50000，导致真机明明在线也报"未启动"。
 
 用法：
   wsl -e bash probe/run_d1.sh probe/_p8_device_check.py
@@ -19,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -28,8 +34,49 @@ from pathlib import Path
 sys.path.insert(0, "/mnt/d/xiangmudaima/zjy14")
 
 ZJY14_BASE = "http://127.0.0.1:50001"
-ZJY13_BASE = "http://127.0.0.1:50000"
+#: zjy13 设备接入 WS 服务（协议 v1）。可用环境变量覆盖。
+ZJY13_DEVICE_PORT = int(os.environ.get("ZJY13_DEVICE_PORT", "8765"))
+#: zjy13 旧 TTS 服务端口，仅用于 [5] 判断"是否还指向老引擎"。
+ZJY13_LEGACY_TTS_PORT = 50000
 ZJY13_DIR = Path("/mnt/d/xiangmudaima/zjy13")
+
+
+def windows_host_candidates() -> list[str]:
+    """WSL 里访问 Windows 侧服务时，127.0.0.1 通常不通。
+
+    WSL2 有独立的网络命名空间，`127.0.0.1` 指的是 WSL 自己；
+    Windows 侧的服务要用「默认网关」地址访问（NAT 模式），
+    镜像网络模式下才走 127.0.0.1。这里把两种都列出来依次试。
+    """
+    hosts = ["127.0.0.1"]
+    try:
+        out = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if "via" in parts:
+                gw = parts[parts.index("via") + 1]
+                if gw not in hosts:
+                    hosts.append(gw)
+    except Exception:  # noqa: BLE001
+        pass
+    return hosts
+
+
+def resolve_zjy13_base() -> str:
+    """返回能真正连上 zjy13 设备接入端点的 base URL。
+
+    逐个候选主机试 /api/devices/health，第一个通的即为答案。
+    全部不通则回落 127.0.0.1，让后续输出显示失败原因。
+    """
+    for host in windows_host_candidates():
+        base = f"http://{host}:{ZJY13_DEVICE_PORT}"
+        code, data = http_get(f"{base}/api/devices/health", timeout=3.0)
+        if code == 200 and isinstance(data, dict) and data.get("ok"):
+            return base
+    return f"http://127.0.0.1:{ZJY13_DEVICE_PORT}"
 
 
 def http_get(url: str, timeout: float = 5.0) -> tuple[int, dict | str]:
@@ -103,14 +150,33 @@ def main() -> int:
 
     # ---- 2. zjy13 WS 服务 ----
     print("\n[2] zjy13 WebSocket 服务（设备接入点）")
-    if check_port(50000):
-        print("  [OK] 端口 50000 在监听")
-        code2, data2 = http_get(f"{ZJY13_BASE}/health")
-        if code2 == 200:
-            print(f"       /health 返回 200")
+    device_online = False
+    # zjy13 跑在 Windows，本脚本跑在 WSL：先找出真正能连通的地址。
+    zjy13_base = resolve_zjy13_base()
+    print(f"  连接地址: {zjy13_base}")
+    code2, data2 = http_get(f"{zjy13_base}/api/devices", timeout=5.0)
+    if code2 == 200 and isinstance(data2, dict):
+        print(f"  [OK] 端口 {ZJY13_DEVICE_PORT} 可访问")
+        # /api/devices 是 zjy13 的只读监控端点：能读到 clients 就说明
+        # 不只是服务起来了，而是真的有板子握过手。
+        clients = data2.get("clients", [])
+        if clients:
+            device_online = True
+            print(f"       [OK] 真机在线 {len(clients)} 台")
+            for c in clients:
+                print(f"            device={c.get('device_id')}  "
+                      f"peer={c.get('peer')}  state={c.get('state')}  "
+                      f"hb={c.get('last_heartbeat_s')}s  "
+                      f"heartbeat_ok={c.get('heartbeat_ok')}")
+        else:
+            print("       [--] 服务在跑，但没有设备连接")
+            print("            板子需连上同一 WiFi，并指向本机 "
+                  f"{ZJY13_DEVICE_PORT} 端口")
+            problems.append("zjy13 WS 在跑但没有真机连接")
     else:
-        print("  [--] 端口 50000 未监听")
-        print("       设备联调前需启动 zjy13 的 WS 服务")
+        print(f"  [--] 连不上 zjy13 设备接入端点: {data2}")
+        print("       设备联调前需启动 zjy13 的 WS 服务（Windows 侧）")
+        print("       注：WSL2 里 127.0.0.1 是 WSL 自己，要用默认网关地址访问 Windows")
         problems.append("zjy13 WS 服务未启动")
 
     # ---- 3. 串口 ----
@@ -163,13 +229,17 @@ def main() -> int:
             print(f"  TTS_BASE_URL = {tts_url}")
             if ":50001" in tts_url:
                 print("  [OK] 已指向 zjy14")
-            elif ":50000" in tts_url:
-                print("  [--] 仍指向 zjy13 自己的 TTS 服务（:50000）")
+            elif f":{ZJY13_LEGACY_TTS_PORT}" in tts_url:
+                print(f"  [--] 仍指向 zjy13 自己的 TTS 服务"
+                      f"（:{ZJY13_LEGACY_TTS_PORT}）")
                 print("       切到 zjy14 需改为 :50001，然后重启 zjy13 WS 服务")
+                problems.append("zjy13 的 TTS 仍指向旧引擎")
             else:
-                print(f"  [??] 端口不是 50000/50001，请确认")
+                print("  [??] 端口不是 50000/50001，请确认")
         else:
-            print("  [--] .env 里没有 TTS_BASE_URL（使用默认 :50000）")
+            print(f"  [--] .env 里没有 TTS_BASE_URL"
+                  f"（使用默认 :{ZJY13_LEGACY_TTS_PORT}，即 zjy13 旧引擎）")
+            problems.append("zjy13 未配置 TTS_BASE_URL，板子听到的是旧引擎")
     else:
         print(f"  [--] {env_file} 不存在")
 
@@ -259,17 +329,24 @@ def main() -> int:
         print()
         print("  真机联调前的准备：")
         print("    1. 启动 zjy14: .\\scripts\\start.ps1 cosyvoice3")
-        print("    2. 启动 zjy13 WS 服务")
-        print("    3. 把 zjy13/.env 的 TTS_BASE_URL 改为 :50001")
-        print("    4. 接上 ESP32（Windows 侧烧录，或 usbipd 转发到 WSL）")
+        print(f"    2. 启动 zjy13 WS 服务（设备接入端口 {ZJY13_DEVICE_PORT}）")
+        print("    3. 把 zjy13/.env 的 TTS_BASE_URL 改为 :50001 并重启 zjy13")
+        print("    4. 板子连上同一 WiFi（固件里 BADGE_VOICE_AUTOCONNECT_HOST 指向本机）")
         return 1
 
     print("  [OK] 软件链路全部就绪。")
-    print("       接入真机后，若仍无声，按以下顺序排查：")
-    print("         1. 板子是否连上 WiFi 并建立 WS 连接（看 zjy13 日志）")
-    print("         2. 是否收到 playback_start（需首块音频到达）")
-    print("         3. 音量是否过低（固件默认值）")
-    print("         4. I2S 是否被录音占用（半双工，不能同时）")
+    if device_online:
+        print("  [OK] 真机已连接，可以按板子上的按钮跑一轮对话。")
+        print("       若板子无声，按以下顺序排查：")
+        print("         1. 是否收到 playback_start（需首块音频到达）")
+        print("         2. 音量是否过低（串口发 VOL 查/设）")
+        print("         3. I2S 是否被录音占用（半双工，不能同时）")
+    else:
+        print("       接入真机后，若仍无声，按以下顺序排查：")
+        print("         1. 板子是否连上 WiFi 并建立 WS 连接（看 zjy13 日志）")
+        print("         2. 是否收到 playback_start（需首块音频到达）")
+        print("         3. 音量是否过低（固件默认值）")
+        print("         4. I2S 是否被录音占用（半双工，不能同时）")
     return 0
 
 
