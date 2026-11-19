@@ -22,6 +22,63 @@ static volatile bool connected;
 static TaskHandle_t network_task;
 static char response[4096];
 static size_t response_size;
+static esp_netif_t *sta_netif;
+/* 天气连续失败次数：只用于日志与界面提示，不参与业务逻辑 */
+static unsigned weather_failures;
+
+/* ===== DNS 兜底 =====
+ *
+ * Windows ICS 的 DNS 代理（192.168.137.1:53）有一种失效状态：
+ * 进程在跑、端口在监听，但对查询直接回 RST。
+ * 此时 DHCP 下发的 DNS 完全不可用 —— 天气模块 getaddrinfo() 返回 202，
+ * 而 WiFi 明明是连着的，屏幕上只表现为温度一直是 "--°"，
+ * 极易被误判成"板子没连上 WiFi"。
+ *
+ * 所以在拿到 IP 后显式覆盖成公共 DNS，绕开坏掉的代理。
+ * 这两个宏由 wifi_config.h 提供；没定义时用下面的默认值，
+ * 保证即使生成脚本没写也能编译并生效。 */
+#ifndef BADGE_DNS_MAIN
+#define BADGE_DNS_MAIN "223.5.5.5"
+#endif
+#ifndef BADGE_DNS_BACKUP
+#define BADGE_DNS_BACKUP "8.8.8.8"
+#endif
+
+/* 把当前生效的 DNS 打到日志，避免下次排查又靠猜。 */
+static void log_dns_config(const char *when)
+{
+    if (sta_netif == NULL) return;
+    esp_netif_dns_info_t main_dns = {0}, backup_dns = {0};
+    esp_netif_get_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &main_dns);
+    esp_netif_get_dns_info(sta_netif, ESP_NETIF_DNS_BACKUP, &backup_dns);
+    ESP_LOGI(TAG, "%s DNS: main=" IPSTR " backup=" IPSTR, when,
+             IP2STR(&main_dns.ip.u_addr.ip4), IP2STR(&backup_dns.ip.u_addr.ip4));
+}
+
+static bool set_dns(esp_netif_dns_type_t type, const char *addr)
+{
+    esp_netif_dns_info_t dns = {0};
+    if (esp_netif_str_to_ip4(addr, &dns.ip.u_addr.ip4) != ESP_OK) {
+        ESP_LOGW(TAG, "DNS 地址无效，跳过: %s", addr);
+        return false;
+    }
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_err_t err = esp_netif_set_dns_info(sta_netif, type, &dns);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "设置 DNS 失败(%s): %s", addr, esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+/* 覆盖 DNS。BADGE_DNS_MAIN 为空串表示不覆盖，沿用 DHCP 下发值。 */
+static void apply_dns_override(void)
+{
+    if (sta_netif == NULL || strlen(BADGE_DNS_MAIN) == 0) return;
+    if (!set_dns(ESP_NETIF_DNS_MAIN, BADGE_DNS_MAIN)) return;
+    if (strlen(BADGE_DNS_BACKUP)) set_dns(ESP_NETIF_DNS_BACKUP, BADGE_DNS_BACKUP);
+    log_dns_config("已覆盖为显式 DNS，");
+}
 
 static void on_time_sync(struct timeval *now)
 {
@@ -42,6 +99,10 @@ static void network_event(void *arg, esp_event_base_t base, int32_t id, void *da
                  IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.gw));
         printf("BADGE_NET {\"ip\":\"" IPSTR "\",\"gw\":\"" IPSTR "\"}\n",
                IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.gw));
+        /* DHCP 下发的 DNS 可能指向已失效的 ICS 代理，这里覆盖掉。
+         * 必须在拿到 IP 之后调用，早于此时 netif 还没有 DNS 记录。 */
+        log_dns_config("DHCP 下发");
+        apply_dns_override();
         if (network_task) xTaskNotifyGive(network_task);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         connected = false;
@@ -143,6 +204,10 @@ static void run_network(void *arg)
             }
             if (badge_dashboard_time_valid() && now >= next_weather) {
                 bool success = fetch_weather();
+                /* 失败计数驱动界面文案：0 次=正常，连续多次=明确提示"天气没拉到"，
+                 * 而不是一直停在"更新中"让人以为没联网。 */
+                weather_failures = success ? 0 : weather_failures + 1;
+                badge_dashboard_weather_failed(weather_failures);
                 next_weather = esp_timer_get_time() + (success ? 900LL : 60LL) * 1000000;
             }
         }
@@ -156,7 +221,8 @@ void badge_network_start(void)
     ESP_ERROR_CHECK(esp_netif_init());
     esp_err_t error = esp_event_loop_create_default();
     if (error != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(error);
-    assert(esp_netif_create_default_wifi_sta());
+    sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, network_event, NULL));

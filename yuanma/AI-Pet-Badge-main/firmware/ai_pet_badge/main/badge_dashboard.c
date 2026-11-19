@@ -37,6 +37,8 @@ static struct {
     int voice_state;
     /* 播放音量 0~100，随 VOL 命令更新；-1 表示未设置（不显示） */
     int volume;
+    /* 天气连续失败次数：0 正常。用来区分"没联网"和"联网了但天气拉不到" */
+    unsigned weather_failures;
 } state = { .volume = -1 };
 
 static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
@@ -104,6 +106,7 @@ static void refresh(lv_timer_t *timer)
     float temperature = state.temperature;
     int code = state.code;
     time_t observed = state.observed;
+    unsigned weather_failures = state.weather_failures;
     portEXIT_CRITICAL(&state_mux);
     uint32_t dot = connected ? 0x79B5A7 : 0xC8B8D2;
     if (dot != previous_dot) {
@@ -153,7 +156,23 @@ static void refresh(lv_timer_t *timer)
             previous_icon = color; ++revision;
         }
     } else {
-        text_if_changed(weather_label, connected ? (badge_dashboard_time_valid() ? "更新中" : "校时中") : "联网中");
+        /* 天气还没成功过。这里必须把三种情况分开说，否则温度一直是 "--°"
+         * 加一句"更新中"，用户会误判成"板子没连上 WiFi"：
+         *   1) WiFi 没连          -> 「未联网」
+         *   2) 连了但时间没校准    -> 「校时中」
+         *   3) 连了、时间也对，但天气连续失败 -> 「天气无数据」
+         * 只有真的在等第一次结果时才显示「更新中」。 */
+        const char *weather_hint;
+        if (!connected) {
+            weather_hint = "未联网";
+        } else if (!badge_dashboard_time_valid()) {
+            weather_hint = "校时中";
+        } else if (weather_failures >= 3) {
+            weather_hint = "天气无数据";
+        } else {
+            weather_hint = "更新中";
+        }
+        text_if_changed(weather_label, weather_hint);
     }
 }
 
@@ -273,6 +292,20 @@ void badge_dashboard_weather(float temperature, int code, bool day, time_t obser
     portENTER_CRITICAL(&state_mux);
     state.temperature = temperature; state.code = code; state.day = day;
     state.observed = observed; state.weather_valid = true;
+    state.weather_failures = 0;
+    portEXIT_CRITICAL(&state_mux);
+    ++revision;
+}
+
+/* 天气连续失败次数。由 badge_network 的天气任务调用。
+ * 只影响界面文案，不参与重试策略（重试间隔仍由 badge_network 控制）。 */
+void badge_dashboard_weather_failed(unsigned consecutive_failures)
+{
+    portENTER_CRITICAL(&state_mux);
+    if (state.weather_failures != consecutive_failures) {
+        state.weather_failures = consecutive_failures;
+        ++revision;
+    }
     portEXIT_CRITICAL(&state_mux);
 }
 
@@ -288,6 +321,7 @@ void badge_dashboard_status(void)
     float temp = state.temperature;
     int code = state.code;
     time_t observed = state.observed;
+    unsigned weather_failures = state.weather_failures;
     portEXIT_CRITICAL(&state_mux);
     unsigned glyphs = 0;
     const uint32_t characters[] = {BADGE_CHARACTER_GLYPHS};
@@ -297,9 +331,10 @@ void badge_dashboard_status(void)
     }
     printf("BADGE_DASHBOARD {\"wifi\":%s,\"time_valid\":%s,\"time\":\"%s\",\"rtc\":%s,"
            "\"city\":\"Shenzhen\",\"weather_valid\":%s,\"temperature\":%.1f,\"weather_code\":%d,"
-           "\"observed\":%" PRId64 ",\"name_glyphs\":%u}\n", connected ? "true" : "false",
+           "\"observed\":%" PRId64 ",\"weather_failures\":%u,\"name_glyphs\":%u}\n",
+           connected ? "true" : "false",
            badge_dashboard_time_valid() ? "true" : "false", date, rtc_ready ? "true" : "false",
-           valid ? "true" : "false", temp, code, (int64_t)observed, glyphs);
+           valid ? "true" : "false", temp, code, (int64_t)observed, weather_failures, glyphs);
 }
 
 void badge_dashboard_snapshot(void)
