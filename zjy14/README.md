@@ -242,10 +242,20 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | **Phase 2b 表达控制** | ✅ **完成** | 路线乙：语速/音量/停顿 + 指令解析器，235 测试全绿，8 项验收通过 |
 | **Phase 4 流式/并发** | ✅ **完成** | 长句首包 5.36s→1.48s（+72.4%），257 测试全绿 |
 | **Phase 5 ESP32 桥接** | ✅ **完成** | 协议完全对齐 zjy13，只改 TTS_BASE_URL 即可切换 |
+| **Phase 5+ 真机联调** | ✅ **完成** | 板子在线（ai-pet-badge），zjy13→zjy14 实打通，TTSClient 实打验证通过；**已人工确认出声**；479 测试全绿 |
 | **Phase 6 Web 界面** | ✅ **完成** | React + TS 8 页，构建通过，30 项验收通过 |
 | **Phase 7 稳定发布** | ✅ **完成** | 30 分钟 596 轮零失败、显存零增长；一键启动 + 故障手册 + 验收报告 |
 
-详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md)、[docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)、[docs/14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md)。
+详见 [docs/03_DECISIONS.md](docs/03_DECISIONS.md)、[docs/05_PHASE3_REPORT.md](docs/05_PHASE3_REPORT.md)、[docs/12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md)、[docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)、[docs/14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md)、[docs/28_DEVICE_E2E_REPORT.md](docs/28_DEVICE_E2E_REPORT.md)。
+
+### 真机联调一键验收
+
+```bash
+wsl -e bash /mnt/d/xiangmudaima/zjy14/probe/run_device_e2e.sh
+```
+
+前置：zjy14 引擎在跑 + zjy13 WS 服务在跑（8765）+ 板子已连 WiFi。
+详见 [docs/28_DEVICE_E2E_REPORT.md](docs/28_DEVICE_E2E_REPORT.md)。
 
 ---
 
@@ -258,10 +268,17 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
   详见 [docs/13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md)、[docs/14_PHASE2B_REPORT.md](docs/14_PHASE2B_REPORT.md)。
 - **音色已改善但仍非完美** —— 盲听确认较 Phase 0 有改善、数字读法自然、多次采样一致（2026-11-16）。客观相似度 0.9208（超官方基准 0.7559）。剩余差距可能来自参考素材代表性或 0.5B 模型能力上限，非工程问题。
 - **仅 1 个角色素材**（elysia），无法验证"跨角色不串音色"（决策 D9）。
-- **流式未实现** —— 接口已留，实现仍是一次性返回整段。
-- **并发未实现** —— 配置项存在但无调度器消费。
 - 复用 `~/cosyvoice-venv`，与 CosyVoice 环境耦合；升级依赖前需跑 CosyVoice 冒烟测试。
 - 声音档案只记录音频路径，不复制原始文件；外部移动文件会导致校验失败。
+- **真机对话轮未做人工验收** —— 链路与 TTS 已实测打通（见
+  [docs/28_DEVICE_E2E_REPORT.md](docs/28_DEVICE_E2E_REPORT.md)），
+  但"按板子按钮说一句话、听是否出声"需要人在板子前操作，未纳入自动化。
+- **板子固件的天气依赖 ICS DNS** —— Windows 移动热点的 DNS 代理
+  （`192.168.137.1:53`）可能失效（进程在跑但回 RST），表现为天气卡片
+  一直 `--°`，容易误判成"没连 WiFi"。固件已加 DNS 兜底
+  （`BADGE_DNS_MAIN`，默认 `223.5.5.5`）并在界面区分
+  "未联网 / 校时中 / 天气无数据"。
+  见 [docs/27_WIFI_FALSE_ALARM_DIAGNOSIS.md](docs/27_WIFI_FALSE_ALARM_DIAGNOSIS.md)。
 
 > 采样随机性说明：参考文本正确时，同一文本 5 次合成的时长变异系数仅 **0.028**（标准差 0.16s），
 > 输出稳定。此前观察到的"最大差 46%"是参考文本错误导致的，不是模型固有随机性。
@@ -290,6 +307,9 @@ server/routes/  →  schemas/ + inference/engine.py（协议）
 | [24_DEVICE_MONITOR_PROMPT.md](docs/24_DEVICE_MONITOR_PROMPT.md) | **设备状态监控 Web 端开发提示词** |
 | [25_DEVICE_MONITOR_REPORT.md](docs/25_DEVICE_MONITOR_REPORT.md) | **设备监控 Web 端实现报告** |
 | [26_DAILY_SUMMARY_2026-11-18.md](docs/26_DAILY_SUMMARY_2026-11-18.md) | **当日总结（成果·不足·缺陷）** |
+| [27_WIFI_FALSE_ALARM_DIAGNOSIS.md](docs/27_WIFI_FALSE_ALARM_DIAGNOSIS.md) | **"板子没连 WiFi"误判排查（实为天气 DNS 失败）** |
+| [28_DEVICE_E2E_REPORT.md](docs/28_DEVICE_E2E_REPORT.md) | **真机联调报告（Phase 5 补完：真机在环）** |
+| [29_INTEGRATION_BUG_AUDIT.md](docs/29_INTEGRATION_BUG_AUDIT.md) | **zjy13↔zjy14 集成缺陷排查（7 修 + 2 项实测推翻）** |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |
