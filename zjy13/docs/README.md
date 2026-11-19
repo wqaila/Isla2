@@ -1,6 +1,6 @@
 # zjy13 · 技术文档索引
 
-本目录共 29 篇文档，按用途分类如下。项目总览见 [`../README.md`](../README.md)。
+本目录共 30 篇文档，按用途分类如下。项目总览见 [`../README.md`](../README.md)。
 
 > 另有 1 篇不在本目录、但同属技术文档：[`../asr/README.md`](../asr/README.md)
 > （本地 ASR 的环境、安装与命令行用法），列在文末「同项目其他文档」。
@@ -24,6 +24,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [`FILLER_DOUBLE_SOUND_FIX.md`](FILLER_DOUBLE_SOUND_FIX.md) | **最新**：填充音连发缺陷（板子连响两声语气词）根因与修复 |
 | [`PLAN-filler-audio.md`](PLAN-filler-audio.md) | 方案：先说「嗯」等填充音降低感知延迟（**未实施**，待决策） |
 | [`BOARD-DEFECTS-2026-11-12.md`](BOARD-DEFECTS-2026-11-12.md) | **最新**：板子与固件缺陷排查（长按录音失效、无打断、无唤醒词、无 OTA） |
 | [`FAULT-blackout-and-playback.md`](FAULT-blackout-and-playback.md) | 故障报告：黑屏与播放中断。**5.0 节记录已证实的三个真实根因** |

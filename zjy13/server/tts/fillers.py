@@ -54,6 +54,17 @@ SAMPLE_RATE = 24000
 #: 超过就停——否则 LLM/TTS 卡住时会把三个循环播成"复读机"。
 MAX_FILLER_SECONDS = 3.0
 
+#: 单轮最多发几声填充音。
+#:
+#: 2026-11-19 加这个上限的原因：板子上实测会连着听到 2~3 声语气词，
+#: 很不自然。根因是发送端没有跟随播放进度（一口气把 3 秒全塞给板子），
+#: 已在 ws/server.py::_send_fillers 修掉。这里再加一道硬上限，
+#: 保证即使等待很久，用户也不会听到一串语气词。
+#:
+#: 设 1 表示"最多一声"——这是真人对话里最自然的行为：思考时「嗯…」一次，
+#: 然后直接说正文。要允许更长的等待表现，可调到 2。
+MAX_FILLER_CLIPS = 1
+
 
 @dataclass(frozen=True, slots=True)
 class FillerClip:
@@ -182,9 +193,16 @@ class FillerSession:
     主流程只需要问 ``should_continue()`` 和 ``record()``。
     """
 
-    def __init__(self, bank: FillerBank, *, max_seconds: float = MAX_FILLER_SECONDS):
+    def __init__(
+        self,
+        bank: FillerBank,
+        *,
+        max_seconds: float = MAX_FILLER_SECONDS,
+        max_clips: int = MAX_FILLER_CLIPS,
+    ):
         self._bank = bank
         self._max = max_seconds
+        self._max_clips = max_clips
         self._sent_s = 0.0
         self._count = 0
 
@@ -199,7 +217,12 @@ class FillerSession:
     def should_continue(self) -> bool:
         """是否还能再发一个。
 
-        判断用「已发 + 一个典型长度」是否仍在上限内，而不是只看已发量。
+        两道限制：
+        1. **声数上限** ``max_clips``（默认 1）—— 最直接的保证，
+           用户不会听到一串语气词。
+        2. **总时长上限** ``max_seconds`` —— 防止 LLM 卡死时无限循环。
+
+        时长判断用「已发 + 一个典型长度」是否仍在上限内，而不是只看已发量。
         原因：每个填充音约 0.7s，若只判 ``sent < max``，
         2.93s 时仍会再发一个、变成 3.6s，超出上限 20%。
         预留一个的长度能让实际总量贴近上限而不明显超出。
@@ -208,6 +231,9 @@ class FillerSession:
             return False
         if self._count == 0:
             return True          # 第一个总是发（保证有即时反馈）
+        # 声数上限：默认 1，发过一声就不再发
+        if self._count >= self._max_clips:
+            return False
         # 预留最长那个的长度，避免明显超限
         typical = max(c.duration_s for c in self._bank.clips)
         return self._sent_s + typical <= self._max
@@ -230,5 +256,6 @@ __all__ = [
     "FillerSession",
     "SAMPLE_RATE",
     "MAX_FILLER_SECONDS",
+    "MAX_FILLER_CLIPS",
     "DEFAULT_DIR",
 ]

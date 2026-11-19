@@ -1,4 +1,4 @@
-"""WebSocket 服务端：接收开发板音频，跑 ASR → LLM → TTS，推回结果。
+﻿"""WebSocket 服务端：接收开发板音频，跑 ASR → LLM → TTS，推回结果。
 
 对应 V2 第十一、十二节。
 
@@ -69,8 +69,18 @@ logger = logging.getLogger("ws.server")
 #: 心跳超时（秒）——超过则断开，V2 第十一节要求连接管理
 HEARTBEAT_TIMEOUT_S = 30.0
 
-#: 单轮处理总超时
-TURN_TIMEOUT_S = 60.0
+#: 单轮处理总超时（秒）。
+#:
+#: 2026-11-19 从 60 调到 120。原因：这个超时包住 ASR + LLM + TTS + 下发，
+#: 而 zjy14 侧的**推理队列等待上限就是 60s**（configs/gpu.yaml 的
+#: queue_timeout_s）。两者都是 60 时，队列一拥塞，zjy14 独自就能吃掉
+#: zjy13 的全部预算（还没算 ASR/LLM/合成时间），结果是 zjy13 先抛
+#: 「本轮处理超时」，而 zjy14 那边仍在排队并继续占着并发槽位 ——
+#: 双方都做了正确的事，却因为预算相等而必然打架。
+#:
+#: 取 120 的逻辑：必须 > 队列等待(60) + 一次合成的最坏耗时。
+#: 实测单次合成长句约 5s，留足余量后 120 是安全的。
+TURN_TIMEOUT_S = 120.0
 
 #: 播放看门狗：在「音频时长 + 该余量」内没收到 playback_done 就强制收尾。
 #:
@@ -182,6 +192,17 @@ class ClientSession:
     last_reply_text: str = ""
     #: 已完成的对话轮数（本连接内）
     turns_done: int = 0
+    #: 本连接内已开过多少轮。用于生成单调递增的 turn_id。
+    #:
+    #: 为什么需要（2026-11-19 修复）：原来 turn_id 用
+    #: `int(time.time()*1000) % 100000` —— 毫秒对 100000 取模，
+    #: **每 100 秒就会重复一次**。会话活得久一点，两轮就会拿到同一个
+    #: turn_id，进而：
+    #:   1. TTSClient 的 `_completed_turns` 判重会误拒新的一轮
+    #:   2. turn_id 的 CRC32（turn_id_short）相同，固件会把两轮当成同一轮
+    #:      而丢弃新帧（app_protocol.c 的轮次校验）
+    #: 改用会话内递增序号，天然单调、绝不重复。
+    turn_counter: int = 0
 
     def next_seq(self) -> int:
         self.turn_seq += 1
@@ -189,7 +210,11 @@ class ClientSession:
 
     def new_turn(self) -> str:
         self.turn_seq = 0
-        self.turn_id = f"{self.session_id}-t{int(time.time()*1000)%100000}"
+        self.turn_counter += 1
+        # turn_id 只需在**本连接内**唯一（去重与固件轮次校验都是按会话看的），
+        # 所以 `会话id-t序号` 就够了，不必掺时间戳。
+        # 保留 `t` 前缀是为了兼容既有日志格式与监控页展示。
+        self.turn_id = f"{self.session_id}-t{self.turn_counter}"
         # 新一轮：重置本轮计时与计数，但保留 recent_errors 与 turns_done
         self.timings = {
             "asr_ms": None,
@@ -623,18 +648,27 @@ class DialogueServer:
     ) -> tuple[int, int, int]:
         """边播边补地发送填充音，直到正文就绪 / 取消 / 达上限。
 
-        「边播边补」是这里的关键设计：
-        服务端无法预知这一轮要等多久（LLM 和 TTS 耗时波动大），
-        所以不预判，而是一个接一个地发，正文一到立刻停。
+        ## 「边播边补」必须真的跟着播放进度
 
-        这样：
-        - 等待短时不会多发（正文到了就停）
-        - 等待长时不会播空（没到就继续补）
-        - 有上限（MAX_FILLER_SECONDS）防止 LLM 卡死时变复读机
+        2026-11-19 修复：原实现虽然写着"边播边补"，实际是**一口气预填满**。
 
-        :return: (发出的填充音个数, 发出的字节数, 下一个可用 seq)
-                 第三个值必须是**实际用过的 seq + 1**，
-                 正文要从它接着排，否则板子会判乱序。
+        原因：循环只看 ``session.should_continue()``（累计时长 < 3s），
+        而 ``send_audio`` 对填充音**没有节流** —— 一个 0.7s 的填充音
+        = 9 帧 × 4096B，几毫秒内全部写进 socket。于是：
+
+          发第 1 声 → sent_seconds=0.70 → 条件仍成立 → 发第 2 声 → ...
+          → 直到累计 2.87s 才停
+
+        板子那边要花 2.9 秒才播完，用户听到「嗯…」「这个嘛…」「唔…」
+        「嗯…」连着四声，非常不自然（实测日志每轮 4~5 声）。
+
+        修法：发完一个填充音后，按**它自己的时长**等待，让发送节奏
+        与播放节奏对齐。这样正文一就绪，板子缓冲里最多只剩正在播的
+        那一个，不会积压。
+
+        注意不能用 ``asyncio.sleep`` 死等满一个填充音：正文可能中途到达，
+        必须能被 ``body_ready`` / ``cancel`` 立刻打断，所以用
+        ``asyncio.wait`` 等「超时」或「事件」两者之一。
         """
         from ..tts.fillers import FillerSession
 
@@ -666,8 +700,44 @@ class DialogueServer:
                 "填充音 %s (%.2fs) 已发，累计 %.2fs，seq 到 %d",
                 clip.id, clip.duration_s, session.sent_seconds, seq,
             )
+            # 关键：等这一声播完再考虑下一声。
+            # 若正文/取消先到则立刻退出，不必等满。
+            if session.should_continue():
+                await self._wait_filler_played(
+                    clip.duration_s, body_ready=body_ready, cancel=cancel
+                )
 
         return count, sent_bytes, seq
+
+    @staticmethod
+    async def _wait_filler_played(
+        duration_s: float,
+        *,
+        body_ready: asyncio.Event,
+        cancel: asyncio.Event,
+    ) -> None:
+        """等待填充音「播完」或「正文就绪 / 取消」，先到者胜。
+
+        用 asyncio.wait 而不是 sleep，是为了让正文一到达就立刻打断等待，
+        不必空等满一个填充音的时长（否则首字延迟会被人为拉长）。
+        """
+        if duration_s <= 0:
+            return
+        waiters = [
+            asyncio.create_task(body_ready.wait()),
+            asyncio.create_task(cancel.wait()),
+        ]
+        try:
+            await asyncio.wait(
+                waiters, timeout=duration_s, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            # 没完成的必须取消，否则会留下悬挂任务（asyncio 会报
+            # "Task was destroyed but it is pending"）。
+            for t in waiters:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # 连接生命周期
@@ -700,7 +770,13 @@ class DialogueServer:
             return
 
         client = ClientSession(ws=ws, session_id=session_id)
-        client.peer_str = str(peer) if peer else ""
+        # peer 在 websockets 里是 (host, port) 元组。
+        # 直接 str(peer) 会得到 "('192.168.137.254', 56953)" ——
+        # 前端展示很难看，所以这里格式化成 "ip:port"。
+        if isinstance(peer, (tuple, list)) and len(peer) >= 2:
+            client.peer_str = f"{peer[0]}:{peer[1]}"
+        else:
+            client.peer_str = str(peer) if peer else ""
         self._clients[session_id] = client
         self._total_connections += 1
         logger.info("连接建立 session=%s peer=%s", session_id, peer)
