@@ -203,7 +203,7 @@ zjy14/
 ├─ tests/          # 145 个测试
 ├─ scripts/        # 启动、测试、验收、迁移脚本
 ├─ docs/           # 方案、决策、阶段报告
-└─ probe/          # Phase 0 环境探测脚本（可复现）
+└─ probe/          # 可复现诊断脚本（环境探测、真机联调、情绪审计）
 ```
 
 ### 分层铁律
@@ -310,6 +310,8 @@ wsl -e bash /mnt/d/xiangmudaima/zjy14/probe/run_device_e2e.sh
 | [27_WIFI_FALSE_ALARM_DIAGNOSIS.md](docs/27_WIFI_FALSE_ALARM_DIAGNOSIS.md) | **"板子没连 WiFi"误判排查（实为天气 DNS 失败）** |
 | [28_DEVICE_E2E_REPORT.md](docs/28_DEVICE_E2E_REPORT.md) | **真机联调报告（Phase 5 补完：真机在环）** |
 | [29_INTEGRATION_BUG_AUDIT.md](docs/29_INTEGRATION_BUG_AUDIT.md) | **zjy13↔zjy14 集成缺陷排查（7 修 + 2 项实测推翻）** |
+| [30_EMOTION_CONTROL_AUDIT.md](docs/30_EMOTION_CONTROL_AUDIT.md) | **情绪控制专项审计**：模型支持但调用路径错，`zero_shot_spk_id` 静默丢弃指令 |
+| [probe/README.md](probe/README.md) | **诊断脚本用法**：6 个情绪审计脚本的跑法与判据 |
 | [13_D1_EMOTION_VERDICT.md](docs/13_D1_EMOTION_VERDICT.md) | **D1 情绪验证结论（情绪指令无效）** |
 | [12_PHASE2A_REPORT.md](docs/12_PHASE2A_REPORT.md) | Phase 2a 报告（真引擎接入） |
 | [11_DAILY_SUMMARY_2026-11-09.md](docs/11_DAILY_SUMMARY_2026-11-09.md) | 2026-11-09 当日总结（成果 + 不足） |
