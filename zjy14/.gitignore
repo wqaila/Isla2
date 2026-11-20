@@ -66,13 +66,15 @@ _p2b_speed/
 _p2b_speed2/
 
 # 情绪控制审计（2026-11-20）的音频输出。
-# 脚本在 probe/_audit_*.py，每次运行都会重新生成这些目录。
+# 脚本在 probe/_audit_*.py 与 probe/_verify_*.py，每次运行都会重新生成。
 _audit_emotion_basic/
 _audit_emotion_signal_noise/
 _audit_instruct2_usage/
 _audit_instruct2_spk_trap/
 _audit_instruct_decisive/
 _audit_stream_instruct/
+_verify_hybrid_instruct/
+_verify_routing_cost/
 # 整理前的旧目录（保持兼容，避免误提交历史产物）
 _audit_out/
 _audit_out2/
