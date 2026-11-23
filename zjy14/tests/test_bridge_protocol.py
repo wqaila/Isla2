@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import struct
 from pathlib import Path
 
@@ -123,6 +124,72 @@ def test_length_prefix_is_big_endian() -> None:
 
 def test_stream_end_marker_is_zero_length() -> None:
     assert encode_stream_end() == b"\x00\x00\x00\x00"
+
+
+# ----------------------------------------------------------------------
+# 分块上限（2026-11-23 修复回归锁）
+# ----------------------------------------------------------------------
+
+
+def _parse_length_prefixed(stream: bytes) -> list[int]:
+    """把「长度前缀流」解析成各块长度列表（不消费结束标记）。"""
+    sizes = []
+    pos = 0
+    while pos + 4 <= len(stream):
+        (n,) = struct.unpack(">I", stream[pos:pos + 4])
+        pos += 4
+        if n == 0:
+            break
+        sizes.append(n)
+        pos += n
+    return sizes
+
+
+def test_encode_splits_oversized_pcm() -> None:
+    """超过协议上限的 PCM 必须被切成多块。
+
+    回归锁：修复前 ``encode_length_prefixed`` 直接整块加长度前缀，
+    引擎按句 yield 的 192000 字节会原样下发，超出 48KB 上限，
+    导致 zjy13 的 TTSClient 抛「流式分块长度异常」、板子播放中止。
+    """
+    from custom_voice.bridge.protocol import MAX_AUDIO_CHUNK_BYTES
+
+    pcm = b"\x01\x00" * 96000  # 192000 字节，正是实测报错尺寸
+    assert len(pcm) > MAX_AUDIO_CHUNK_BYTES
+
+    out = encode_length_prefixed(pcm)
+    sizes = _parse_length_prefixed(out)
+
+    assert len(sizes) > 1, f"192000 字节没有被切块，仍是 {len(sizes)} 块"
+    assert all(s <= MAX_AUDIO_CHUNK_BYTES for s in sizes), (
+        f"存在超过上限的块: max={max(sizes)} > {MAX_AUDIO_CHUNK_BYTES}"
+    )
+    assert sum(sizes) == len(pcm), "切块后字节总数不一致（有丢失或重复）"
+
+
+def test_encode_keeps_small_pcm_as_single_chunk() -> None:
+    """未超限的 PCM 不应被无谓拆分（避免增加帧数与延迟）。"""
+    pcm = b"\x01\x00" * 100  # 200 字节
+    out = encode_length_prefixed(pcm)
+    sizes = _parse_length_prefixed(out)
+    assert sizes == [len(pcm)]
+
+
+def test_encode_chunks_are_int16_aligned() -> None:
+    """切块长度必须是偶数，否则会把 int16 采样切断。"""
+    from custom_voice.bridge.protocol import MAX_AUDIO_CHUNK_BYTES
+
+    pcm = b"\x00\x01" * 100000
+    sizes = _parse_length_prefixed(encode_length_prefixed(pcm))
+    assert all(s % 2 == 0 for s in sizes), f"存在奇数字节块: {sizes}"
+    assert all(s <= MAX_AUDIO_CHUNK_BYTES for s in sizes)
+
+
+def test_encode_rejects_odd_chunk_size() -> None:
+    """非法上限（奇数/非正）必须显式报错，不能静默产生错位音频。"""
+    for bad in (0, -1, 4095):
+        with pytest.raises(ValueError):
+            encode_length_prefixed(b"\x00\x00", max_chunk_bytes=bad)
 
 
 def test_length_prefixed_roundtrip() -> None:
@@ -352,10 +419,21 @@ def test_first_burst_matches_zjy13() -> None:
 
 @requires_zjy13
 def test_stream_format_matches_zjy13() -> None:
-    """HTTP 流式格式必须与 zjy13 一致：大端长度前缀 + 0 结束。"""
+    """HTTP 流式格式必须与 zjy13 一致：大端长度前缀 + 0 结束。
+
+    注意：不要断言具体变量名。zjy13 侧 2026-11-23 因协议 48KB 上限
+    改成按块切分发送（``pcm`` -> ``piece``），格式未变但字面量变了。
+    这里只校验「4 字节大端长度前缀 + 负载」这个结构本身。
+    """
     src = (ZJY13 / "scripts/tts_server_wsl.py").read_text(encoding="utf-8")
-    assert 'struct.pack(">I", len(pcm))' in src
-    assert 'struct.pack(">I", 0)' in src
+    # 长度前缀必须是大端 uint32（">I"），且与负载拼接
+    assert re.search(r'struct\.pack\(\s*">I"\s*,\s*len\(\w+\)\s*\)\s*\+\s*\w+', src), (
+        "zjy13 流式分块不再是「4 字节大端长度 + 负载」格式"
+    )
+    # 结束标记必须是长度 0
+    assert re.search(r'struct\.pack\(\s*">I"\s*,\s*0\s*\)', src), (
+        "zjy13 流式结束标记不是长度 0"
+    )
 
 
 @requires_zjy13

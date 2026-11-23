@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from ...bridge.protocol import encode_length_prefixed, encode_stream_end
 from ...core.errors import QueueTimeoutError
 from ...core.logging import get_logger, get_request_id
 from ...schemas.synthesis import SynthesisRequest
@@ -352,8 +353,6 @@ async def synthesize_stream(request: Request, payload: SynthesisRequest):
         real_sample_rate = 24000
 
     def generate():
-        import struct
-
         started = time.perf_counter()
         first_ms: float | None = None
         total_samples = 0
@@ -383,12 +382,22 @@ async def synthesize_stream(request: Request, payload: SynthesisRequest):
                         first_ms = (time.perf_counter() - started) * 1000
                     total_samples += len(chunk.pcm) // 2
                     n_chunks += 1
-                    yield struct.pack(">I", len(chunk.pcm)) + chunk.pcm
+                    # 2026-11-23 修复：必须按协议上限切块。
+                    #
+                    # 原实现直接 `struct.pack(">I", len(chunk.pcm)) + chunk.pcm`，
+                    # 而引擎按「句」yield —— 实测一整句 192000 字节
+                    # （14.8s 音频被切成 10 块，最大块 192000），
+                    # 远超协议上限 48KB。zjy13 的 TTSClient 会校验长度字段，
+                    # 超限直接抛「TTS 流式分块长度异常」，表现为板子播到一半中止。
+                    #
+                    # 统一走 encode_length_prefixed，它内部会按
+                    # MAX_AUDIO_CHUNK_BYTES 切分，避免两处实现漂移。
+                    yield encode_length_prefixed(chunk.pcm)
                 if chunk.is_final:
                     break
 
             # 结束标记：长度 0
-            yield struct.pack(">I", 0)
+            yield encode_stream_end()
 
             # 用真实采样率算时长，别硬编码 24000（否则换模型后统计全错）
             duration = total_samples / (real_sample_rate or 24000)

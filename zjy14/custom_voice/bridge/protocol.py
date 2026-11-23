@@ -144,12 +144,41 @@ def decode_binary_frame(data: bytes) -> dict:
     }
 
 
-def encode_length_prefixed(pcm: bytes) -> bytes:
+def encode_length_prefixed(
+    pcm: bytes,
+    *,
+    max_chunk_bytes: int = MAX_AUDIO_CHUNK_BYTES,
+) -> bytes:
     """zjy14 的 HTTP 流式分块格式（与 zjy13 完全一致）。
 
     每块 = 4 字节大端 uint32 长度 + PCM。
+
+    **2026-11-23 修复**：原实现直接把整块 pcm 拼一个长度前缀就发。
+    但引擎按「句」yield，一整句可达 192000 字节（实测 14.8s 音频
+    被切成 10 块，最大块 192000），远超协议上限 48KB。
+    zjy13 的 TTSClient 会校验长度字段，超限直接抛
+    「TTS 流式分块长度异常」—— 表现为板子播到一半中止。
+
+    现在超过 ``max_chunk_bytes`` 时按上限切分成多个块。
+    返回值仍是可直接写入 HTTP 响应的连续字节流。
+
+    注意：``max_chunk_bytes`` 必须是偶数，否则会把 int16 采样切断
+    导致音频出现半样本错位（听感为轻微咔哒声）。
     """
-    return struct.pack(">I", len(pcm)) + pcm
+    if not pcm:
+        return b""
+    if max_chunk_bytes <= 0 or max_chunk_bytes % 2 != 0:
+        raise ValueError(
+            f"max_chunk_bytes 必须是正偶数，当前 {max_chunk_bytes}"
+        )
+    if len(pcm) <= max_chunk_bytes:
+        return struct.pack(">I", len(pcm)) + pcm
+
+    parts: list[bytes] = []
+    for off in range(0, len(pcm), max_chunk_bytes):
+        piece = pcm[off:off + max_chunk_bytes]
+        parts.append(struct.pack(">I", len(piece)) + piece)
+    return b"".join(parts)
 
 
 def encode_stream_end() -> bytes:

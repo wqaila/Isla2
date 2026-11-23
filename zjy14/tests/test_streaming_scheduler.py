@@ -320,7 +320,12 @@ def test_truncated_stream_has_no_end_marker() -> None:
 
 
 def test_protocol_matches_zjy13() -> None:
-    """协议必须与 zjy13 完全一致，否则前端/固件对不上。"""
+    """协议必须与 zjy13 完全一致，否则前端/固件对不上。
+
+    不要断言具体变量名：zjy13 侧 2026-11-23 为满足协议 48KB 上限
+    改成按块切分（``pcm`` -> ``piece``），格式未变。只校验结构。
+    """
+    import re
     from pathlib import Path
 
     zjy13 = Path("/mnt/d/xiangmudaima/zjy13/scripts/tts_server_wsl.py")
@@ -328,6 +333,10 @@ def test_protocol_matches_zjy13() -> None:
         pytest.skip("zjy13 仓库不在预期位置")
 
     src = zjy13.read_text(encoding="utf-8")
-    assert 'struct.pack(">I", len(pcm))' in src
-    assert 'struct.pack(">I", 0)' in src
+    assert re.search(r'struct\.pack\(\s*">I"\s*,\s*len\(\w+\)\s*\)\s*\+\s*\w+', src), (
+        "zjy13 流式分块不再是「4 字节大端长度 + 负载」格式"
+    )
+    assert re.search(r'struct\.pack\(\s*">I"\s*,\s*0\s*\)', src), (
+        "zjy13 流式结束标记不是长度 0"
+    )
     assert "x-sample-rate" in src
