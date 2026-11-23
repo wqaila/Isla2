@@ -93,3 +93,12 @@ _*.log
 *.bak-*
 *.bak
 wifi_config.h
+
+# ===== 服务运行期产物（不入库）=====
+# PID 文件记录的是本机进程号，换机器/重启即失效，没有版本价值
+*.pid
+# 服务启动包装脚本：路径写死为 D:\xiangmudaima，属本机专用
+_run_tts*.sh
+_run_tts*.ps1
+# 服务日志（配合上面的 _*.log 规则）
+_*.err.log
