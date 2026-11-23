@@ -195,8 +195,12 @@ def test_firmware_has_idle_watchdog() -> None:
 
 
 def test_firmware_volume_default_raised() -> None:
-    """默认音量应为 85（原 60 偏轻）。"""
+    """固件默认音量应为 70（2026-11-23 由 85 下调）。
+
+    历史：60 在板载小喇叭上偏轻 → 提到 85 避免削波破音。
+    实测 85 对当前角色素材偏响，用户确认后固化到 70。
+    """
     src = _read(FIRMWARE)
-    assert "s_volume = 85" in src, (
-        "默认音量不是 85；板载小喇叭在 60 时偏轻"
+    assert "s_volume = 70" in src, (
+        "固件默认音量不是 70；85 偏响，60 偏轻"
     )

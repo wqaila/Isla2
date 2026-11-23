@@ -1,4 +1,4 @@
-﻿"""WebSocket 服务端：接收开发板音频，跑 ASR → LLM → TTS，推回结果。
+"""WebSocket 服务端：接收开发板音频，跑 ASR → LLM → TTS，推回结果。
 
 对应 V2 第十一、十二节。
 
@@ -110,6 +110,22 @@ LATENCY_HISTORY_SIZE = 5
 #: 取 1.2s：填充音本身约 0.7s，若等待不足 1.2s，
 #: 播填充音会让总时长变长，得不偿失。
 FILLER_SKIP_BELOW_S = 1.2
+
+#: 填充音起播延迟（秒）。松手后先静默这么久，再开始播「嗯…」。
+#:
+#: 为什么需要（2026-11-23 用户反馈「填充音和正文之间感觉有点长，
+#: 听起来不太自然」）：
+#:   原实现松手瞬间就播填充音，而填充音只有约 0.7s。若 TTS 首块
+#:   在 1.5s 才到，填充音早已播完，中间留下约 0.8s 的死寂；
+#:   若首块更快（如 1.0s），填充音播到一半就被正文顶掉，
+#:   听起来像"嗯…"被硬生生掐断。两种都不自然。
+#:
+#:   延后起播能让填充音**更贴近正文到达时刻**：
+#:   等待越久，填充音越晚开始，尾巴与正文首字衔接得越紧。
+#:
+#: 取值：默认 0.5s。太小起不到对齐作用，太大会让松手后先明显静默。
+#: 设为 0 可恢复旧行为（立即起播）。
+FILLER_DELAY_S = 0.5
 
 
 @dataclass(slots=True)
@@ -680,6 +696,19 @@ class DialogueServer:
         sent_bytes = 0
         count = 0
         step = 4096
+
+        # 起播延迟：先静默一小段再开口，让填充音的尾巴更贴近正文首字。
+        #
+        # 复用 _wait_filler_played 的「可打断等待」语义：
+        # 正文提前就绪 / 取消时立刻返回，绝不空等满延迟。
+        # 这样快速响应时连填充音都不用发，天然避免多余语气词。
+        if FILLER_DELAY_S > 0:
+            await self._wait_filler_played(
+                FILLER_DELAY_S, body_ready=body_ready, cancel=cancel
+            )
+            if body_ready.is_set() or cancel.is_set():
+                logger.debug("填充音起播延迟内正文已就绪，跳过填充音")
+                return 0, 0, 0
 
         while session.should_continue():
             if body_ready.is_set() or cancel.is_set():
@@ -1375,7 +1404,26 @@ class DialogueServer:
         playback_started = False
         play_start = 0.0
         bytes_per_sec = sample_rate * 2
-        lead_sec = 0.8
+        # 下发领先量（秒）：服务端最多领先播放进度这么多秒。
+        #
+        # 2026-11-23 从 0.8 提到 2.0（修复「板子播放会卡一下」）。
+        #
+        # 为什么 0.8 不够：
+        #   TTS 流式分块是「阵发」的 —— 实测到达间隔可达 1.7~2.9s
+        #   （上游 token_hop_len 增长导致包越来越大、间隔越来越长）。
+        #   lead_sec=0.8 意味着服务端只肯提前 0.8s 发送，TTS 一停顿，
+        #   板子缓冲 0.8s 后就耗尽 → 播放中断。
+        #   实测证据：音频 8.64s，但板子 playback_ms=10.83s，多出 2.19s。
+        #
+        # 为什么 2.0 够：
+        #   配合 tts_server_wsl.py 里 token_max_hop_len=50，
+        #   分块最大间隔已降到 1.7s 左右。lead 2.0s 可完整覆盖，
+        #   且留 0.3s 余量吸收网络抖动。
+        #
+        # 为什么不能更大：
+        #   板子播放缓冲上限 PLAY_MAX_SECONDS=8s（固件 voice_client.c）。
+        #   过大的 lead 会让长音频在板子上堆积，逼近上限时有丢帧风险。
+        lead_sec = 2.0
         # 首块不受 lead_sec 限制，一次发够「预缓冲 + 余量」。
         #
         # 为什么（2026-11-12）：固件加了 120ms 预缓冲，攒够才开始写 codec。

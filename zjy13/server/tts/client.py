@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import struct
@@ -129,6 +130,22 @@ class TTSConfig:
     health_path: str = "/health"
     timeout_s: float = 120.0
     connect_timeout_s: float = 5.0
+    #: 流式读取的「块间空闲超时」（秒）。
+    #:
+    #: 2026-11-23 新增，修复「板子卡在正在回应、无音频」：
+    #:   实测卡死现场：TTS 已下发 386384 字节 / 97 帧（≈8.05s 音频）后
+    #:   不再有任何数据，但服务端状态停在 PLAYING 达 134 秒。
+    #:
+    #:   根因：`_iter_length_prefixed` 收到长度前缀后，若负载没发完
+    #:   （`len(buf) < 4 + length`）就 break 回去等下一块 —— 此时
+    #:   既不报错也不超时，只能等 httpx 的 read 超时（120s）。
+    #:   而看门狗 PLAYBACK_MAX_GUESS_S 也是 120s，两者几乎同时到，
+    #:   用户要干等两分钟才看到收尾。
+    #:
+    #:   改为：只要**连续这么久没有收到任何新字节**，就判定流已死并报错，
+    #:   让上层立刻走 TTS 失败收尾，而不是干等总超时。
+    #:   取值 20s：正常块间隔最大实测 1.8s，留 10 倍余量。
+    stream_idle_timeout_s: float = 20.0
     output_dir: Path = Path("logs/tts")
     default_voice: str = "elysia"
     #: 停顿档位（仅 zjy14 引擎支持，老引擎会忽略这个字段）。
@@ -158,6 +175,7 @@ class TTSConfig:
             health_path=env("TTS_HEALTH_PATH", "/health"),
             timeout_s=float(env("TTS_TIMEOUT_S", "120")),
             connect_timeout_s=float(env("TTS_CONNECT_TIMEOUT_S", "5")),
+            stream_idle_timeout_s=float(env("TTS_STREAM_IDLE_TIMEOUT_S", "20")),
             output_dir=Path(env("TTS_OUTPUT_DIR", "logs/tts")),
             default_voice=env("TTS_VOICE_ID", "elysia"),
             # 显式传 none（整段合成），保持与 zjy13 原引擎一致的听感。
@@ -494,7 +512,12 @@ class TTSClient:
                     self.last_stream_sample_rate = 24000
 
                 finished = False
-                async for pcm in _iter_length_prefixed(response.aiter_bytes()):
+                async for pcm in _iter_length_prefixed(
+                    _aiter_with_idle_timeout(
+                        response.aiter_bytes(),
+                        idle_s=self.config.stream_idle_timeout_s,
+                    )
+                ):
                     if pcm is None:
                         finished = True
                         break
@@ -516,6 +539,46 @@ class TTSClient:
             raise TTSUnavailableError(
                 f"TTS 流式请求失败: {type(exc).__name__}: {exc}"
             ) from exc
+
+
+async def _aiter_with_idle_timeout(
+    byte_iter: AsyncIterator[bytes],
+    *,
+    idle_s: float,
+) -> AsyncIterator[bytes]:
+    """给异步字节流加「块间空闲超时」。
+
+    2026-11-23 新增，修复「板子卡在正在回应、无音频」的干等问题。
+
+    背景：``_iter_length_prefixed`` 收到长度前缀后若负载未发完，
+    会 break 回去等下一块。若对端（TTS 引擎）此时挂死，
+    这个等待没有任何上限，只能靠 httpx 的 read 超时（默认 120s）。
+    实测用户干等了 134 秒才恢复。
+
+    这里在**每一块**上套 ``asyncio.wait_for``：只要连续 ``idle_s``
+    秒没收到任何新字节，就抛 ``TTSTimeoutError``，
+    让上层立即走 TTS 失败收尾，而不是等总超时。
+
+    :param byte_iter: 上游字节流（httpx 的 aiter_bytes）
+    :param idle_s: 允许的最长无数据间隔（秒）；<=0 表示不限制
+    """
+    if idle_s <= 0:
+        async for chunk in byte_iter:
+            yield chunk
+        return
+
+    iterator = byte_iter.__aiter__()
+    while True:
+        try:
+            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=idle_s)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError as exc:
+            raise TTSTimeoutError(
+                f"TTS 流式合成中断：连续 {idle_s:.0f}s 未收到任何数据，"
+                "判定对端已挂死（音频流未正常结束）"
+            ) from exc
+        yield chunk
 
 
 async def _iter_length_prefixed(

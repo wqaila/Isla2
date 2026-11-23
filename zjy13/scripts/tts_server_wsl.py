@@ -56,6 +56,13 @@ VOICES_DIR = Path(os.environ.get(
     "/mnt/d/xiangmudaima/zjy13/server/characters/voices",
 ))
 
+# 流式下发时单个 PCM 块的最大字节数。
+#
+# 必须 ≤ 协议上限（server/protocol/messages.py 的 MAX_AUDIO_CHUNK_BYTES = 48KB）。
+# 本脚本在 WSL 里运行、只依赖 numpy/torch，不 import server 包，
+# 所以这里显式复制该值；改协议时请同步（tests 里有断言覆盖两者关系）。
+MAX_STREAM_CHUNK_BYTES = 48 * 1024
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -462,6 +469,20 @@ async def synthesize_stream(req: SynthRequest):
     # 与非流式路径一致：重置上游的 token_hop_len 污染
     if hasattr(model.model, "token_hop_len"):
         model.model.token_hop_len = 25
+    # 关键：限制包大小上限，避免大包造成播放中断。
+    #
+    # 2026-11-23 修复「板子播放会卡一下」：
+    #   上游 token_hop_len 从 25 按 ×2 增长到 token_max_hop_len（默认 100）。
+    #   包越大，单次推理越久 → 分块到达间隔越大。
+    #   实测 max_hop=100 时到达间隔达 2.85s，而板子当时只有 2.18s 音频，
+    #   缓冲必然耗尽 → 播放中断（实测 playback 10.83s vs 音频 8.64s，多 2.2s）。
+    #
+    #   降到 50 后：分块均匀（1.16/2.0/2.0/2.0），最大间隔 2.85s→1.69s，
+    #   饥饿时长 1.60s→0.47s（改善 71%），RTF 仍 <1（0.94）。
+    #
+    #   不要降到 25：实测 RTF 升到 1.13（合成跟不上播放），饥饿反而恶化。
+    if hasattr(model.model, "token_max_hop_len"):
+        model.model.token_max_hop_len = 50
 
     sample_rate = runtime.sample_rate
 
@@ -490,7 +511,18 @@ async def synthesize_stream(req: SynthRequest):
                 if first_ms is None:
                     first_ms = (time.perf_counter() - started) * 1000
                 total_samples += len(pcm) // 2
-                yield struct.pack(">I", len(pcm)) + pcm
+                # 按协议上限切块下发。
+                #
+                # 为什么必须切（2026-11-23 修复）：
+                #   inference_zero_shot(stream=True) 按「句」yield，一整句 PCM
+                #   可能远超协议单块上限（实测 130560 / 195840 字节）。
+                #   zjy13 的 TTSClient 会校验长度字段，超限直接抛
+                #   「TTS 流式分块长度异常」——表现为板子播到一半中止，
+                #   且因 TTS 失败导致播放状态没建立，后续块被拒。
+                #   切块后每块 ≤ 48KB，与 MAX_AUDIO_CHUNK_BYTES 一致。
+                for offset in range(0, len(pcm), MAX_STREAM_CHUNK_BYTES):
+                    piece = pcm[offset:offset + MAX_STREAM_CHUNK_BYTES]
+                    yield struct.pack(">I", len(piece)) + piece
             # 结束标记
             yield struct.pack(">I", 0)
             duration = total_samples / sample_rate if sample_rate else 0.0

@@ -530,3 +530,132 @@ def test_interrupt_cleans_up() -> None:
     assert "_cancel_playback_timer" in body, "没撤看门狗"
     assert "client.task.cancel()" in body, "没取消处理任务"
     assert "client.audio = None" in body, "没清音频缓冲"
+
+
+# ----------------------------------------------------------------------
+# 起播延迟（2026-11-23）
+# ----------------------------------------------------------------------
+
+
+def test_filler_delay_constant_exists() -> None:
+    """必须有可调的填充音起播延迟常量。"""
+    from server.ws.server import FILLER_DELAY_S
+
+    assert FILLER_DELAY_S >= 0.0, "起播延迟不能为负"
+    assert FILLER_DELAY_S <= 2.0, (
+        f"起播延迟 {FILLER_DELAY_S}s 过长，松手后会先明显静默"
+    )
+
+
+def test_filler_delay_skips_when_body_early() -> None:
+    """延迟期间正文就绪 → 一个填充音都不发。
+
+    这是本次改动的核心收益：正文来得快时，不再出现「嗯…」被掐断。
+    """
+    import asyncio
+
+    from server.tts.fillers import FillerBank
+    from server.ws.server import DialogueServer
+
+    bank = FillerBank()
+    if not bank.available:
+        pytest.skip("没有填充音资源")
+
+    server = DialogueServer.__new__(DialogueServer)
+    server.fillers = bank
+
+    sent: list[bytes] = []
+
+    async def fake_send_audio(client, pcm, seq):
+        sent.append(pcm)
+
+    class FakeClient:
+        pass
+
+    async def run() -> None:
+        body_ready = asyncio.Event()
+        cancel = asyncio.Event()
+
+        async def set_body_soon() -> None:
+            # 在起播延迟内就让正文就绪
+            await asyncio.sleep(0.05)
+            body_ready.set()
+
+        asyncio.create_task(set_body_soon())
+
+        import unittest.mock as mock
+
+        with mock.patch.object(server, "send_audio", fake_send_audio):
+            count, nbytes, seq = await server._send_fillers(
+                FakeClient(), "turn-delay",
+                body_ready=body_ready,
+                cancel=cancel,
+            )
+        assert count == 0, f"正文已就绪却仍发了 {count} 个填充音"
+        assert nbytes == 0
+        assert seq == 0
+
+    asyncio.run(run())
+    assert not sent, f"正文已就绪却仍下发了 {len(sent)} 帧音频"
+
+
+def test_filler_delay_postpones_first_clip() -> None:
+    """延迟必须真的把第一个填充音往后推，而不是立即下发。"""
+    import asyncio
+    import time
+
+    from server.tts.fillers import FillerBank
+    from server.ws.server import DialogueServer
+
+    bank = FillerBank()
+    if not bank.available:
+        pytest.skip("没有填充音资源")
+
+    server = DialogueServer.__new__(DialogueServer)
+    server.fillers = bank
+
+    first_at: list[float] = []
+
+    async def fake_send_audio(client, pcm, seq):
+        if not first_at:
+            first_at.append(time.perf_counter())
+
+    class FakeClient:
+        pass
+
+    async def run() -> float:
+        body_ready = asyncio.Event()
+        cancel = asyncio.Event()
+        t0 = time.perf_counter()
+
+        import unittest.mock as mock
+
+        async def stop_after_first() -> None:
+            # 等第一个填充音下发后立刻取消，避免测试等满整个 clip
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                if first_at:
+                    cancel.set()
+                    return
+            cancel.set()
+
+        asyncio.create_task(stop_after_first())
+
+        with mock.patch.object(server, "send_audio", fake_send_audio):
+            await server._send_fillers(
+                FakeClient(), "turn-delay2",
+                body_ready=body_ready,
+                cancel=cancel,
+            )
+        return t0
+
+    t0 = asyncio.run(run())
+    assert first_at, "没有下发任何填充音帧"
+    elapsed = first_at[0] - t0
+    from server.ws.server import FILLER_DELAY_S
+
+    # 留一点调度余量（asyncio 定时器不会早于设定值太多）
+    assert elapsed >= FILLER_DELAY_S * 0.8, (
+        f"第一个填充音在 {elapsed:.2f}s 就下发了，"
+        f"起播延迟 {FILLER_DELAY_S}s 没有生效"
+    )
