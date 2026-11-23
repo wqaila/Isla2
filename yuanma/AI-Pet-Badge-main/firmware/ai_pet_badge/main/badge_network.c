@@ -26,6 +26,17 @@ static esp_netif_t *sta_netif;
 /* 天气连续失败次数：只用于日志与界面提示，不参与业务逻辑 */
 static unsigned weather_failures;
 
+/* Wi-Fi 断线重连的指数退避（毫秒）。
+ *
+ * 2026-11-23 新增。原实现在 WIFI_EVENT_STA_DISCONNECTED 里无条件立即
+ * esp_wifi_connect()。实测 reason=201（NO_AP_FOUND）时会形成重试风暴：
+ * 扫描→失败→立刻再扫，射频长期忙态，反而更难重新发现 AP，
+ * 并挤占同芯片 WebSocket 的收发（表现为心跳超时、playback_done 丢失）。
+ *
+ * 500ms 起、每次翻倍、上限 8s；GOT_IP 时重置回 500ms。
+ */
+static uint32_t s_retry_delay_ms = 500;
+
 /* ===== DNS 兜底 =====
  *
  * Windows ICS 的 DNS 代理（192.168.137.1:53）有一种失效状态：
@@ -103,13 +114,37 @@ static void network_event(void *arg, esp_event_base_t base, int32_t id, void *da
          * 必须在拿到 IP 之后调用，早于此时 netif 还没有 DNS 记录。 */
         log_dns_config("DHCP 下发");
         apply_dns_override();
+        /* 连上后清零退避计数，下次断线重新从 500ms 开始。
+         * （变量定义在本文件作用域，见 s_retry_delay_ms） */
+        s_retry_delay_ms = 500;
         if (network_task) xTaskNotifyGive(network_task);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         connected = false;
         badge_dashboard_connection(false);
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)data;
         ESP_LOGW(TAG, "Wi-Fi disconnected, reason %u", (unsigned)event->reason);
-        /* 主动重连：否则断网后不会自行恢复 */
+
+        /* 主动重连，但要退避。
+         *
+         * 2026-11-23 修复：原来无条件立即 esp_wifi_connect()。
+         * 实测 reason=201（NO_AP_FOUND，热点暂时不可见）时，
+         * 立即重连会形成高频重试风暴：扫描→失败→立刻再扫，
+         * 射频一直处于忙态，反而更难重新发现 AP，同时挤占
+         * WiFi 任务的 CPU 与功耗，拖累同一芯片上的 WebSocket 收发
+         * （表现为心跳超时、playback_done 丢失、播放卡住）。
+         *
+         * 改为指数退避：500ms 起，每次翻倍，上限 8s。
+         * 连上后（GOT_IP 事件）把计数清零，下次断线重新从 500ms 开始。
+         * 退避用 vTaskDelay 在事件回调里是安全的：该回调运行在
+         * WiFi 事件任务上下文，阻塞它不会阻塞协议栈内部收包。 */
+        uint32_t delay_ms = s_retry_delay_ms;
+        if (s_retry_delay_ms < 8000) {
+            s_retry_delay_ms *= 2;
+            if (s_retry_delay_ms > 8000) s_retry_delay_ms = 8000;
+        }
+        ESP_LOGI(TAG, "Wi-Fi 将在 %ums 后重连（下次退避 %ums）",
+                 (unsigned)delay_ms, (unsigned)s_retry_delay_ms);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
         esp_wifi_connect();
     }
 }

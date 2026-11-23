@@ -108,6 +108,8 @@ static volatile voice_state_t s_state = ST_OFF;
 static void ui_sync(void);
 static void play_task(void *arg);
 static void finish_playback(void);
+/* 强制收尾：不依赖 s_playing，保证发出 playback_done（2026-11-23） */
+static void finish_playback_force(void);
 
 /* 把内部状态映射成 UI 的 0..4，供 dashboard 显示 */
 static void ui_sync(void)
@@ -139,10 +141,15 @@ static uint32_t s_recv_frames, s_expect_frames;
 static uint32_t s_recv_bytes, s_expect_bytes;
 static volatile bool s_playing;
 /* 播放音量 0~100，可用串口命令 VOL <n> 运行时调整。
- * 默认从 60 提到 85：板载扬声器口径小、效率低，60 在安静环境偏轻。
- * 留 15 的余量给高音量素材，避免长按满幅时削波破音（实测 100 会破）。
- * 觉得仍偏小可串口发 VOL 92 试；觉得破音则发 VOL 78。 */
-static volatile int s_volume = 85;
+ * 默认 70（2026-11-23 由 85 下调，用户确认后固化）。
+ *
+ * 历史：60 在安静环境偏轻 → 提到 85 留 15 余量避免长按满幅削波破音
+ * （实测 100 会破）。实测 85 对当前角色素材偏响，70 更均衡。
+ * 觉得仍偏小可串口发 VOL 78；觉得破音则发 VOL 65。
+ *
+ * 注意：该值只在编译时生效。运行期 VOL <n> 调整不写 NVS，
+ * 重新上电会回到此默认值。 */
+static volatile int s_volume = 70;
 
 /* ---- 播放缓冲：网络回调只入队，独立任务负责写 codec ----
  *
@@ -174,6 +181,13 @@ static volatile bool s_play_draining;   /* 收到最后一帧，等待缓冲排�
 static volatile bool s_got_end_marker;
 /* 播放任务的空闲计数：用于流式模式下检测「服务端中途断流」 */
 static uint32_t s_idle_ticks;
+/* 收到结束标记后的收尾兜底计数（2026-11-23）。
+ * 用于修复「音频已播完但状态机卡在 PLAYING、playback_done 不发」。 */
+static uint32_t s_end_grace_ticks;
+/* 录音请求在途计数（秒）。voice_talk_start 发出 recording_start 后，
+ * 若迟迟收不到 session_start，用它兜底复位，避免「在途」标志永久卡死。
+ * 2026-11-23 新增。 */
+static uint32_t s_talk_pending_ticks;
 /* 预缓冲是否已完成（每轮播放开始时由 handle_playback_start 复位）。
  * 播放任务是常驻的，用静态变量才能跨轮次正确重置。 */
 static volatile bool s_prebuf_done;
@@ -499,19 +513,39 @@ static void handle_playback_start(const char *json)
     /* 复位预缓冲：本轮开播前要重新攒够 PREBUF_MS 音频 */
     s_prebuf_done = false;
     s_idle_ticks = 0;
+    s_end_grace_ticks = 0;
 
     /* 清空缓冲 */
     if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
     s_play_head = s_play_tail = s_play_count = 0;
     if (s_play_mutex) xSemaphoreGive(s_play_mutex);
 
-    /* 打开扬声器：直接用 BSP 实际 I2S 采样率 22050。
-     * TTS 输出 24k，播放任务里做线性重采样。
+    /* 打开扬声器：设备与 TTS 同为 24k，直通不重采样。
      *
      * 供电保护（实测：音频下发瞬间板子会 brownout 复位）：
      *   1) 音量从 60 降到 30，减少功放峰值电流
      *   2) 开功放后先写 150ms 静音做"软启动"，让功放与电源缓冲平滑建立，
      *      而不是一上来就推大信号
+     *
+     * 2026-11-23 修复「用久后声音变尖（像快进）」：
+     *
+     *   现象：播放约 1.5 倍速、音调升高（24000/16000=1.5），重启板子即恢复。
+     *
+     *   根因：录音（ES7210，16kHz）与播放（ES8311，24kHz）是**两个独立
+     *   codec 句柄**，但共用同一条 I2S 总线，而 I2S 时钟只有一个。
+     *   esp_codec_dev_open() 开头有早退：
+     *       if (dev->input_opened || dev->output_opened) return OK;
+     *   一旦 s_spk 的 output_opened 因异常路径残留为 true，
+     *   本次 open 直接返回，**set_fmt 不被调用** → I2S 时钟仍停在
+     *   上次录音的 16kHz，而音频数据是 24kHz → 播成 1.5 倍速、音调变尖。
+     *
+     *   另一条路径：_i2s_data_enable() 在 RX 仍在工作时会把 TX 的 disable
+     *   推迟（out_disable_pending），但 esp_codec_dev_close() 仍无条件把
+     *   output_opened 置 false，造成「句柄认为已关、硬件其实还开着」。
+     *
+     *   修法：open 之前先 close 一次，强制把 output_opened 清成 false，
+     *   保证本次 open 一定会走到 set_fmt，从而重配 I2S 时钟为 24kHz。
+     *   代价极小（一次幂等调用），却能彻底消除这个状态残留。
      */
     if (spk_ensure() == ESP_OK) {
         esp_codec_dev_sample_info_t fs = {
@@ -519,8 +553,23 @@ static void handle_playback_start(const char *json)
             .channel = SPK_CHANNELS,
             .bits_per_sample = 16,
         };
+        /* 先关一次，清掉可能残留的 output_opened，避免 open 早退跳过 set_fmt */
+        esp_codec_dev_close(s_spk);
         if (esp_codec_dev_open(s_spk, &fs) != ESP_OK) {
             ESP_LOGE(TAG, "扬声器打开失败");
+        }
+        /* 兜底：直接对共享 I2S 数据接口再设一次格式。
+         *
+         * 上面的 close+open 已能覆盖绝大多数情况，但 I2S 是 mic/spk 共享的
+         * 单一时钟源，若某次录音的 16kHz 配置残留，仅靠 open 的 set_fmt
+         * 未必能保证生效（open 内部仍有早退分支）。
+         * 这里显式再调一次 data_if->set_fmt，把 I2S 时钟强制拉回 24kHz。
+         * 该调用幂等，参数与 open 完全一致，不会引入副作用。 */
+        {
+            const audio_codec_data_if_t *data_if = bsp_audio_get_codec_itf();
+            if (data_if && data_if->set_fmt) {
+                data_if->set_fmt(data_if, ESP_CODEC_DEV_TYPE_OUT, &fs);
+            }
         }
         esp_codec_dev_set_out_vol(s_spk, s_volume);
 
@@ -595,6 +644,25 @@ static void play_task(void *arg)
         if (avail > 0 && s_spk) {
             /* 采样率一致：原样写出，保留 24kHz 完整频响 */
             esp_codec_dev_write(s_spk, out_buf, (int)(avail * 2));
+
+            /* 2026-11-23 修复：写完必须让出 CPU，不能裸 continue。
+             *
+             * 实测症状：板子收了完整音频（126 帧 / 497744 字节），但
+             * 服务端 36 秒收不到任何消息 → 心跳超时被断开；
+             * 用户侧表现为「卡在正在回应、没有声音」。
+             *
+             * 根因：play_task 优先级 6（全工程最高），而原来这里
+             * 只要缓冲里有数据就 `continue` 立刻进入下一轮取数，
+             * **一次都不主动让出**。当 s_play_count 持续 >0 时，
+             * 这个任务会长时间霸占 CPU，把优先级 3 的 heartbeat_task
+             * 饿死 —— 心跳发不出去，服务端 30s 就判定连接失联并断开。
+             *
+             * 修法：每次写完让出 1 tick。
+             *   - 1 tick = 10ms（configTICK_RATE_HZ=100），而一次
+             *     esp_codec_dev_write 写 1024 采样 ≈ 42ms 音频，
+             *     远大于 10ms，所以不会造成播放欠载；
+             *   - 但足以让心跳任务与 WiFi 任务拿到 CPU。 */
+            vTaskDelay(1);
             continue;
         }
 
@@ -608,6 +676,33 @@ static void play_task(void *arg)
         /* 中途播空（预缓冲已用过）：下一段音频要重新攒，
          * 否则连续欠载时会反复「写一小段→播空」，听感更差。 */
         s_prebuf_done = false;
+
+        /* 2026-11-23 修复：收到结束标记后的收尾兜底（基于 s_state，不看 s_playing）。
+         *
+         * 实测缺陷（两次复现）：板子 BADGE_VOICE 报 state=PLAYING、已收满 108 帧
+         * / 427396 字节（与服务端完全一致），但 BADGE_STATUS 显示 playing=false，
+         * 服务端等不到 playback_done，整轮永久卡在 playing。
+         *
+         * 关键：这里必须判断 s_state（语音状态机）而不是 s_playing（播放任务标志）。
+         *   - s_playing=false 表示「播放任务认为没在播」，它可能已被提前清掉；
+         *   - s_state=ST_PLAYING 表示「对外状态机仍认为在播」，正是卡住的表现。
+         * finish_playback() 首行是 `if (!s_playing) return;`，一旦 s_playing
+         * 提前为 false，它就直接返回 —— playback_done 不发、s_state 永不复位。
+         *
+         * 所以兜底条件是「s_state 仍是 PLAYING」且「已收到结束标记」，
+         * 满足就强制走一次不依赖 s_playing 的收尾。
+         * 取值 300 ticks = 3 秒：正常排空远小于此值。 */
+        if (s_got_end_marker && s_state == ST_PLAYING) {
+            if (s_end_grace_ticks++ >= 300) {   /* 300 * 10ms = 3s */
+                s_end_grace_ticks = 0;
+                ESP_LOGW(TAG, "结束标记已收到但 s_state 仍为 PLAYING，强制收尾"
+                              "（s_playing=%d）", (int)s_playing);
+                finish_playback_force();
+                continue;
+            }
+        } else {
+            s_end_grace_ticks = 0;
+        }
 
         /* 流式兜底：如果长时间（12 秒）既没有新数据、也没收到结束标记，
          * 说明服务端中途断了。主动收尾回到 IDLE，避免永久卡在 PLAYING
@@ -653,6 +748,49 @@ static void finish_playback(void)
     ESP_LOGI(TAG, "播放完成：%u 帧 / %u 字节（预期 %u / %u）",
              (unsigned)s_recv_frames, (unsigned)s_recv_bytes,
              (unsigned)s_expect_frames, (unsigned)s_expect_bytes);
+    s_state = ST_IDLE; ui_sync();
+}
+
+/* 强制收尾（2026-11-23）。
+ *
+ * 与 finish_playback() 的唯一区别：**不看 s_playing**，只看 s_state。
+ *
+ * 为什么需要：finish_playback() 首行 `if (!s_playing) return;`。
+ * 实测存在 s_playing 已被提前清成 false、而 s_state 仍停在 ST_PLAYING 的
+ * 悬挂状态：此时正常收尾直接返回，playback_done 永远不发，
+ * 服务端看门狗要等 120 秒才强制复位，用户侧表现为「一直卡在正在回应」。
+ *
+ * 本函数保证：只要调用，就一定发出 playback_done 并把状态机复位。
+ * 对 codec 的操作做了存在性判断，重复关闭是安全的（esp_codec_dev_close
+ * 在未打开时直接返回 OK）。 */
+static void finish_playback_force(void)
+{
+    ESP_LOGW(TAG, "强制收尾：s_playing=%d s_state=%d 帧=%u 字节=%u",
+             (int)s_playing, (int)s_state,
+             (unsigned)s_recv_frames, (unsigned)s_recv_bytes);
+
+    s_playing = false;
+    s_play_draining = false;
+
+    /* 关闭前静音淡出，避免在信号高峰处切断 */
+    if (s_spk) {
+        static int16_t fadeout[1024];
+        memset(fadeout, 0, sizeof(fadeout));
+        esp_codec_dev_write(s_spk, fadeout, (int)sizeof(fadeout));
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_codec_dev_close(s_spk);
+    }
+
+    char buf[JSON_BUF];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"playback_done\",\"protocol_version\":%d,"
+             "\"turn_id\":\"%s\",\"received_bytes\":%u,\"received_frames\":%u}",
+             PROTO_VERSION, s_turn_id,
+             (unsigned)s_recv_bytes, (unsigned)s_recv_frames);
+    send_text(buf);
+
+    ESP_LOGW(TAG, "强制收尾已发送 playback_done：%u 帧 / %u 字节",
+             (unsigned)s_recv_frames, (unsigned)s_recv_bytes);
     s_state = ST_IDLE; ui_sync();
 }
 
@@ -764,10 +902,19 @@ static void handle_text(const char *json)
             s_talk_stop_requested = false;
             s_state = ST_RECORDING; ui_sync();
             if (s_task) vTaskDelete(s_task);
-            /* 4096 字节栈不足以承载 esp_websocket_client_send_bin 的调用链，
-             * 实测会在 record_loop 返回时（retw.n）因栈窗口损坏触发
-             * IllegalInstruction。与同工程其他任务对齐，加大到 8192。 */
-            xTaskCreate(record_loop, "voice_rec", 4096, NULL, 5, &s_task);
+            /* 2026-11-23 修复：栈从 4096 改为 8192。
+             *
+             * 上面的注释一直写着"加大到 8192"，但实际参数仍是 4096 ——
+             * 注释与代码不一致，导致这个问题一直没真正修掉。
+             *
+             * 实测症状：**松开屏幕的瞬间**板子就断开 WebSocket 重连。
+             * 原因：松手触发 voice_talk_stop → record_loop 退出循环 →
+             * 执行收尾（esp_codec_dev_close + send_text）。这条调用链
+             * （含 esp_websocket_client_send_bin）在 4096 字节栈上会
+             * 溢出，破坏栈窗口，表现为任务崩溃 → 连接被底层关闭。
+             *
+             * 与工程内其他任务（WS 客户端、play_task）统一为 8192。 */
+            xTaskCreate(record_loop, "voice_rec", 8192, NULL, 5, &s_task);
         }
     } else if (strcmp(type, "asr_final") == 0) {
         if (json_get_str(json, "text", s_text_buf, sizeof(s_text_buf))) {
@@ -834,8 +981,34 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_connected = false;
         s_playing = false;
+        /* 2026-11-23 修复：断连时必须把播放/录音相关的挂起状态一并清干净。
+         *
+         * 实测缺陷：板子收了完整音频（126 帧 / 497744 字节），但
+         * BADGE_VOICE 卡在 state=PLAYING、BADGE_STATUS 显示 playing=false，
+         * 之后心跳也发不出去，服务端 36s 后按心跳超时断开。
+         *
+         * 根因：原来这里只清 s_playing 就切到 ST_CONNECTING，但：
+         *   1) s_play_draining / s_got_end_marker 仍是上一轮的值；
+         *   2) 我加的收尾兜底判断的是 s_state == ST_PLAYING，
+         *      而这里已把 s_state 改成 ST_CONNECTING —— 兜底永远不触发；
+         *   3) play_task 若还在等数据，会一直卡在循环里。
+         * 结果：状态机残留、播放任务残留，重连后行为错乱。
+         *
+         * 修法：断连时把这一轮的所有挂起标志复位，让重连从干净状态开始。 */
+        s_play_draining = false;
+        s_got_end_marker = false;
+        s_end_grace_ticks = 0;
+        s_talk_requested = false;
+        s_talk_stop_requested = false;
+        s_talk_pending_ticks = 0;
+        if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
+        s_play_head = s_play_tail = s_play_count = 0;
+        if (s_play_mutex) xSemaphoreGive(s_play_mutex);
+        if (s_spk) {
+            esp_codec_dev_close(s_spk);
+        }
         s_state = ST_CONNECTING; ui_sync();
-        ESP_LOGW(TAG, "连接断开");
+        ESP_LOGW(TAG, "连接断开，已复位播放/录音挂起状态");
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -934,7 +1107,39 @@ static void heartbeat_task(void *arg)
         if (!s_connected || !s_ws) continue;
         snprintf(buf, sizeof(buf),
                  "{\"type\":\"heartbeat\",\"protocol_version\":%d}", PROTO_VERSION);
-        send_text(buf);
+        /* 2026-11-23：记录发送结果。原来忽略返回值，心跳发不出去也毫无痕迹，
+         * 只能从服务端「心跳超时」反推，排查成本很高。 */
+        const esp_err_t hb_ret = send_text(buf);
+        if (hb_ret != ESP_OK) {
+            ESP_LOGW(TAG, "心跳发送失败 ret=%d connected=%d state=%d",
+                     (int)hb_ret, (int)s_connected, (int)s_state);
+        } else {
+            ESP_LOGD(TAG, "心跳已发送 state=%d play_count=%u",
+                     (int)s_state, (unsigned)s_play_count);
+        }
+
+        /* 2026-11-23 新增：录音请求在途超时保护。
+         *
+         * voice_talk_start 发出的 recording_start 依赖服务端回 session_start
+         * 才真正启动采集。若服务端没回（网络抖动、turn_busy 被拒等），
+         * s_talk_requested 会永久为 true，导致之后所有 TALK 都被新加的
+         * 「在途」保护挡住 —— 用户表现为「怎么按都没反应」。
+         *
+         * 这里给一个 5 秒上限：超时就把在途标志清掉并复位状态，
+         * 让用户可以直接重试，而不是必须重启板子。
+         * 5 秒远大于正常往返（实测 session_start 在 200ms 内到达）。 */
+        if (s_talk_requested && s_state == ST_RECORDING && !s_task) {
+            if (++s_talk_pending_ticks >= 5) {   /* 5 × 1s */
+                s_talk_pending_ticks = 0;
+                s_talk_requested = false;
+                s_talk_stop_requested = false;
+                s_state = ST_IDLE;
+                ui_sync();
+                ESP_LOGW(TAG, "录音请求 5s 未收到 session_start，已放弃并复位");
+            }
+        } else {
+            s_talk_pending_ticks = 0;
+        }
     }
 }
 
@@ -983,7 +1188,22 @@ esp_err_t voice_start(const char *host, int port)
         .reconnect_timeout_ms = 5000,
         .disable_auto_reconnect = false,
         .buffer_size = 16384,   /* 需容纳 4096B 帧 + 突发 */
-        .task_stack = 4096,
+        /* 2026-11-23 修复：4096 太小，改为 8192。
+         *
+         * 实测现象：WebSocket 连接每 15~29 秒主动断开一次，
+         * 导致录音被打断（chunks=0 → asr_empty）、音频帧传到一半丢失。
+         *
+         * 根因：esp_websocket_client 的任务栈原来只有 4096。
+         * 本文件 record_loop 的注释里已经踩过同一个坑：
+         *   "4096 字节栈不足以承载 esp_websocket_client_send_bin 的调用链，
+         *    实测会在 record_loop 返回时（retw.n）因栈窗口损坏触发
+         *    IllegalInstruction"
+         * 那次只加大了 record_loop 的栈，**没有同步加大 WS 客户端自己的
+         * task_stack** —— 收包/心跳/发送都在这个任务里跑，栈溢出会
+         * 直接表现为连接被底层关闭。
+         *
+         * 8192 与工程内其他任务（record_loop、heartbeat）对齐。 */
+        .task_stack = 8192,
     };
 
     s_ws = esp_websocket_client_init(&cfg);
@@ -1010,10 +1230,16 @@ esp_err_t voice_start(const char *host, int port)
         }
     }
 
-    /* 心跳任务：只创建一次，内部按连接状态自行判断是否发送 */
+    /* 心跳任务：只创建一次，内部按连接状态自行判断是否发送。
+     *
+     * 2026-11-23：优先级从 3 提到 5。
+     * 原因：play_task 优先级 6 且原来写数据后不让出 CPU，会把它饿死，
+     * 导致服务端 30s 收不到消息而断连。虽然 play_task 已改为写完
+     * vTaskDelay(1) 让出，但心跳是连接存活的关键路径，不应排在
+     * record_loop(5) 之后 —— 提到与 record_loop 同级，确保及时发出。 */
     static bool hb_started = false;
     if (!hb_started) {
-        if (xTaskCreate(heartbeat_task, "voice_hb", 3072, NULL, 3, NULL) == pdPASS) {
+        if (xTaskCreate(heartbeat_task, "voice_hb", 4096, NULL, 5, NULL) == pdPASS) {
             hb_started = true;
         }
     }
@@ -1033,8 +1259,11 @@ esp_err_t voice_start(const char *host, int port)
         s_play_mutex = xSemaphoreCreateMutex();
     }
     if (s_play_buf && !s_play_task) {
-        /* 播放任务同样涉及 codec 写入与重采样，4096 偏紧，加大到 8192。 */
-        if (xTaskCreate(play_task, "voice_play", 4096, NULL, 6, &s_play_task) != pdPASS) {
+        /* 播放任务同样涉及 codec 写入与重采样，4096 偏紧，加大到 8192。
+         * 2026-11-23：注释一直这么写，但参数实际仍是 4096 —— 一并改对。
+         * 播放任务里会调 esp_codec_dev_write（内部走 I2S 驱动栈），
+         * 栈不足会在播放中途破坏上下文，表现为播放卡住或连接断开。 */
+        if (xTaskCreate(play_task, "voice_play", 8192, NULL, 6, &s_play_task) != pdPASS) {
             ESP_LOGE(TAG, "播放任务创建失败");
             s_play_task = NULL;
         }
@@ -1082,6 +1311,25 @@ esp_err_t voice_talk_start(void)
     }
     if (s_state == ST_RECORDING || s_state == ST_PLAYING) {
         ESP_LOGW(TAG, "TALK 失败：正忙（state=%d）", (int)s_state);
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* 2026-11-23 修复：防录音请求风暴。
+     *
+     * 实测缺陷：服务端日志出现同一 session 内 16 秒 9 次「开始录音」
+     * （t1~t9），而「录音结束」只有 6 次、其中 4 次报 asr_empty。
+     *
+     * 成因：voice_talk_start 发出 recording_start 后立刻把 s_state 置为
+     * ST_RECORDING，看似有保护；但 voice_talk_stop 在「按住时长不足
+     * MIN_TALK_MS」时会**提前把 s_state 改回 ST_IDLE**（见下方最短时长
+     * 保护分支），而此时服务端可能还没回 session_start、record_loop 也
+     * 还没真正启动。用户手指抖动或连按就会：置 IDLE → 又能 start →
+     * 又发一次 recording_start，但前一次的 turn 已在服务端建好，
+     * 于是产生一串只发 session_start、没有音频的僵尸轮次。
+     *
+     * 修法：加一个「请求在途」标志，从发出 recording_start 起、
+     * 到收到 session_start（或超时/取消）为止，拒绝再次 start。 */
+    if (s_talk_requested) {
+        ESP_LOGW(TAG, "TALK 忽略：上一次录音请求仍在途（等待 session_start）");
         return ESP_ERR_INVALID_STATE;
     }
     if (mic_ensure() != ESP_OK) return ESP_FAIL;
@@ -1151,7 +1399,6 @@ esp_err_t voice_talk_stop(void)
 
     s_talk_stop_requested = true;
     s_talk_requested = false;
-
     char buf[JSON_BUF];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"recording_stop\",\"protocol_version\":%d}", PROTO_VERSION);
