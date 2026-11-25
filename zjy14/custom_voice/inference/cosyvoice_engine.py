@@ -59,6 +59,17 @@ logger = get_logger("engine.cosyvoice")
 #: CosyVoice3 原生采样率
 SAMPLE_RATE = 24000
 
+#: 上游单包 token 上限（2026-11-25 新增，对齐 zjy13 实测）。
+#:
+#: 上游 token_hop_len 从 25 按 ×2 增长到本值。包越大单次推理越久，
+#: 流式分块间隔越大，下游板子越容易播放饥饿。
+#: zjy13 实测（scripts/tts_server_wsl.py）：
+#:     max_hop=100（上游默认）：最大间隔 2.85s，饥饿 1.60s，RTF 0.80
+#:     max_hop=50            ：最大间隔 1.69s，饥饿 0.47s，RTF 0.94
+#:     max_hop=25            ：最大间隔 1.17s，但 RTF 1.13（合成跟不上播放）
+#: 取 50：间隔几乎减半，RTF 仍 <1。
+TOKEN_MAX_HOP_LEN = 50
+
 #: 参考文本必需的前缀分隔符。
 #: 缺失时上游会在卷积层报 "Kernel size can't be greater than actual input size"。
 PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
@@ -274,17 +285,35 @@ class CosyVoiceEngine:
             self._compile_applied = False
 
     def _reset_hop_len(self) -> None:
-        """重置上游 token_hop_len 污染。
+        """重置上游 token_hop_len 污染，并限制单包上限。
 
         上游 cosyvoice/cli/model.py 里该属性每出一包就翻倍
         （25 → 50 → 100）且合成结束后不重置，导致后续请求首包越来越慢。
+
+        2026-11-25 补上 ``token_max_hop_len`` 限制（对齐 zjy13 的实测结论）：
+          只重置 ``token_hop_len=25`` 是不够的 —— 它会在合成过程中
+          按 ×2 一路增长到 ``token_max_hop_len``（默认 100）。
+          包越大单次推理越久，分块间隔越大，下游板子就越容易饿死。
+          zjy13 实测（scripts/tts_server_wsl.py）：
+              max_hop=100（默认）：最大间隔 2.85s，饥饿 1.60s，RTF 0.80
+              max_hop=50        ：最大间隔 1.69s，饥饿 0.47s，RTF 0.94
+              max_hop=25        ：最大间隔 1.17s，但 RTF 升到 1.13（合成跟不上）
+          所以取 50：间隔几乎减半，RTF 仍 <1。
+
+          注意：本引擎**不做**这个限制时代，靠的是下游
+          ``encode_length_prefixed`` 按 48KB 切块 —— 但那只是避免超限，
+          切块再细也无法改善「上游一次推理太久」造成的间隔。
         """
         if not self._config.token_hop_len_reset or self._model is None:
             return
         model = getattr(self._model, "model", None)
-        if model is not None and hasattr(model, "token_hop_len"):
+        if model is None:
+            return
+        if hasattr(model, "token_hop_len"):
             model.token_hop_len = 25
             self._hop_resets += 1
+        if hasattr(model, "token_max_hop_len"):
+            model.token_max_hop_len = TOKEN_MAX_HOP_LEN
 
     def _setup_text_frontend(self) -> None:
         """按配置启用文本前端。"""

@@ -33,6 +33,32 @@ DEFAULT_PAGE_SIZE = 50
 #: 导出最大行数。防止一次导出拉爆内存（按每行约 1KB 估算，10 万行约 100MB）。
 EXPORT_MAX_ROWS = 100_000
 
+#: CSV 里会触发公式解释的前导字符（CWE-1236 CSV Injection）。
+#:
+#: 为什么必须处理（2026-11-25 新增）：合成记录的 ``text`` 字段
+#: 完全来自调用方（zjy13 传 LLM 回复），若文本以 ``=`` / ``+`` /
+#: ``-`` / ``@`` 开头，用 Excel 打开导出的 CSV 时会被当成**公式执行**。
+#: 典型攻击是 ``=cmd|'/c calc'!A1`` 这类 DDE 注入。
+#:
+#: ``\t`` 和 ``\r`` 也要处理：Excel 会先剥掉它们再判断公式。
+_CSV_DANGEROUS_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: Any) -> Any:
+    """给会被 Excel 当公式的单元格加一个前导单引号。
+
+    只处理字符串，非字符串（int/float/None）原样返回 —— 数字
+    以 ``-`` 开头是负数，加引号反而会破坏数据类型。
+
+    单引号是 Excel 的「强制文本」标记，在单元格里不显示，
+    所以正常文本的可读性不受影响。
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    if value.startswith(_CSV_DANGEROUS_PREFIXES):
+        return "'" + value
+    return value
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -665,10 +691,12 @@ class SynthesisHistoryRepository:
                 if emitted >= max_rows:
                     break
                 writer.writerow([
-                    r.id, r.request_id, r.voice_id, r.text, r.emotion, r.style,
-                    r.speed, r.instruction, r.sample_rate, r.duration_s,
-                    r.total_ms, r.first_audio_ms, r.rtf, r.peak_vram_mb,
-                    r.engine, r.error_code, r.created_at,
+                    _csv_safe(v) for v in (
+                        r.id, r.request_id, r.voice_id, r.text, r.emotion, r.style,
+                        r.speed, r.instruction, r.sample_rate, r.duration_s,
+                        r.total_ms, r.first_audio_ms, r.rtf, r.peak_vram_mb,
+                        r.engine, r.error_code, r.created_at,
+                    )
                 ])
                 emitted += 1
             yield buf.getvalue()

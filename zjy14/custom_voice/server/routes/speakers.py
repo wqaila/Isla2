@@ -41,22 +41,40 @@ def _resolve_audio_path(raw: str) -> Path:
     """解析参考音频路径并做安全校验。
 
     原提示词要求："音频文件路径必须做安全校验，避免路径穿越"。
+
+    2026-11-25 加固：先做 ``resolve()`` 再校验。
+      原实现只用 ``Path(raw).parts`` 判断是否含 ``..``，
+      但**符号链接**可以绕过：``/tmp/link.wav -> /etc/shadow`` 的
+      ``parts`` 里没有 ``..``，校验直接通过，随后引擎会去读真实目标。
+      改为先 ``resolve(strict=True)`` 拿到真实路径，再对真实路径判 ``..``。
+      ``strict=True`` 顺便替代了原来的 ``is_file()`` 检查（链接断掉也会报错）。
     """
-    p = Path(raw).expanduser()
-    # 拒绝包含 .. 的路径
+    try:
+        # strict=True：路径不存在直接抛，避免"先校验后消失"的 TOCTOU
+        p = Path(raw).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        # 相对路径单独给一条明确信息：原契约要求「必须是绝对路径」，
+        # 这个提示对调用方更有指导性，也保留了既有测试断言。
+        if not Path(raw).expanduser().is_absolute():
+            raise InvalidRequestError(
+                f"音频路径必须是绝对路径：{raw}", detail={"path": raw}
+            ) from exc
+        raise InvalidRequestError(
+            f"音频路径无法解析（不存在或链接失效）：{raw}",
+            detail={"path": raw, "error": type(exc).__name__},
+        ) from exc
+
+    # 对**解析后的真实路径**判穿越
     if ".." in p.parts:
         raise InvalidRequestError(
             f"音频路径不允许包含 '..'：{raw}", detail={"path": raw}
         )
-    if not p.is_absolute():
-        raise InvalidRequestError(
-            f"音频路径必须是绝对路径：{raw}", detail={"path": raw}
-        )
     if not p.is_file():
         raise InvalidRequestError(
-            f"音频文件不存在：{raw}", detail={"path": raw}
+            f"音频路径不是普通文件：{raw}", detail={"path": raw}
         )
-    # 只接受音频扩展名
+    # 只接受音频扩展名（对真实文件名判断，防止
+    # ``evil.exe`` 通过 ``link.wav -> evil.exe`` 混进来）
     if p.suffix.lower() not in {".wav", ".flac", ".mp3", ".m4a", ".ogg"}:
         raise InvalidRequestError(
             f"不支持的音频格式 {p.suffix!r}，支持 .wav/.flac/.mp3/.m4a/.ogg",

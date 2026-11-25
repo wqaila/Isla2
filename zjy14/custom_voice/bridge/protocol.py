@@ -43,8 +43,22 @@ MAX_AUDIO_CHUNK_BYTES = 48 * 1024
 #: zjy13 服务端的分帧大小。4096 字节 ≈ 128ms @ 24kHz 16bit
 DEFAULT_FRAME_BYTES = 4096
 
-#: 固件播放环形缓冲时长（毫秒）
-FIRMWARE_RING_MS = 200
+#: 固件「预缓冲」时长（毫秒）—— 板子开播前要先攒够这么多音频。
+#:
+#: 2026-11-25 修正：原值 200 且命名为 FIRMWARE_RING_MS，是**错的**。
+#: 实测板上固件（yuanma/.../voice_client.c）：
+#:     #define PREBUF_MS        120    <- 预缓冲（开播门槛）
+#:     #define PLAY_MAX_SECONDS 8      <- 环形缓冲容量
+#: 两者是不同概念：120ms 是「攒够就开播」，8s 是「缓冲最多存多少」。
+#: 原命名让人以为固件只有 200ms 缓冲，进而误判「多发就会溢出」。
+FIRMWARE_PREBUF_MS = 120
+
+#: 固件播放环形缓冲容量（毫秒）—— 板上实际为 8 秒。
+#:
+#: 这个值决定「服务端领先多少还能不丢帧」的上限：
+#: 超过它，固件 handle_binary 会丢弃新数据（voice_client.c 里
+#: 「播放缓冲已满，丢弃 %u 采样」）。所以 lead_sec 必须明显小于它。
+FIRMWARE_RING_MS = 8000
 
 #: 首块至少发送的音频时长（毫秒）。
 #: 依据 zjy13 ws/server.py 的 FIRST_BURST_MS：固件要攒够预缓冲才开播，
@@ -266,13 +280,20 @@ def iter_frames(
 class BackpressureState:
     """背压状态：跟踪「已发送」与「已播放」的时间差。
 
-    为什么需要（zjy13 ws/server.py:1180）：
+    为什么需要（zjy13 ws/server.py 的 lead_sec 节流）：
       热点链路带宽有限，若服务端把整段音频一次性灌下去，
       会推爆 transport 导致写超时断连。
       所以要按播放进度节流，保持领先量不超过 lead_sec。
+
+    ``lead_sec`` 取值（2026-11-25 从 0.8 改为 2.0，与 zjy13 对齐）：
+      zjy13 实测发现 0.8 太小 —— TTS 分块间隔最长约 1.7~2.9 秒，
+      只领先 0.8 秒发送，上游一停顿板子就饿死（实测饥饿 1.60s）。
+      改成 2.0 后饥饿降到 0.47s。
+      上限受固件缓冲约束：FIRMWARE_RING_MS=8000（8 秒），
+      2.0 秒远小于它，安全。
     """
 
-    lead_sec: float = 0.8
+    lead_sec: float = 2.0
     sent_bytes: int = 0
     first_burst_bytes: int = field(
         default_factory=lambda: BYTES_PER_SEC * FIRST_BURST_MS // 1000

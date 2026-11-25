@@ -235,6 +235,109 @@ class Scheduler:
         )
         return result
 
+    # ------------------------------------------------------------------
+    # 「占用槽位直到流结束」的变体（供流式响应使用）
+    #
+    # 为什么需要单独一组方法（2026-11-25）：
+    #   流式响应要「整个传输期间都占一个并发名额」，而 run() 是
+    #   「fn 返回后释放」。原实现由路由直接操作 self._sem：
+    #       acquired = sched._sem.acquire(timeout=queue_timeout_s)
+    #   这有三个问题：
+    #     1) **在 async 函数里同步阻塞**：threading.Semaphore.acquire
+    #        是阻塞调用，最长会把整个事件循环冻住 queue_timeout_s
+    #        （默认 60s），期间所有其他请求（含 /health、监控页、
+    #        正在传输的其他流）全部无响应。
+    #     2) **绕过队列上限检查**：run() 会先检查 queued >= max_queue
+    #        并抛 QueueFullError(429)，直连 _sem 完全跳过，
+    #        队列可以被无限堆积，显存与延迟都会失控。
+    #     3) **统计失真**：active / queued / total_rejected 都不更新，
+    #        /system/status 里这些数字与实际严重不符。
+    #
+    #   本组方法把 run() 的那套检查抽出来，供调用方「先 acquire、
+    #   传输结束再 release」。**acquire_slot 仍是阻塞调用**，
+    #   async 环境必须用 ``run_in_threadpool`` 包一层。
+    # ------------------------------------------------------------------
+
+    def acquire_slot(
+        self, request_id: str, *, timeout_s: float | None = None
+    ) -> None:
+        """获取一个并发槽位，由调用方在结束时调用 :meth:`release_slot`。
+
+        与 :meth:`run` 的区别：run 在 fn 返回后自动释放；
+        本方法把释放时机交给调用方，适配「流式响应跨多个 await」的场景。
+
+        **这是阻塞调用**。在 async 上下文里必须这样用：
+
+            await run_in_threadpool(sched.acquire_slot, req_id)
+
+        :raises QueueFullError: 队列已满
+        :raises RequestTimeoutError: 排队超时
+        :raises RequestCancelledError: 请求在排队期间被取消
+        """
+        limit = timeout_s if timeout_s is not None else self._queue_timeout_s
+
+        # 队列容量检查（与 run() 完全一致，不能因为是流式就跳过）
+        with self._lock:
+            if self._stats.queued >= self._max_queue:
+                self._stats.total_rejected += 1
+                raise QueueFullError(
+                    f"服务繁忙：队列已满（{self._max_queue} 个等待中），请稍后重试",
+                    detail={
+                        "queued": self._stats.queued,
+                        "max_queue": self._max_queue,
+                        "active": self._stats.active,
+                    },
+                )
+            self._stats.queued += 1
+
+        wait_start = time.perf_counter()
+        acquired = self._sem.acquire(timeout=limit)
+        wait_ms = (time.perf_counter() - wait_start) * 1000
+
+        with self._lock:
+            self._stats.queued -= 1
+            if not acquired:
+                self._stats.total_timeout += 1
+            else:
+                self._stats.active += 1
+                self._stats.recent_waits_ms.append(wait_ms)
+                if len(self._stats.recent_waits_ms) > 100:
+                    self._stats.recent_waits_ms.pop(0)
+
+        if not acquired:
+            raise RequestTimeoutError(
+                f"排队超时（{limit}s），服务可能过载，请稍后重试",
+                detail={"waited_ms": round(wait_ms)},
+            )
+
+        # 拿到槽位后再检查一次取消（与 run() 一致）
+        if self.is_cancelled(request_id):
+            with self._lock:
+                self._stats.active -= 1
+                self._stats.total_cancelled += 1
+            self._sem.release()
+            self._clear_cancelled(request_id)
+            raise RequestCancelledError("请求在排队期间被取消")
+
+    def release_slot(self, request_id: str, *, run_ms: float = 0.0) -> None:
+        """归还由 :meth:`acquire_slot` 取得的槽位。
+
+        必须与 acquire_slot 严格成对（用 try/finally 保证），
+        否则槽位泄漏会让后续请求永久等待。
+        """
+        with self._lock:
+            # 用 max(0, ...) 兜底：重复 release 不该把 active 变成负数
+            # （重复 release 本身会触发 BoundedSemaphore 的 ValueError，
+            # 这里只保护统计字段不被污染）
+            self._stats.active = max(0, self._stats.active - 1)
+            self._stats.total_served += 1
+            if run_ms > 0:
+                self._stats.recent_runs_ms.append(run_ms)
+                if len(self._stats.recent_runs_ms) > 100:
+                    self._stats.recent_runs_ms.pop(0)
+        self._sem.release()
+        self._clear_cancelled(request_id)
+
     def stats(self) -> dict[str, Any]:
         with self._lock:
             return self._stats.to_dict()

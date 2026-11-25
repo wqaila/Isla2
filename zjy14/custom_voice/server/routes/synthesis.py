@@ -15,7 +15,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from ...bridge.protocol import encode_length_prefixed, encode_stream_end
-from ...core.errors import QueueTimeoutError
 from ...core.logging import get_logger, get_request_id
 from ...schemas.synthesis import SynthesisRequest
 from ..deps import get_state
@@ -329,16 +328,46 @@ async def synthesize_stream(request: Request, payload: SynthesisRequest):
     if sched is not None:
         # 用「占用槽位直到流结束」的语义：整个流式传输期间都占一个并发名额。
         # 直接操作信号量而不走 run()，因为 run() 要求 fn 返回后才释放。
-        acquired = sched._sem.acquire(timeout=state.config.queue_timeout_s)  # noqa: SLF001
-        if not acquired:
+        #
+        # 2026-11-25 修复（P0，会冻结整个服务）：
+        #   原实现是
+        #       acquired = sched._sem.acquire(timeout=state.config.queue_timeout_s)
+        #   而 threading.BoundedSemaphore.acquire 是**阻塞调用**，
+        #   却写在 async def 里 —— 排队期间会把整个事件循环冻住，
+        #   最长 queue_timeout_s（默认 60 秒）。这 60 秒内：
+        #       - /health、/api/v1/system/status、监控页全部无响应
+        #       - 正在传输的其他流也停住（它们的 yield 也跑在同一个 loop 上）
+        #       - 客户端超时后重试，又叠加更多等待，形成雪崩
+        #
+        #   同时它还绕过了 Scheduler.run() 里那套检查：
+        #       - 队列上限（queued >= max_queue -> 429）
+        #       - 排队期间被取消（-> 499）
+        #       - active / queued / total_rejected 统计
+        #
+        #   改为调用 Scheduler.acquire_slot()，并用 run_in_threadpool
+        #   把阻塞等待挪到工作线程，事件循环保持可响应。
+        from starlette.concurrency import run_in_threadpool
+
+        from ...core.errors import ZJY14Error
+
+        try:
+            await run_in_threadpool(
+                sched.acquire_slot, req_id, timeout_s=state.config.queue_timeout_s
+            )
+        except ZJY14Error as exc:
+            # QueueFullError(429) / RequestTimeoutError(503) / RequestCancelledError(499)
+            # 都是 ZJY14Error，交给 app 的统一异常处理器映射状态码。
             logger.warning(
-                "流式请求排队超时",
-                extra={"extra_fields": {"request_id": req_id}},
+                "流式请求未获得执行槽位",
+                extra={
+                    "extra_fields": {
+                        "request_id": req_id,
+                        "code": getattr(exc, "code", "unknown"),
+                    }
+                },
             )
-            raise QueueTimeoutError(
-                f"推理队列已满（{state.config.max_queue_size}），"
-                f"等待 {state.config.queue_timeout_s}s 仍未获得执行槽位"
-            )
+            raise
+        acquired = True
 
     # 响应头与统计必须反映**真实**引擎与采样率，不能硬编码。
     # 硬编码曾导致：engine=stub 时仍报 "cosyvoice3"，把「流式无音频」
@@ -468,9 +497,17 @@ async def synthesize_stream(request: Request, payload: SynthesisRequest):
             _record_failure(request, payload, str(code))
             raise
         finally:
-            # 无论成功失败，都必须释放并发槽位，否则后续请求会永久卡死
+            # 无论成功失败，都必须释放并发槽位，否则后续请求会永久卡死。
+            #
+            # 2026-11-25：改用 Scheduler.release_slot()，与 acquire_slot 成对。
+            # 原实现直接 sched._sem.release()，不做统计也不清取消标记，
+            # 导致 /system/status 的 active 永远偏高、取消集合缓慢泄漏。
+            # 注意本 finally 跑在 Starlette 的线程池里（generate 是同步生成器），
+            # 所以这里用阻塞版的 release_slot 是安全的。
             if acquired and sched is not None:
-                sched._sem.release()  # noqa: SLF001
+                sched.release_slot(
+                    req_id, run_ms=(time.perf_counter() - started) * 1000
+                )
 
     return StreamingResponse(
         generate(),

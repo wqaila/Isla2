@@ -37,7 +37,7 @@ API 文档：<http://127.0.0.1:50001/docs>
 ### 测试
 
 ```bash
-# 单元测试（145 个）
+# 单元测试（517 个）
 wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/run_tests.sh
 
 # Phase 1 端到端验收（需服务已启动）
@@ -200,7 +200,7 @@ zjy14/
 │  ├─ schemas/     # 请求/响应模型
 │  └─ server/      # FastAPI 应用与路由
 ├─ configs/        # gpu.yaml
-├─ tests/          # 145 个测试
+├─ tests/          # 517 个测试
 ├─ scripts/        # 启动、测试、验收、迁移脚本
 ├─ docs/           # 方案、决策、阶段报告
 └─ probe/          # 可复现诊断脚本（环境探测、真机联调、情绪审计）
@@ -298,6 +298,7 @@ wsl -e bash /mnt/d/xiangmudaima/zjy14/probe/run_device_e2e.sh
 | [18_PHASE5_REPORT.md](docs/18_PHASE5_REPORT.md) | **Phase 5 报告（设备协议桥接）** |
 | [ACCEPTANCE_REPORT.md](docs/ACCEPTANCE_REPORT.md) | **验收报告（只填实测数据）** |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维说明** |
+| [32_HEALTH_CHECK_2026_11_25.md](docs/32_HEALTH_CHECK_2026_11_25.md) | **以 zjy13 为基准的全面体检**：7 个隐患（P0 事件循环冻结、CSV 注入、符号链接绕过、嵌套事务）+ 4 处契约漂移（`lead_sec`、`FIRMWARE_RING_MS`、`token_max_hop_len`） |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | **故障排查手册** |
 | [19_PHASE8_STREAM_UI.md](docs/19_PHASE8_STREAM_UI.md) | **前端流式播放 + 真机联调准备** |
 | [20_DAILY_SUMMARY_2026-11-16.md](docs/20_DAILY_SUMMARY_2026-11-16.md) | **当日总结（成果·不足·缺陷）** |
