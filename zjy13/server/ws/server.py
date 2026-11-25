@@ -67,7 +67,22 @@ from .states import DialogueStateMachine, IllegalTransitionError, State
 logger = logging.getLogger("ws.server")
 
 #: 心跳超时（秒）——超过则断开，V2 第十一节要求连接管理
-HEARTBEAT_TIMEOUT_S = 30.0
+#:
+#: 2026-11-25 从 30 提到 45。原因（实测日志已复现 4 次断连）：
+#:   板子固件的心跳间隔是 ``APP_VOICE_HEARTBEAT_MS = 20000``（20 秒），
+#:   而原超时是 30 秒 —— 余量只有 10 秒。
+#:   只要**丢一次心跳**（网络抖动 / 播放期 CPU 让出延迟 / 一次重传），
+#:   下一次心跳就到 40 秒之后，必然超过 30 秒被判失联并断连。
+#:   而断连会触发固件 ``WEBSOCKET_EVENT_DISCONNECTED`` 复位，
+#:   用户侧看到的就是「正在回应突然没了、也没有声音」。
+#:
+#: 取 45 秒的理由：能容忍**整整一次**心跳丢失（40s < 45s），
+#: 同时仍能在 45 秒内发现真正失联的板子（远小于原来靠
+#: ``PLAYBACK_MAX_GUESS_S`` 的 135 秒）。
+#:
+#: 注意：播放期间板子**没有任何上行流量**，连接存活完全靠这个心跳，
+#: 所以余量必须 ≥ 一个完整心跳周期。
+HEARTBEAT_TIMEOUT_S = 45.0
 
 #: 单轮处理总超时（秒）。
 #:
@@ -96,7 +111,30 @@ PLAYBACK_MIN_TIMEOUT_S = 20.0
 #: 流式播放时长度未知，看门狗先用这个估计值。
 #: 流式下真正的收尾靠板子收到结束标记帧后回报 playback_done；
 #: 这个超时只兜底「板子彻底失联」。取值要大一些，避免长回复被误杀。
+#:
+#: 注意（2026-11-25 修正）：这个值只用于**音频还没开始下发**的阶段
+#: （填充音会话 / 正文首块未到）。一旦音频发完，必须改用
+#: :meth:`DialogueServer._rearm_playback_timer_after_audio` 按真实时长重装，
+#: 否则看门狗恒为 ``max(120 + 15, 20) = 135`` 秒 —— 实测用户在
+#: 「卡在正在回应」时正是干等了这么久才恢复。
 PLAYBACK_MAX_GUESS_S = 120.0
+
+#: 录音看门狗（秒）：从 ``recording_start`` 起算，超时仍没收到
+#: ``recording_stop`` 就强制收尾。
+#:
+#: 为什么必须有（2026-11-25 新增，本项是「卡在正在回应」最致命的一环）：
+#:   ``TURN_TIMEOUT_S`` 的 ``asyncio.timeout`` 只包住 ``_process_turn``，
+#:   而那个任务要**收到 recording_stop 之后**才创建。所以
+#:   ``recording_stop`` 一旦丢失（固件把服务端 error 当无条件复位、
+#:   使 record_loop 秒退而不发 stop，是实测发生过的链路），
+#:   状态就**永久**停在 RECORDING：
+#:     - 后续所有 ``recording_start`` 全被判 ``turn_busy``（不可自愈）
+#:     - RECORDING 也不在可打断白名单 (FILLER, PLAYING) 里
+#:   用户侧表现就是「怎么按都没反应，屏幕还停在上一轮的状态」。
+#:
+#: 取值 90 秒：固件单轮录音上限 60 秒（``MAX_TURN_SECONDS``），
+#: 留 30 秒吸收上传与网络抖动。
+RECORDING_MAX_S = 90.0
 
 #: 延迟自适应：记录最近 N 轮的「松手→首块音频」耗时，
 #: 用于决定要不要播填充音。
@@ -159,6 +197,13 @@ class ClientSession:
     task: asyncio.Task | None = None
     #: 播放看门狗任务：PLAYING 状态下等不到 playback_done 时强制收尾
     playback_timer: asyncio.Task | None = None
+    #: 录音看门狗任务：发出 recording_start 后迟迟收不到 recording_stop 时强制收尾。
+    #:
+    #: 2026-11-25 新增。此前 RECORDING 是唯一**没有任何超时**的 BUSY 状态：
+    #: ``recording_stop`` 一丢，状态永久停在 RECORDING，之后所有
+    #: ``recording_start`` 都被判 turn_busy，且 RECORDING 不在可打断
+    #: 白名单里 —— 只能靠断连或人工 ``VOICE STOP`` 复位。
+    recording_timer: asyncio.Task | None = None
     #: 填充音发送任务（「嗯…」等语气词）。正文就绪或本轮失败时要取消它，
     #: 否则会在后台继续发音频帧，污染下一轮的播放。
     filler_task: asyncio.Task | None = None
@@ -200,6 +245,12 @@ class ClientSession:
     #: 本轮已发送的音频字节数与帧数（用于进度展示）
     sent_bytes: int = 0
     sent_frames: int = 0
+    #: 本轮是否已发过结束标记帧（负载长度为 0 的二进制帧）。
+    #:
+    #: 2026-11-25 新增。固件靠这个标记置 ``s_got_end_marker``，
+    #: 而 ``finish_playback_force()`` 的唯一触发条件就是它。
+    #: 用它做幂等，避免成功路径与异常路径各补发一次。
+    end_marker_sent: bool = False
     #: 最近 N 条错误（环形缓冲，最新的在后）
     recent_errors: list[dict[str, Any]] = field(default_factory=list)
     #: 本轮 ASR 识别出的文本（监控展示用）
@@ -241,6 +292,7 @@ class ClientSession:
         }
         self.sent_bytes = 0
         self.sent_frames = 0
+        self.end_marker_sent = False
         self.last_asr_text = ""
         self.last_reply_text = ""
         return self.turn_id
@@ -538,6 +590,36 @@ class DialogueServer:
         except Exception as exc:  # noqa: BLE001
             logger.debug("发送音频失败: %s", exc)
 
+    async def _send_end_marker(self, client: ClientSession) -> None:
+        """补发「负载长度为 0」的结束标记帧。
+
+        为什么必须补（2026-11-25 修复，这是「卡在正在回应且无声音」的关键一环）：
+
+        固件收到结束标记帧后才会置 ``s_got_end_marker``，而
+        ``finish_playback_force()`` 的**唯一**触发条件就是它
+        （``voice_client.c`` 里 ``if (s_got_end_marker && s_state == ST_PLAYING)``）。
+        常规 ``finish_playback()`` 首行是 ``if (!s_playing) return;``，
+        在卡死场景下会被直接挡掉。
+
+        而此前全文件**只有成功路径**发结束标记。一旦本轮走异常收尾
+        （TTS 失败 / 空闲超时 / 本轮超时 / 其它异常 / 播放看门狗 /
+        用户打断），板子就永远收不到结束标记 → 那条唯一无条件的
+        兜底自愈永久不可达 → 板子只能等 30~40 秒心跳超时断连才复位。
+
+        安全性：
+          - ``payload_len == 0`` 是协议合法下行帧，固件在**计数之前**
+            就 ``return``，不会污染 ``received_frames/bytes``；
+          - ``send_audio`` 内部对空 payload 不计入 ``sent_bytes/sent_frames``；
+          - 只在**确实发过音频**（``sent_frames > 0``）时补发，
+            避免给从没开过播放会话的轮次发无关帧。
+        """
+        if client.sent_frames <= 0:
+            return
+        if client.end_marker_sent:
+            return
+        client.end_marker_sent = True
+        await self.send_audio(client, b"", client.next_seq())
+
     # ------------------------------------------------------------------
     # 填充音（语气词）
     # ------------------------------------------------------------------
@@ -629,7 +711,15 @@ class DialogueServer:
         ``reason="body"`` 时进入 PLAYING 状态（正文播放，本轮即将结束）。
         """
         client.state.to(State.FILLER if reason == "filler" else State.PLAYING)
-        self._arm_playback_timer(client, my_turn, PLAYBACK_MAX_GUESS_S)
+        # 填充音会话的音频还没开始发（长度未知），用最小值兜底即可：
+        # 传 0.0 会落到 PLAYBACK_MIN_TIMEOUT_S（20s）。
+        #
+        # 2026-11-25 修复：此前传的是 PLAYBACK_MAX_GUESS_S=120，
+        # 使填充音会话也挂着 135 秒的看门狗 —— 一旦板子在填充音阶段
+        # 静默，用户要干等两分多钟。
+        self._arm_playback_timer(
+            client, my_turn, 0.0 if reason == "filler" else PLAYBACK_MAX_GUESS_S
+        )
         client.expect_audio_bytes = 0
         client.expect_audio_frames = 0
         await self.send_json(
@@ -853,6 +943,7 @@ class DialogueServer:
     async def _cleanup(self, client: ClientSession) -> None:
         """断开时释放资源（V2 第十二节第 8 条）。"""
         self._cancel_playback_timer(client)
+        self._cancel_recording_timer(client)
         if client.task and not client.task.done():
             client.task.cancel()
             try:
@@ -864,6 +955,49 @@ class DialogueServer:
         client.state.reset()
         self._clients.pop(client.session_id, None)
         logger.info("资源已释放 session=%s", client.session_id)
+
+    # ------------------------------------------------------------------
+    # 录音看门狗
+    # ------------------------------------------------------------------
+
+    def _cancel_recording_timer(self, client: ClientSession) -> None:
+        """取消未触发的录音看门狗。"""
+        timer = client.recording_timer
+        client.recording_timer = None
+        if timer is not None and not timer.done():
+            timer.cancel()
+
+    def _arm_recording_timer(self, client: ClientSession, my_turn: str) -> None:
+        """进入 RECORDING 时启动看门狗。
+
+        为什么必须有（2026-11-25）：RECORDING 是此前**唯一没有任何超时**的
+        BUSY 状态。``TURN_TIMEOUT_S`` 只包住 ``_process_turn``，而那个任务
+        要收到 ``recording_stop`` 才创建。所以 stop 一丢，状态永久停在
+        RECORDING，之后所有 ``recording_start`` 都被判 turn_busy，
+        且 RECORDING 不在可打断白名单 (FILLER, PLAYING) 里 —— 不可自愈。
+        """
+        self._cancel_recording_timer(client)
+        client.recording_timer = asyncio.create_task(
+            self._recording_watchdog(client, my_turn)
+        )
+
+    async def _recording_watchdog(
+        self, client: ClientSession, my_turn: str
+    ) -> None:
+        try:
+            await asyncio.sleep(RECORDING_MAX_S)
+        except asyncio.CancelledError:
+            return
+
+        # 同轮 + 同状态双条件：板子已正常 stop，或已进入新一轮时不得误杀。
+        if client.state.state != State.RECORDING or client.turn_id != my_turn:
+            return
+
+        logger.warning(
+            "录音看门狗触发 turn=%s %.0fs 内未收到 recording_stop，强制回到 IDLE",
+            my_turn, RECORDING_MAX_S,
+        )
+        await self._finish_turn(client, reason="recording_timeout")
 
     # ------------------------------------------------------------------
     # 播放看门狗
@@ -890,6 +1024,22 @@ class DialogueServer:
             self._playback_watchdog(client, my_turn, timeout_s)
         )
 
+    def _rearm_playback_timer_after_audio(
+        self, client: ClientSession, my_turn: str, duration_s: float
+    ) -> None:
+        """音频全部下发后，用**真实音频时长**重装看门狗。
+
+        为什么必须重装（2026-11-25 修复）：此前三处 ``_arm_playback_timer``
+        都传 ``PLAYBACK_MAX_GUESS_S=120``，于是超时恒为
+        ``max(120 + 15, 20) = 135`` 秒 —— ``PLAYBACK_GRACE_S`` 与
+        ``PLAYBACK_MIN_TIMEOUT_S`` 成了死常量。
+        实测用户在「卡在正在回应」时正是干等了 135 秒才恢复。
+
+        现在音频已发完，真实时长已知，看门狗收敛到
+        ``时长 + 15s``（下限 20s），既能容忍播放抖动，又不会让用户干等。
+        """
+        self._arm_playback_timer(client, my_turn, duration_s)
+
     async def _playback_watchdog(
         self, client: ClientSession, my_turn: str, timeout_s: float
     ) -> None:
@@ -909,6 +1059,9 @@ class DialogueServer:
         )
         client.expect_audio_bytes = 0
         client.expect_audio_frames = 0
+        # 先补发结束标记帧：板子靠它置 s_got_end_marker，
+        # 才能走 finish_playback_force() 的 3 秒兜底自愈。
+        await self._send_end_marker(client)
         await self._finish_turn(client, reason="playback_timeout")
 
 
@@ -1064,10 +1217,31 @@ class DialogueServer:
         try:
             client.state.to(State.RECORDING)
         except IllegalTransitionError as exc:
-            await self.send_error(client, ErrorCode.INTERNAL, str(exc))
-            return
+            # ERROR 状态自愈（2026-11-25）。
+            #
+            # 转换表里 ERROR 只能回 IDLE，所以本轮异常后若用户直接按下说话，
+            # ``to(RECORDING)`` 必抛。此前只回一条 error 就 return，
+            # 板子因此永远进不了录音 —— 只能等客户端发 cancel 或断连，
+            # 用户侧就是「怎么按都没反应」。
+            # 这里在 ERROR 时先复位再重试一次，给用户一条自愈路径。
+            if client.state.state == State.ERROR:
+                logger.info(
+                    "当前为 ERROR（%s），先复位再接受新录音 turn=%s",
+                    client.state.last_error, client.turn_id,
+                )
+                client.state.reset()
+                try:
+                    client.state.to(State.RECORDING)
+                except IllegalTransitionError as exc2:
+                    await self.send_error(client, ErrorCode.INTERNAL, str(exc2))
+                    return
+            else:
+                await self.send_error(client, ErrorCode.INTERNAL, str(exc))
+                return
 
         turn_id = client.new_turn()
+        # 录音看门狗：等不到 recording_stop 时强制收尾，避免永久卡在 RECORDING。
+        self._arm_recording_timer(client, turn_id)
         fmt = AudioFormat(
             sample_rate=int(msg.get("sample_rate", self.config.audio_in_sample_rate)),
             channels=int(msg.get("channels", self.config.audio_in_channels)),
@@ -1100,6 +1274,22 @@ class DialogueServer:
             )
             return
 
+        # 录音已正常结束：撤掉录音看门狗，避免它误杀本轮。
+        self._cancel_recording_timer(client)
+
+        # 重复 recording_stop 去重（2026-11-25）。
+        #
+        # 此前本函数**不改状态**（状态要等 _process_turn 里才变），
+        # 所以两条背靠背到达的 recording_stop 都能通过上面的状态检查，
+        # 第二条会把 client.task 覆盖掉 —— 第一条流水线从此泄漏，
+        # 结果是同一轮跑出两套 TTS、两次 playback_start、重复计费。
+        if client.task is not None and not client.task.done():
+            logger.warning(
+                "重复的 recording_stop turn=%s，忽略（已有流水线在跑）",
+                client.turn_id,
+            )
+            return
+
         audio = client.audio
         if audio is None or audio.chunks == 0:
             await self._finish_turn(client, reason="empty_audio")
@@ -1116,12 +1306,20 @@ class DialogueServer:
     async def _on_cancel(self, client: ClientSession, msg: dict[str, Any]) -> None:
         turn_id = str(msg.get("turn_id", client.turn_id))
         self._cancel_playback_timer(client)
+        self._cancel_recording_timer(client)
+        # 2026-11-25：cancel 也必须停填充音。
+        # 此前这里没有 _stop_filler，而后台填充音任务会继续发帧；
+        # 更糟的是 send_audio 在**发送时**读 client.turn_id，
+        # 残留填充音帧会被打上新一轮的 turn_short，
+        # 从而通过固件的轮次校验 —— 新一轮开头混入上一轮的语气词。
+        await self._stop_filler(client)
         if client.task and not client.task.done():
             client.task.cancel()
             try:
                 await client.task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        client.task = None
         client.state.reset()
         client.audio = None
         logger.info("轮次已取消 turn=%s", turn_id)
@@ -1139,9 +1337,27 @@ class DialogueServer:
         self, client: ClientSession, msg: dict[str, Any]
     ) -> None:
         if client.state.state != State.PLAYING:
-            await self.send_error(
-                client, ErrorCode.BAD_MESSAGE,
-                f"当前状态 {client.state.state.value} 不是播放中",
+            # 软忽略，不再回 error（2026-11-25 修复）。
+            #
+            # 为什么必须改成软忽略：实板固件把**任何** error 消息当无条件复位
+            # （voice_client.c 的 error 分支：finish_playback() + ST_IDLE），
+            # 而这条 error 在服务端没有任何消费方 —— 是纯副作用。
+            #
+            # 实测致命链路（已按固件逐行核对）：
+            #   1. 服务端在 FILLER 状态开了填充音会话；
+            #   2. 板子播完填充音后回报 playback_done，服务端此时已在
+            #      ASR/LLM/TTS_PROCESSING → 回 bad_message；
+            #   3. 板子收到 error → s_playing=false、s_state=ST_IDLE；
+            #   4. 正文首块到达走「填充音已开会话」分支，**不再发 playback_start**，
+            #      直接推 PCM；而板子只在 s_playing 为真时才入队 →
+            #      正文全丢，用户只听到「嗯…」然后彻底无声；
+            #   5. 服务端还要空等看门狗 135 秒。
+            #
+            # 迟到的 playback_done 本身是无害的（本轮可能已正常收尾，
+            # 或已被看门狗/打断收尾），记一条日志即可。
+            logger.info(
+                "忽略迟到的 playback_done turn=%s 当前状态=%s",
+                client.turn_id, client.state.state.value,
             )
             return
 
@@ -1187,6 +1403,9 @@ class DialogueServer:
         except asyncio.TimeoutError:
             logger.warning("轮次超时 turn=%s", my_turn)
             client.state.fail("处理超时")
+            # 补发结束标记帧：让板子能走「结束标记 + 3 秒」的无条件兜底，
+            # 否则它只能等心跳超时断连才复位（见 _send_end_marker 注释）。
+            await self._send_end_marker(client)
             await self.send_error(client, ErrorCode.INTERNAL, "本轮处理超时")
             await self._finish_turn(client, reason="timeout")
         except asyncio.CancelledError:
@@ -1195,6 +1414,7 @@ class DialogueServer:
         except Exception as exc:  # noqa: BLE001
             logger.exception("轮次异常 turn=%s", my_turn)
             client.state.fail(str(exc))
+            await self._send_end_marker(client)
             await self.send_error(client, ErrorCode.INTERNAL, f"内部错误: {exc}")
             await self._finish_turn(client, reason="error")
 
@@ -1447,6 +1667,14 @@ class DialogueServer:
                     first_pcm_ms = (time.perf_counter() - tts_started) * 1000
                     # 监控：TTS 首块耗时
                     client.timings["tts_first_ms"] = round(first_pcm_ms, 1)
+                    # 延迟自适应：记录「松手 → 首块音频」的真实耗时。
+                    #
+                    # 2026-11-25 修复：``_record_latency`` 此前**全仓库无调用点**
+                    # （只有测试调用），于是 ``_mean_latency()`` 恒为 None，
+                    # ``_should_play_filler()`` 恒返回 True —— 每轮必播填充音，
+                    # 与设计语义（首轮必播、之后很快时跳过）完全不符，
+                    # 还会无条件拉长「板子显示正在回应」的错位窗口。
+                    self._record_latency(time.perf_counter() - started)
 
                 # 第一块到手才发 playback_start：板子收到它才打开扬声器，
                 # 提前发会让板子在没数据时先开功放，增加底噪与耗电。
@@ -1532,10 +1760,12 @@ class DialogueServer:
                     seq += 1
                     sent_bytes += len(piece)
         except TTSUnavailableError as exc:
+            await self._send_end_marker(client)
             await self.send_error(client, ErrorCode.TTS_UNAVAILABLE, exc.message)
             await self._finish_turn(client, reason="tts_unavailable")
             return
         except TTSError as exc:
+            await self._send_end_marker(client)
             await self.send_error(client, ErrorCode.TTS_FAILED, exc.message)
             await self._finish_turn(client, reason="tts_failed")
             return
@@ -1546,10 +1776,14 @@ class DialogueServer:
             return
 
         # 结束标记帧：负载长度为 0，板子据此判定收尾
-        await self.send_audio(client, b"", seq)
+        await self._send_end_marker(client)
 
         total_ms = (time.perf_counter() - started) * 1000
         duration_s = sent_bytes / bytes_per_sec if bytes_per_sec else 0.0
+        # 音频已全部下发：用**真实时长**重装播放看门狗。
+        # 此前这里仍是 PLAYBACK_MAX_GUESS_S=120 的估计值，导致看门狗恒为
+        # 135 秒 —— 板子一旦卡死，用户要干等两分多钟才恢复。
+        self._rearm_playback_timer_after_audio(client, my_turn, duration_s)
         logger.info(
             "音频已下发 turn=%s 帧=%d 字节=%d 音频=%.2fs 首块=%.0fms 端到端=%.0fms"
             "（等待 playback_done）",
@@ -1587,13 +1821,18 @@ class DialogueServer:
         # 先停填充音：否则它会在后台继续发音频帧，
         # 与本轮的 turn_done / 下一轮的音频混在一起。
         await self._stop_filler(client)
-        # 收尾时撤掉看门狗。注意看门狗自己也会调用本函数，
+        # 收尾时撤掉两个看门狗。注意看门狗自己也会调用本函数，
         # 此时不能 cancel 当前任务（会给自己抛 CancelledError）。
         timer = client.playback_timer
         if timer is not None and timer is not asyncio.current_task():
             self._cancel_playback_timer(client)
         else:
             client.playback_timer = None
+        rec_timer = client.recording_timer
+        if rec_timer is not None and rec_timer is not asyncio.current_task():
+            self._cancel_recording_timer(client)
+        else:
+            client.recording_timer = None
         client.audio = None
         try:
             client.state.to(State.IDLE)

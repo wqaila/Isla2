@@ -209,10 +209,27 @@ cleanup:
 
     ESP_LOGI(TAG, "录音结束，共上传 %u 块", (unsigned)s_rt.send_seq);
 
-    if (app_state_get() == APP_STATE_RECORDING) {
-        app_state_try_enter(APP_STATE_ASR_PROCESSING);
+    /* 只有**真的传过音频**才推进状态（2026-11-25 修复）。
+     *
+     * 原实现无条件 `app_state_try_enter(ASR_PROCESSING)`。而上面的
+     * `session_start` 5 秒超时、`recording_start` 发送失败等路径都会
+     * 直接跳到 cleanup —— 此时一块音频都没传，服务端也没有本轮上下文，
+     * 状态却被推进到 ASR_PROCESSING，随后 LLM/TTS/PLAYING 全落空，
+     * `app_state_busy()` 恒真 → `start_recording` 永久返回「正忙，稍等」，
+     * 用户侧就是「按不动」。
+     *
+     * 改为：传过音频才推进；否则直接复位回 IDLE，让用户可以立刻重试。
+     */
+    if (s_rt.send_seq > 0) {
+        if (app_state_get() == APP_STATE_RECORDING) {
+            app_state_try_enter(APP_STATE_ASR_PROCESSING);
+        }
+        app_ui_set_hint("识别中...");
+    } else {
+        ESP_LOGW(TAG, "本轮未上传任何音频，直接复位回 IDLE");
+        app_state_reset();
+        app_ui_set_hint("按屏幕开始对话");
     }
-    app_ui_set_hint("识别中...");
 
     s_record_task = NULL;
     vTaskDelete(NULL);
@@ -512,6 +529,28 @@ static void handle_binary_message(const uint8_t *data, size_t len)
     }
     if (hdr.msg_type != APP_BIN_TYPE_AUDIO_DOWN) {
         return;   /* 上行帧不该被回传，忽略 */
+    }
+
+    /* 结束标记帧：负载长度为 0（2026-11-25 修复）。
+     *
+     * 流式模式下服务端 `playback_start` 的 frames=0，总长度未知，
+     * 靠一个空负载帧告知「后面没有了」。本固件原来**完全不识别**它：
+     *   - 它被当成普通音频帧计数（recv_frames++），
+     *   - 随后 `app_audio_play_write(pcm, 0, ...)` 因 len==0 返回
+     *     ESP_ERR_INVALID_ARG，
+     *   - 而收尾判定 `s_rt.expect_frames && ...` 在流式下恒为假（frames=0）。
+     * 结果：**每一轮流式播放都永远不收尾**，只能等服务端看门狗
+     * 135 秒强制复位，用户侧就是「卡在正在播放」。
+     *
+     * 必须放在轮次校验之前：s_rt.turn_short 只在 session_start 时赋值，
+     * 一旦 session_start 丢失/晚到，结束标记会被一起丢掉，
+     * 板子就彻底无法收尾。空帧不带 PCM，误接受风险极低。
+     */
+    if (hdr.payload_len == 0) {
+        ESP_LOGI(TAG, "收到结束标记帧：共 %u 帧 / %u 字节",
+                 (unsigned)s_rt.recv_frames, (unsigned)s_rt.recv_bytes);
+        finish_playback();
+        return;
     }
 
     /* 轮次校验：旧轮次的迟到帧必须丢弃。

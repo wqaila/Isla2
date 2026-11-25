@@ -184,6 +184,14 @@ static uint32_t s_idle_ticks;
 /* 收到结束标记后的收尾兜底计数（2026-11-23）。
  * 用于修复「音频已播完但状态机卡在 PLAYING、playback_done 不发」。 */
 static uint32_t s_end_grace_ticks;
+/* 连续写 codec 失败计数（2026-11-25）。
+ * esp_codec_dev_write 在 output_opened==false 时返回 WRONG_STATE、
+ * 在 I2S 写入超时（1000ms）时返回 DRV_ERR。原实现丢弃返回值，
+ * 于是「播放中但完全没声音」不留任何痕迹。 */
+static uint32_t s_write_err_count;
+/* 轮次不匹配日志次数上限（2026-11-25）。只在每轮前几次打印，
+ * 避免高频丢帧时刷屏，同时保留「session_start 丢失」的关键证据。 */
+static uint32_t s_turn_mismatch_logs;
 /* 录音请求在途计数（秒）。voice_talk_start 发出 recording_start 后，
  * 若迟迟收不到 session_start，用它兜底复位，避免「在途」标志永久卡死。
  * 2026-11-23 新增。 */
@@ -514,6 +522,8 @@ static void handle_playback_start(const char *json)
     s_prebuf_done = false;
     s_idle_ticks = 0;
     s_end_grace_ticks = 0;
+    s_write_err_count = 0;
+    s_turn_mismatch_logs = 0;
 
     /* 清空缓冲 */
     if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
@@ -556,7 +566,15 @@ static void handle_playback_start(const char *json)
         /* 先关一次，清掉可能残留的 output_opened，避免 open 早退跳过 set_fmt */
         esp_codec_dev_close(s_spk);
         if (esp_codec_dev_open(s_spk, &fs) != ESP_OK) {
-            ESP_LOGE(TAG, "扬声器打开失败");
+            /* 2026-11-25：打开失败必须显式告警并计一次写失败。
+             *
+             * 原来只打一行 E 日志就继续，随后 `s_state = ST_PLAYING` 照常执行，
+             * 于是板子进入「状态是播放、但 esp_codec_dev_write 一律返回
+             * WRONG_STATE」的静默状态 —— 屏幕显示正在回应，却完全没有声音。
+             * 这里把失败记入 s_write_err_count，让 play_task 的连续失败
+             * 兜底能立刻把它收尾复位，而不是干等 12 秒看门狗。 */
+            ESP_LOGE(TAG, "扬声器打开失败，本轮将无法出声，标记为写失败以触发收尾");
+            s_write_err_count = 45;
         }
         /* 兜底：直接对共享 I2S 数据接口再设一次格式。
          *
@@ -569,6 +587,31 @@ static void handle_playback_start(const char *json)
             const audio_codec_data_if_t *data_if = bsp_audio_get_codec_itf();
             if (data_if && data_if->set_fmt) {
                 data_if->set_fmt(data_if, ESP_CODEC_DEV_TYPE_OUT, &fs);
+                /* 2026-11-25 关键修复：set_fmt 之后必须补一次 enable。
+                 *
+                 * 实测串口时序（这就是「完全没声音」的真正根因）：
+                 *     i2s tx channel disabled      ← close()
+                 *     i2s tx channel enabled       ← open() 使能
+                 *     Open codec device OK
+                 *     i2s tx channel disabled      ← set_fmt 内部关掉，且不再使能
+                 * 之后每次写都报：
+                 *     E i2s_common: i2s_channel_write(1361): The channel is not enabled
+                 *     W voice: 写 codec 失败 ret=-1
+                 *
+                 * 原因在 esp_codec_dev 的 _i2s_data_set_fmt()：
+                 *     if (dev_type & ESP_CODEC_DEV_TYPE_OUT) {
+                 *         _i2s_drv_enable(i2s_data, true, false);   // 关 TX
+                 *     }
+                 * 它设计给「open 流程内部」用，open 之后会再 enable；
+                 * 但我们在 open **之后**又调了一次 set_fmt，于是把刚使能的
+                 * TX 关掉，而且没有任何地方再把它打开。
+                 *
+                 * 这行兜底是 2026-11-23 为修「声音变尖」加的，副作用就是
+                 * 「完全无声」—— 两个修复互相冲突。这里在 set_fmt 后显式
+                 * 重新使能 TX，让两个修复同时成立。 */
+                if (data_if->enable) {
+                    data_if->enable(data_if, ESP_CODEC_DEV_TYPE_OUT, true);
+                }
             }
         }
         esp_codec_dev_set_out_vol(s_spk, s_volume);
@@ -619,6 +662,61 @@ static void play_task(void *arg)
         if (s_play_mutex) xSemaphoreTake(s_play_mutex, portMAX_DELAY);
         avail = s_play_count;
 
+        /* ---- 收尾兜底必须先跑（2026-11-25 修复）----
+         *
+         * 为什么必须提到预缓冲门之前：
+         *   原实现下面这个预缓冲门在 `avail < prebuf_need` 时直接
+         *   `vTaskDelay(5); continue;`，而**全部**收尾兜底都写在
+         *   那个 continue 之后 —— 于是只要「收到了 playback_start、
+         *   但音频始终凑不够 120ms 预缓冲、且永远等不到结束标记」，
+         *   循环就永远在门口打转，两段看门狗一次都不会执行。
+         *
+         *   更糟的是后面「中途播空」那段会把 s_prebuf_done 复位成 false，
+         *   于是即使偶有数据进来，也会重新落回门口 —— s_idle_ticks 与
+         *   s_end_grace_ticks 每段最多 +1，永远到不了阈值。
+         *   也就是说这两段兜底在「彻底断流」场景下是**死代码**。
+         *
+         *   实测表现：板子 BADGE_VOICE 报 state=PLAYING、屏幕停在
+         *   「正在回应」、完全没有声音，且 voice_talk_start 因
+         *   `s_state == ST_PLAYING` 永久拒绝新的长按 —— 只能断电重启。
+         *
+         * 判据用 s_state（对外状态机）而不是 s_playing（播放任务标志）：
+         *   卡死场景下 s_playing 可能已被提前清成 false，而 s_state
+         *   仍是 ST_PLAYING。用 s_playing 判断会让兜底永不触发
+         *   （这正是 WORKLOG-2026-11-23 第六节记录过的同一个坑）。
+         *
+         * finish_playback_force() 是幂等的：s_playing 可重复赋 false，
+         * esp_codec_dev_close() 在未打开时直接返回 OK。
+         */
+        if (s_state == ST_PLAYING) {
+            if (s_got_end_marker) {
+                /* 已收到结束标记，但状态机仍停在 PLAYING：
+                 * 正常排空远小于 3 秒，超时即强制收尾。 */
+                if (s_end_grace_ticks++ >= 300) {   /* 300 * 10ms = 3s */
+                    s_end_grace_ticks = 0;
+                    s_idle_ticks = 0;
+                    if (s_play_mutex) xSemaphoreGive(s_play_mutex);
+                    ESP_LOGW(TAG, "结束标记已收到但 s_state 仍为 PLAYING，强制收尾"
+                                  "（s_playing=%d）", (int)s_playing);
+                    finish_playback_force();
+                    continue;
+                }
+            } else if (s_idle_ticks++ >= 1200) {    /* 1200 * 10ms = 12s */
+                /* 既没有新数据、也没收到结束标记 → 服务端中途断了。 */
+                s_idle_ticks = 0;
+                s_end_grace_ticks = 0;
+                if (s_play_mutex) xSemaphoreGive(s_play_mutex);
+                ESP_LOGW(TAG, "流式播放超时无数据且无结束标记，强制收尾"
+                              "（s_playing=%d avail=%u）",
+                         (int)s_playing, (unsigned)avail);
+                finish_playback_force();
+                continue;
+            }
+        } else {
+            s_end_grace_ticks = 0;
+            s_idle_ticks = 0;
+        }
+
         /* 开播前预缓冲：不够就先不取，让网络回调继续填。
          * 若已收到结束标记（极短音频）则直接放行，避免死等。 */
         if (!s_prebuf_done) {
@@ -641,9 +739,61 @@ static void play_task(void *arg)
         }
         if (s_play_mutex) xSemaphoreGive(s_play_mutex);
 
-        if (avail > 0 && s_spk) {
-            /* 采样率一致：原样写出，保留 24kHz 完整频响 */
-            esp_codec_dev_write(s_spk, out_buf, (int)(avail * 2));
+        /* 只在「确实处于播放态」时才写 codec。
+         *
+         * 2026-11-25：加 s_state == ST_PLAYING 条件。
+         * 否则强制收尾（把 s_state 复位成 ST_IDLE）之后，若缓冲里
+         * 还有残留数据，本任务仍会继续写 codec —— 而收尾时已经
+         * esp_codec_dev_close() 过，写必然失败，于是又触发
+         * 「写失败 → 计数 → 强制收尾」的死循环（实测串口被刷爆）。 */
+        if (avail > 0 && s_spk && s_state == ST_PLAYING) {
+            /* 采样率一致：原样写出，保留 24kHz 完整频响。
+             *
+             * 2026-11-25 修复：必须检查返回值。
+             *
+             * 原来这一行完全丢弃返回值，而失败是**确定会发生**的：
+             *   - esp_codec_dev.c 在 output_opened==false 时返回
+             *     ESP_CODEC_DEV_WRONG_STATE（扬声器没打开成功、或已被
+             *     别处 close 掉）；
+             *   - 底层 i2s_channel_write 的等待上限是 1000ms，
+             *     超时返回 ESP_CODEC_DEV_DRV_ERR。
+             * 两种情况都表现为「状态机在播放、缓冲在消耗、但完全没声音」，
+             * 且没有任何日志 —— 排查时只能靠猜。
+             *
+             * 这里补上告警与计数：连续失败 50 次（约 2 秒）就直接强制收尾，
+             * 把「静默无声」变成「3 秒内自动恢复」，不再等看门狗。 */
+            const int wr = esp_codec_dev_write(s_spk, out_buf, (int)(avail * 2));
+            if (wr != ESP_CODEC_DEV_OK) {
+                if (++s_write_err_count % 10 == 1) {
+                    ESP_LOGW(TAG, "写 codec 失败 ret=%d（已连续 %u 次，"
+                                  "state=%d avail=%u）—— 扬声器可能未正确打开",
+                             wr, (unsigned)s_write_err_count,
+                             (int)s_state, (unsigned)avail);
+                }
+                /* 2026-11-25 修复：写失败后必须把这一块**丢掉**再继续。
+                 *
+                 * 第一版实现漏了这一步，导致一个死循环：
+                 *   写失败 → 但 avail>0 分支末尾是 `continue`
+                 *   → 下一轮又从缓冲里取数据 → 又写失败 → 无限循环。
+                 * 而 s_write_err_count 在到 50 后被清零，
+                 * 于是「50 次失败 → 强制收尾 → 重新计数 → 再 50 次」
+                 * 无限重复，串口被刷爆（实测每秒数十行），
+                 * 播放状态也在 ST_IDLE / ST_PLAYING 之间反复横跳。
+                 *
+                 * 这里在达到阈值前先丢弃已取出的采样，避免同一块数据
+                 * 被反复重试；到达阈值则强制收尾，退出本轮。 */
+                if (s_write_err_count >= 50) {
+                    s_write_err_count = 0;
+                    ESP_LOGE(TAG, "写 codec 连续失败 50 次，判定播放链路已断，强制收尾");
+                    vTaskDelay(1);
+                    finish_playback_force();
+                    continue;
+                }
+                /* 未到阈值：让出 CPU 后继续下一块，不重试同一块数据 */
+                vTaskDelay(1);
+                continue;
+            }
+            s_write_err_count = 0;
 
             /* 2026-11-23 修复：写完必须让出 CPU，不能裸 continue。
              *
@@ -674,57 +824,31 @@ static void play_task(void *arg)
         }
 
         /* 中途播空（预缓冲已用过）：下一段音频要重新攒，
-         * 否则连续欠载时会反复「写一小段→播空」，听感更差。 */
+         * 否则连续欠载时会反复「写一小段→播空」，听感更差。
+         *
+         * 注意：两段收尾兜底已在本轮循环开头执行（见上方注释），
+         * 这里只负责复位预缓冲标志，不能再写任何 `continue` 之前
+         * 依赖它的兜底逻辑。 */
         s_prebuf_done = false;
 
-        /* 2026-11-23 修复：收到结束标记后的收尾兜底（基于 s_state，不看 s_playing）。
-         *
-         * 实测缺陷（两次复现）：板子 BADGE_VOICE 报 state=PLAYING、已收满 108 帧
-         * / 427396 字节（与服务端完全一致），但 BADGE_STATUS 显示 playing=false，
-         * 服务端等不到 playback_done，整轮永久卡在 playing。
-         *
-         * 关键：这里必须判断 s_state（语音状态机）而不是 s_playing（播放任务标志）。
-         *   - s_playing=false 表示「播放任务认为没在播」，它可能已被提前清掉；
-         *   - s_state=ST_PLAYING 表示「对外状态机仍认为在播」，正是卡住的表现。
-         * finish_playback() 首行是 `if (!s_playing) return;`，一旦 s_playing
-         * 提前为 false，它就直接返回 —— playback_done 不发、s_state 永不复位。
-         *
-         * 所以兜底条件是「s_state 仍是 PLAYING」且「已收到结束标记」，
-         * 满足就强制走一次不依赖 s_playing 的收尾。
-         * 取值 300 ticks = 3 秒：正常排空远小于此值。 */
-        if (s_got_end_marker && s_state == ST_PLAYING) {
-            if (s_end_grace_ticks++ >= 300) {   /* 300 * 10ms = 3s */
-                s_end_grace_ticks = 0;
-                ESP_LOGW(TAG, "结束标记已收到但 s_state 仍为 PLAYING，强制收尾"
-                              "（s_playing=%d）", (int)s_playing);
-                finish_playback_force();
-                continue;
-            }
-        } else {
-            s_end_grace_ticks = 0;
-        }
-
-        /* 流式兜底：如果长时间（12 秒）既没有新数据、也没收到结束标记，
-         * 说明服务端中途断了。主动收尾回到 IDLE，避免永久卡在 PLAYING
-         * 让后续 TALK 全部失败（该问题在 11-04 记录里出现过）。
-         * 定长模式下 s_expect_frames>0，一般不会走到这里。 */
-        if (s_playing && !s_got_end_marker) {
-            if (s_idle_ticks++ >= 1200) {   /* 1200 * 10ms = 12s */
-                s_idle_ticks = 0;
-                ESP_LOGW(TAG, "流式播放超时无数据且无结束标记，强制收尾");
-                finish_playback();
-                continue;
-            }
-        } else {
-            s_idle_ticks = 0;
-        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
 static void finish_playback(void)
 {
-    if (!s_playing) return;
+    /* 2026-11-25 修复：早退条件放宽。
+     *
+     * 原实现是 `if (!s_playing) return;`。在卡死场景下 s_playing 可能
+     * 已被提前清成 false（例如 handle_playback_start 之前的一轮残留、
+     * 或 play_task 的排空分支），此时本函数**什么都不做**：
+     * 不发 playback_done、不复位 s_state、不关功放 —— 状态机永久卡在
+     * ST_PLAYING，而 voice_talk_start 会因 ST_PLAYING 永久拒绝新的长按。
+     *
+     * 改为「既没在播、状态机也不认为在播」才早退，其余情况照常收尾。
+     * 对 turn_done / turn_cancelled / error 三个调用点行为不变
+     * （它们后面本来就紧跟 s_state = ST_IDLE）。 */
+    if (!s_playing && s_state != ST_PLAYING) return;
     s_playing = false;
 
     /* 关闭前先写 42ms 静音并稍作等待，让功放电流平滑回落。
@@ -815,22 +939,40 @@ static void handle_binary(const uint8_t *data, size_t len)
         return;
     }
 
-    /* 轮次校验：旧轮帧必须丢弃 */
-    const uint32_t tshort = (uint32_t)data[4] | ((uint32_t)data[5] << 8) |
-                            ((uint32_t)data[6] << 16) | ((uint32_t)data[7] << 24);
-    if (tshort != s_turn_short) {
-        return;
-    }
-
     /* 结束标记帧：负载长度为 0。
      * 流式模式下服务端不知道总帧数，用这个空帧告知「后面没有了」。
      * 必须放在计数之前，否则会被算成「多收了一帧」。
-     * 定长模式下服务端不会发这种帧，所以不影响旧路径。 */
+     * 定长模式下服务端不会发这种帧，所以不影响旧路径。
+     *
+     * 2026-11-25 修复：**必须放在轮次校验之前**。
+     *
+     * 原实现先做 `tshort != s_turn_short` 过滤、再判断 plen==0。
+     * 而 s_turn_short 只在收到 session_start 时才赋值 —— 一旦
+     * session_start 丢失或晚于音频帧到达，音频帧和结束标记会**一起**
+     * 被丢弃，于是：s_playing=true、s_state=ST_PLAYING、缓冲恒空、
+     * s_play_draining 恒 false，精确落入「卡在正在回应且无声音」。
+     *
+     * 结束标记不带 PCM，即使误接受最多让本轮提前收尾（本来就是卡死态），
+     * 风险远小于「永久卡死」。对音频帧的严格轮次过滤完全保留。 */
     if (plen == 0) {
         s_got_end_marker = true;
         s_play_draining = true;
         ESP_LOGI(TAG, "收到结束标记帧：共 %u 帧 / %u 字节",
                  (unsigned)s_recv_frames, (unsigned)s_recv_bytes);
+        return;
+    }
+
+    /* 轮次校验：旧轮帧必须丢弃 */
+    const uint32_t tshort = (uint32_t)data[4] | ((uint32_t)data[5] << 8) |
+                            ((uint32_t)data[6] << 16) | ((uint32_t)data[7] << 24);
+    if (tshort != s_turn_short) {
+        /* 前几次丢弃要留痕：这正是「音频到了但板子毫无反应」的关键证据。 */
+        if (s_turn_mismatch_logs < 3) {
+            s_turn_mismatch_logs++;
+            ESP_LOGW(TAG, "丢弃非本轮音频帧：帧 turn=%08X / 当前 turn=%08X"
+                          "（session_start 可能丢失或晚到）",
+                     (unsigned)tshort, (unsigned)s_turn_short);
+        }
         return;
     }
 

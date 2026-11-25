@@ -158,11 +158,33 @@ def test_ws_server_sends_frames_zero() -> None:
 
 
 def test_ws_server_sends_end_marker_frame() -> None:
-    """下发结束后必须发一个空负载帧作为结束标记。"""
+    """下发结束后必须发一个空负载帧作为结束标记。
+
+    2026-11-25：发送动作收敛到 ``_send_end_marker()`` 里，
+    以便异常路径也能补发（原来只有成功路径发，导致板子唯一的
+    无条件兜底 ``finish_playback_force()`` 在异常路径上永久不可达）。
+    这里改为语义断言：必须存在一个发送空负载帧的辅助函数，
+    且成功路径与各异常路径都要调用它。
+    """
     src = _read(SERVER_PY)
-    assert 'await self.send_audio(client, b"", seq)' in src, (
-        "缺少结束标记帧，板子无法判断音频结束"
+    # 1) 辅助函数存在，且确实发的是空负载
+    assert "async def _send_end_marker" in src, "缺少结束标记帧的发送辅助函数"
+    idx = src.index("async def _send_end_marker")
+    helper = src[idx:idx + 1600]
+    assert 'send_audio(client, b""' in helper, (
+        "结束标记辅助函数没有发送空负载帧"
     )
+    # 2) 成功路径要发
+    assert "await self._send_end_marker(client)" in src, (
+        "成功路径没有发结束标记帧，板子无法判断音频结束"
+    )
+    # 3) 异常路径也要补发（TTS 失败 / 本轮超时 / 其它异常 / 播放看门狗）
+    assert src.count("await self._send_end_marker(client)") >= 5, (
+        "异常收尾路径没有补发结束标记帧："
+        "板子唯一的无条件兜底 finish_playback_force() 将永久不可达"
+    )
+    # 4) 幂等：同一轮不能重复补发
+    assert "end_marker_sent" in helper, "结束标记帧没有幂等保护"
 
 
 # ----------------------------------------------------------------------
