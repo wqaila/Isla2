@@ -11,10 +11,10 @@
 ![Android](https://img.shields.io/badge/Android-Kotlin-3DDC84?logo=kotlin&logoColor=white)
 ![CUDA](https://img.shields.io/badge/CUDA-12.8-76B900?logo=nvidia&logoColor=white)
 ![Projects](https://img.shields.io/badge/子项目-12_个-blue)
-![Tests](https://img.shields.io/badge/单元测试-556_+_566-brightgreen)
-![Version](https://img.shields.io/badge/版本-4.12.2-e88bb5)
+![Tests](https://img.shields.io/badge/单元测试-567_+_577-brightgreen)
+![Version](https://img.shields.io/badge/版本-4.13.0-e88bb5)
 
-**当前里程碑**：[`v4.12.2`](../../releases) —— 全面体检：12 个缺陷，真机抓到「没声音」真因（2026-11-25）
+**当前里程碑**：[`v4.13.0`](../../releases) —— 语音链路一键启动控制台：网页拉起 ASR/LLM/TTS/网关（2026-11-26）
 
 </div>
 
@@ -372,7 +372,7 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 
 | 文档 | 内容 |
 |---|---|
-| [`版本迭代史.md`](docs/版本迭代史.md) | **项目历程与版本迭代史**：`1.0.0`（2026-07-01）→ `4.12.2`（2026-11-25），36 个版本，含版本号判定规则、全局总表、时间线与逐版本详情。**已补打 6 个里程碑 tag** |
+| [`版本迭代史.md`](docs/版本迭代史.md) | **项目历程与版本迭代史**：`1.0.0`（2026-07-01）→ `4.13.0`（2026-11-26），37 个版本，含版本号判定规则、全局总表、时间线与逐版本详情。**已补打 7 个里程碑 tag** |
 | [`30_DAILY_SUMMARY_2026-11-19.md`](docs/30_DAILY_SUMMARY_2026-11-19.md) | **最新**：真机联调闭环 + 4 个 P0 级静默失效修复 + 界面主题化；含诚实记录的失败与被推翻结论 |
 | [`代码审查报告.md`](docs/代码审查报告.md) | 静态审查 zjy2/5/6/7/8/9，正文 **106 项**（严重 2 / 高 32 / 中 52 / 低 20）。⚠️ 写于 2026-09-21，无修复状态跟踪 |
 | [`代码审查报告-zjy13-yuanma.md`](docs/代码审查报告-zjy13-yuanma.md) | zjy13 与 yuanma，**高 15 / 中 41 / 低 15 条编号**（11-05 初版 + 11-09 补充审计） |
@@ -482,6 +482,51 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 ---
 
 ## 🗓 最近更新
+
+### 2026-11-26 — 语音链路一键启动控制台（`v4.13.0`）
+
+**在 zjy14 里做了一个网页控制台：一个按钮拉起 ASR + LLM + TTS + 网关。**
+TTS 明确使用 **zjy14 自己的 CosyVoice3**（:50001），不是 zjy13 自带的
+`tts_server_wsl`（:50000）。
+
+**两条入口，同一个启动器：**
+
+| 入口 | 用途 |
+|---|---|
+| `http://127.0.0.1:50100/`（独立控制台） | **冷启动必用** —— TTS 没起来时 zjy14 自己的界面也打不开 |
+| `http://localhost:5173/services`（主界面新页） | 日常使用，对接同一启动器（Vite 代理 `/launcher/*`） |
+
+启动方式：
+
+```powershell
+cd D:\xiangmudaima\zjy14
+.\scripts\start_launcher.ps1 -OpenBrowser
+```
+
+**TTS 归属怎么钉死的**：启动网关时显式注入
+`TTS_BASE_URL=http://127.0.0.1:50001`。能生效是因为 zjy13 用
+`load_dotenv(override=False)` —— 进程环境变量优先于 `.env`。
+
+> **实测证据**：一轮对话后 zjy14 的 `/api/v1/history` 出现
+> `engine=cosyvoice3 voice=elysia dur=18.44s`，与该轮 19.13s 音频吻合。
+
+**ASR 独立化（新增能力）**：新增 `zjy13/server/asr_service.py`
+（标准库 HTTP，:50002）。网关用 `--asr-url` 转过去后**不再本地加载 FunASR**，
+同一份模型不在显存里驻留两次，ASR 也能独立重启/单测。
+
+**编排规则**：按依赖串行（tts → asr → llm 探测 → gateway）；
+失败不连坐（tts 挂了只让 gateway 变 blocked，LLM 探测照常跑）；
+启动后 6 秒内秒退则立刻回日志尾巴，不让用户干等 180 秒。
+
+**已知环境限制**（文档已如实记录）：受限环境里的非交互 Python 进程调
+`wsl.exe` 会返回 `Wsl/E_ACCESSDENIED`，控制台会给出可执行的替代命令；
+用户在自己的 PowerShell 里运行不受此限。停止 WSL 服务需
+`scripts/stop_tts.ps1`。
+
+**测试**：zjy14 **547 passed**（+30）、zjy13 **577 passed**（+11）；
+网页 `tsc --noEmit` + `vite build` 通过。
+
+> 详见 [`zjy14/docs/33_LAUNCHER.md`](zjy14/docs/33_LAUNCHER.md)。
 
 ### 2026-11-25 — 全面体检：12 个缺陷，真机抓到「没声音」真因（`v4.12.2`）
 
