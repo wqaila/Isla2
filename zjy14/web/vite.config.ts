@@ -8,6 +8,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
   const backend = env.ZJY14_BACKEND || "http://127.0.0.1:50001";
+  // 启动器是独立进程（:50100，只用标准库），专门负责「把服务拉起来」。
+  const launcher = env.ZJY14_LAUNCHER || "http://127.0.0.1:50100";
 
   return {
     plugins: [react()],
@@ -18,6 +20,14 @@ export default defineConfig(({ mode }) => {
         "/api": { target: backend, changeOrigin: true },
         "/health": { target: backend, changeOrigin: true },
         "/synthesize": { target: backend, changeOrigin: true },
+        // 启动器路径必须**放在最前**，否则会被上面的 /api 吃掉。
+        // 注意 rewrite：页面里的路径是 /launcher/api/xxx，
+        // 启动器自身的路由是 /api/xxx。
+        "/launcher": {
+          target: launcher,
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/launcher/, ""),
+        },
       },
     },
     build: {

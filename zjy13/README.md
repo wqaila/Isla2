@@ -254,7 +254,7 @@ curl http://127.0.0.1:50000/health
 .\.venv-asr\Scripts\python.exe -m pytest tests -q
 ```
 
-实测：**`.venv` 556 passed**，**`.venv-asr` 566 passed**（ASR 用例在 asr 环境不会跳过）。
+实测：**`.venv` 567 passed**，**`.venv-asr` 577 passed**（ASR 用例在 asr 环境不会跳过）。
 
 > `conftest.py` 会在缺少 torch 时自动跳过 ASR 引擎测试，
 > 因此两个环境都能用一条命令跑完，不会在收集阶段中断。

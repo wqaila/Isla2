@@ -66,6 +66,13 @@ from .states import DialogueStateMachine, IllegalTransitionError, State
 
 logger = logging.getLogger("ws.server")
 
+#: 远端 ASR 服务（`server/asr_service.py`）的单次识别超时（秒）。
+#:
+#: 2026-11-26 新增。配置 ``ASR_SERVICE_URL`` 后本进程不再加载 FunASR，
+#: 识别请求转给独立服务。超时取值参考实测：16k 单声道 3 秒音频
+#: 识别约 80ms，长句（30 秒）约 1 秒，留足余量到 30 秒。
+ASR_REMOTE_TIMEOUT_S = 30.0
+
 #: 心跳超时（秒）——超过则断开，V2 第十一节要求连接管理
 #:
 #: 2026-11-25 从 30 提到 45。原因（实测日志已复现 4 次断连）：
@@ -320,6 +327,7 @@ class DialogueServer:
         tts_client: TTSClient,
         card: CharacterCard,
         asr_engine: Any = None,
+        asr_service_url: str | None = None,
         voice_id: str | None = None,
     ) -> None:
         self.config = config
@@ -327,6 +335,9 @@ class DialogueServer:
         self.tts = tts_client
         self.card = card
         self.asr = asr_engine
+        #: 远端 ASR 服务地址（空表示用本地引擎）。
+        #: 2026-11-26 新增，见 ``_transcribe_bytes`` 与 ``--asr-url``。
+        self.asr_url = (asr_service_url or "").strip()
         # 音色必须跟着角色卡走，否则开发板听到的声音和终端演示不一致。
         # 优先取角色卡绑定的 tts_voice_id，其次回退到 TTSConfig 的默认音色。
         tts_settings = card.tts_settings() or {}
@@ -1482,7 +1493,8 @@ class DialogueServer:
 
         duration = mono.size / 16000
         text = ""
-        if self.asr is None:
+        # 远端 ASR（ASR_SERVICE_URL）也算「已配置」，不能只看本地引擎。
+        if self.asr is None and not self.asr_url:
             logger.warning("ASR 引擎未配置，跳过识别")
         else:
             try:
@@ -1795,7 +1807,19 @@ class DialogueServer:
     # ------------------------------------------------------------------
 
     def _transcribe_bytes(self, wav: bytes) -> str:
-        """在 ASR 引擎上识别一段 WAV 字节。"""
+        """识别一段 WAV 字节。
+
+        两条路径（2026-11-26 新增远端分支）：
+
+        1. **远端 ASR 服务**（配置了 ``ASR_SERVICE_URL`` 时）
+           把 WAV POST 给独立的 ASR 服务（``server/asr_service.py``）。
+           好处：模型只加载一份（本进程不加载 FunASR，显存不翻倍）、
+           ASR 可以独立重启而不影响板子连接、也可独立验证识别效果。
+        2. **本地引擎**（默认，行为与之前完全一致）
+        """
+        if self.asr_url:
+            return self._transcribe_remote(wav)
+
         import tempfile
         from pathlib import Path
 
@@ -1810,6 +1834,52 @@ class DialogueServer:
                 tmp.parent.rmdir()
             except OSError:
                 pass
+
+    def _transcribe_remote(self, wav: bytes) -> str:
+        """把 WAV 交给远端 ASR 服务识别。
+
+        用标准库 urllib（同步），由调用方 ``asyncio.to_thread`` 包住，
+        不阻塞事件循环。
+
+        :raises RuntimeError: 服务不可达 / 返回非 200 / 响应缺 text
+        """
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        url = self.asr_url.rstrip("/") + "/transcribe"
+        req = urllib.request.Request(
+            url,
+            data=wav,
+            headers={
+                "Content-Type": "audio/wav",
+                "Content-Length": str(len(wav)),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=ASR_REMOTE_TIMEOUT_S) as resp:
+                payload = _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"远端 ASR 返回 {exc.code}: {body or exc.reason}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"远端 ASR 服务不可达（{self.asr_url}）: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if not payload.get("ok", False):
+            raise RuntimeError(
+                f"远端 ASR 失败: {payload.get('error') or payload}"
+            )
+        return str(payload.get("text") or "")
 
     async def _finish_turn(self, client: ClientSession, *, reason: str) -> None:
         """结束一轮，回到 IDLE（V2 第十二节第 9 条）。"""
@@ -2024,7 +2094,12 @@ async def main_async(args: argparse.Namespace) -> int:
     )
 
     asr_engine = None
-    if not args.no_asr:
+    # 远端 ASR 服务（2026-11-26）：配置后不再本地加载 FunASR，
+    # 避免同一份模型在显存里驻留两次，也让 ASR 可独立重启。
+    asr_url = (args.asr_url or os.environ.get("ASR_SERVICE_URL", "")).strip()
+    if asr_url:
+        logger.info("ASR 使用远端服务: %s（本进程不加载模型）", asr_url)
+    elif not args.no_asr:
         try:
             from asr.engine import ASREngine
 
@@ -2047,7 +2122,12 @@ async def main_async(args: argparse.Namespace) -> int:
         logger.info("TTS 就绪: device=%s", info.get("device"))
 
         server = DialogueServer(
-            cfg, llm_client=llm, tts_client=tts, card=card, asr_engine=asr_engine
+            cfg,
+            llm_client=llm,
+            tts_client=tts,
+            card=card,
+            asr_engine=asr_engine,
+            asr_service_url=asr_url,
         )
         await server.serve()
     return 0
@@ -2072,6 +2152,15 @@ def main() -> int:
                     help="角色卡路径（默认按 .env 的 DEFAULT_CHARACTER_ID 选择）")
     ap.add_argument("--env", default=str(root / ".env"))
     ap.add_argument("--no-asr", action="store_true", help="不加载 ASR（仅测协议）")
+    ap.add_argument(
+        "--asr-url",
+        default="",
+        help=(
+            "远端 ASR 服务地址（如 http://127.0.0.1:50002）。"
+            "配置后本进程不加载 FunASR，识别交由 server/asr_service.py。"
+            "留空则读环境变量 ASR_SERVICE_URL。"
+        ),
+    )
     args = ap.parse_args()
     return asyncio.run(main_async(args))
 

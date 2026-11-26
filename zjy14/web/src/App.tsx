@@ -8,11 +8,13 @@ import EmotionPage from "./pages/EmotionPage";
 import HistoryPage from "./pages/HistoryPage";
 import LogsPage from "./pages/LogsPage";
 import SpeakersPage from "./pages/SpeakersPage";
+import ServicesPage from "./pages/ServicesPage";
 import SynthesisPage from "./pages/SynthesisPage";
 import SystemPage from "./pages/SystemPage";
 
 const NAV = [
   { to: "/dashboard", label: "仪表盘" },
+  { to: "/services", label: "语音链路启动" },
   { to: "/characters", label: "角色管理" },
   { to: "/speakers", label: "声音管理" },
   { to: "/emotion", label: "情绪管理" },
@@ -55,6 +57,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/services" element={<ServicesPage />} />
           <Route path="/characters" element={<CharactersPage />} />
           <Route path="/speakers" element={<SpeakersPage />} />
           <Route path="/emotion" element={<EmotionPage />} />
