@@ -258,7 +258,11 @@ class _Handler(BaseHTTPRequestHandler):
 
         errors: list[str] = []
         for label, handler in routes:
-            opener = urllib.request.build_opener(handler) if handler else urllib.request.build_opener()
+            opener = (
+                urllib.request.build_opener(handler)
+                if handler
+                else urllib.request.build_opener()
+            )
             req = urllib.request.Request(
                 url, headers={"Authorization": f"Bearer {api_key}"}, method="GET"
             )

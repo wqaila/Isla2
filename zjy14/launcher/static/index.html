@@ -36,7 +36,7 @@
   .pill.ok { color: var(--ok); border-color: #2a5c47; background: #12251d; }
   .pill.bad { color: var(--err); border-color: #5c2a2a; background: #251212; }
   main { padding: 22px 28px 60px; max-width: 1180px; }
-  .bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
   button {
     font: inherit; cursor: pointer; border-radius: 8px;
     border: 1px solid var(--line); background: var(--panel-2);
@@ -55,7 +55,6 @@
     border-radius: 12px; padding: 16px 18px;
   }
   .card.ready { border-color: #2a5c47; }
-  .card.dead { border-color: #45302a; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .row.top { justify-content: space-between; }
   .name { font-weight: 600; font-size: 15px; }
@@ -88,15 +87,37 @@
   }
   .notice b { color: var(--warn); }
   .toast {
-    position: fixed; right: 24px; bottom: 24px; max-width: 420px;
+    position: fixed; right: 24px; bottom: 24px; max-width: 480px;
     background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 10px; padding: 12px 16px; font-size: 13px;
     box-shadow: 0 8px 28px #0008; opacity: 0; transform: translateY(10px);
     transition: .22s; pointer-events: none;
+    white-space: pre-wrap; line-height: 1.55;
   }
   .toast.show { opacity: 1; transform: none; }
   .toast.ok { border-color: #2a5c47; }
   .toast.err { border-color: #5c2a2a; }
+  /* 启动进度条：避免「点了没反应」的错觉 */
+  #progress {
+    display: none; margin-bottom: 14px; padding: 12px 16px;
+    border: 1px solid #4b6d9b; border-radius: 10px; background: #141b26;
+  }
+  #progress.show { display: block; }
+  #progress .head { display: flex; justify-content: space-between; font-size: 13px; }
+  #progress .track {
+    height: 6px; background: #0b0e13; border-radius: 3px; margin-top: 8px; overflow: hidden;
+  }
+  #progress .fill {
+    height: 100%; width: 0%; background: linear-gradient(90deg, #7d5a8f, #3ddc97);
+    transition: width .4s;
+  }
+  #progress .steps { margin-top: 8px; font-size: 12px; color: var(--dim); }
+  #fatal {
+    display: none; margin-bottom: 16px; padding: 12px 16px;
+    border: 1px solid #5c2a2a; background: #251212; border-radius: 8px;
+    color: #ffb3b3; font-size: 13px;
+  }
+  #fatal.show { display: block; }
 </style>
 </head>
 <body>
@@ -107,6 +128,9 @@
 </header>
 
 <main>
+  <!-- 脚本若未能加载/解析，这里会亮出来（避免「按钮点了没反应」） -->
+  <div id="fatal"></div>
+
   <div class="notice">
     <b>关于 TTS：</b>本控制台启动的是 <span class="mono">zjy14</span> 自己的 TTS
     （WSL 里 <span class="mono">cosyvoice-venv</span> 的 CosyVoice3），
@@ -122,169 +146,376 @@
     <span class="pill" id="engine-pill">TTS 引擎：cosyvoice3</span>
   </div>
 
+  <div id="progress">
+    <div class="head"><span id="progress-title">正在启动…</span><span id="progress-time" class="mono"></span></div>
+    <div class="track"><div class="fill" id="progress-fill"></div></div>
+    <div class="steps" id="progress-steps"></div>
+  </div>
+
   <div class="grid" id="cards"></div>
 </main>
 
 <div class="toast" id="toast"></div>
 
+<!-- 引导脚本：先装错误处理，并检测主脚本是否真的跑起来了。
+     为什么拆两段：如果主脚本有**语法错误**，它根本不会执行，
+     window.onerror 也来不及注册 —— 用户只会看到「按钮点了没反应」。
+     这段保证无论主脚本成败，页面都能给出可见诊断。 -->
 <script>
-const API = "";  // 同源：页面由启动器自己提供
-let busy = false;
-let specs = [];
+(function () {
+  window.__consoleReady = false;
 
-const $ = (id) => document.getElementById(id);
-
-function toast(msg, kind) {
-  const el = $("toast");
-  el.textContent = msg;
-  el.className = "toast show " + (kind || "");
-  clearTimeout(el._t);
-  el._t = setTimeout(() => { el.className = "toast " + (kind || ""); }, 4200);
-}
-
-function dotClass(s) {
-  if (s.healthy) return "ok";
-  if (s.running) return "warn";
-  return "idle";
-}
-
-function stateText(s) {
-  if (s.healthy) return "健康";
-  if (s.running) return "运行中（未就绪）";
-  if (s.kind === "probe") return "未配置";
-  return "未运行";
-}
-
-function esc(t) {
-  return String(t == null ? "" : t)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function render(services) {
-  const box = $("cards");
-  box.innerHTML = services.map((s) => {
-    const meta = [];
-    if (s.port) meta.push(`<span>端口 <span class="mono">${s.port}</span></span>`);
-    meta.push(`<span>类型 <span class="mono">${s.kind}</span></span>`);
-    if (s.pid) meta.push(`<span>PID <span class="mono">${s.pid}</span></span>`);
-    if (s.depends_on && s.depends_on.length)
-      meta.push(`<span>依赖 <span class="mono">${s.depends_on.join(", ")}</span></span>`);
-
-    const cls = s.healthy ? "ready" : (s.kind === "probe" && !s.healthy ? "dead" : "");
-
-    return `
-      <div class="card ${cls}" data-name="${s.name}">
-        <div class="row top">
-          <div class="row">
-            <span class="dot ${dotClass(s)}"></span>
-            <span class="name">${esc(s.label)}</span>
-            <span class="kind">${esc(s.kind)}</span>
-            <span class="pill ${s.healthy ? "ok" : "bad"}">${esc(stateText(s))}</span>
-          </div>
-          <div class="actions">
-            <button data-act="start" data-name="${s.name}" ${s.healthy ? "disabled" : ""}>启动</button>
-            <button data-act="stop" data-name="${s.name}" ${s.running ? "" : "disabled"}>停止</button>
-            ${s.kind === "probe" ? `<button data-act="test" data-name="${s.name}">测试连通性</button>` : ""}
-            <button data-act="log" data-name="${s.name}">日志</button>
-          </div>
-        </div>
-        <div class="desc">${esc(s.detail || s.description || "")}</div>
-        <div class="meta">${meta.join("")}</div>
-        <details><summary>查看日志（最近 80 行）</summary><pre class="log" id="log-${s.name}">点击「日志」按钮加载</pre></details>
-      </div>`;
-  }).join("");
-}
-
-async function getJSON(url, opts) {
-  const r = await fetch(API + url, opts);
-  let body = {};
-  try { body = await r.json(); } catch (e) { body = { ok: false, error: `HTTP ${r.status}` }; }
-  return body;
-}
-
-async function refresh() {
-  const d = await getJSON("/api/status");
-  if (!d.ok) { toast(d.error || "读取状态失败", "err"); return; }
-  render(d.services);
-  const el = $("overall");
-  el.textContent = d.ready ? "全链路就绪 ✓" : "未就绪";
-  el.className = "pill " + (d.ready ? "ok" : "bad");
-}
-
-async function loadSpecs() {
-  const d = await getJSON("/api/specs");
-  if (d.ok) {
-    specs = d.services;
-    $("engine-pill").textContent = "TTS 引擎：" + d.engine;
+  function fatal(msg) {
+    var el = document.getElementById("fatal");
+    if (!el) return;
+    el.className = "show";
+    el.textContent = msg;
   }
-}
+  window.__consoleFatal = fatal;
 
-async function withBusy(fn) {
-  if (busy) { toast("上一个操作还在进行，请稍候"); return; }
-  busy = true;
-  document.querySelectorAll("button").forEach((b) => (b.disabled = true));
-  try { await fn(); } finally {
-    busy = false;
-    document.querySelectorAll("button").forEach((b) => (b.disabled = false));
-    await refresh();
+  window.addEventListener("error", function (e) {
+    var where = e && e.message ? e.message : "未知脚本错误";
+    fatal("页面脚本出错：" + where + "（详见浏览器控制台）");
+  });
+
+  // 主脚本执行完会置 __consoleReady=true；1 秒后仍未置位则说明它没跑起来
+  window.addEventListener("DOMContentLoaded", function () {
+    setTimeout(function () {
+      if (!window.__consoleReady) {
+        fatal(
+          "页面脚本未能加载（可能是语法错误）。按钮会全部无效。" +
+          "请按 F5 强制刷新；若仍如此，用浏览器控制台查看具体错误。"
+        );
+      }
+    }, 1000);
+  });
+})();
+</script>
+
+<script>
+/* 主逻辑。
+ *
+ * 注意：所有含 await 的函数都必须是 async ——
+ * 之前把 await 写进了非 async 的 click 回调，导致**整段脚本语法错误**、
+ * 所有按钮静默失效（2026-11-26 实测踩到）。
+ */
+(function () {
+  "use strict";
+
+  var busy = false;
+
+  function $(id) { return document.getElementById(id); }
+
+  function toast(msg, kind) {
+    var el = $("toast");
+    el.textContent = msg;
+    el.className = "toast show " + (kind || "");
+    clearTimeout(el._t);
+    // 出错时停留更久，避免用户没看到就消失
+    var ms = kind === "err" ? 12000 : 6000;
+    el._t = setTimeout(function () { el.className = "toast " + (kind || ""); }, ms);
   }
-}
 
-document.addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-act]");
-  if (!btn) return;
-  const { act, name } = btn.dataset;
+  function esc(t) {
+    return String(t == null ? "" : t)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
 
-  if (act === "start") {
-    withBusy(async () => {
-      const d = await getJSON(`/api/start/${name}`, { method: "POST" });
-      toast(d.message || (d.ok ? "已发起启动" : d.error || "启动失败"), d.ok ? "ok" : "err");
+  function dotClass(s) {
+    if (s.healthy) return "ok";
+    if (s.running) return "warn";
+    return "idle";
+  }
+
+  function stateText(s) {
+    if (s.healthy) return "健康";
+    if (s.running) return "运行中（未就绪）";
+    if (s.kind === "probe") return "配置异常";
+    return "未运行";
+  }
+
+  function render(services) {
+    var box = $("cards");
+    box.innerHTML = services.map(function (s) {
+      var meta = [];
+      if (s.port) meta.push('<span>端口 <span class="mono">' + s.port + "</span></span>");
+      meta.push('<span>类型 <span class="mono">' + s.kind + "</span></span>");
+      if (s.pid) meta.push('<span>PID <span class="mono">' + s.pid + "</span></span>");
+      if (s.depends_on && s.depends_on.length) {
+        meta.push('<span>依赖 <span class="mono">' + s.depends_on.join(", ") + "</span></span>");
+      }
+      var cls = s.healthy ? "ready" : "";
+      var startDisabled = (s.healthy || busy) ? "disabled" : "";
+      var stopDisabled = (!s.running || busy) ? "disabled" : "";
+      return '' +
+        '<div class="card ' + cls + '" data-name="' + s.name + '">' +
+          '<div class="row top">' +
+            '<div class="row">' +
+              '<span class="dot ' + dotClass(s) + '"></span>' +
+              '<span class="name">' + esc(s.label) + "</span>" +
+              '<span class="kind">' + esc(s.kind) + "</span>" +
+              '<span class="pill ' + (s.healthy ? "ok" : "bad") + '">' + esc(stateText(s)) + "</span>" +
+            "</div>" +
+            '<div class="actions">' +
+              '<button data-act="start" data-name="' + s.name + '" ' + startDisabled + ">启动</button>" +
+              '<button data-act="stop" data-name="' + s.name + '" ' + stopDisabled + ">停止</button>" +
+              (s.kind === "probe"
+                ? '<button data-act="test" data-name="' + s.name + '" ' + (busy ? "disabled" : "") + ">测试连通性</button>"
+                : "") +
+              '<button data-act="log" data-name="' + s.name + '">日志</button>' +
+            "</div>" +
+          "</div>" +
+          '<div class="desc">' + esc(s.detail || s.description || "") + "</div>" +
+          '<div class="meta">' + meta.join("") + "</div>" +
+          '<details><summary>查看日志（最近 80 行）</summary>' +
+          '<pre class="log" id="log-' + s.name + '">点击「日志」按钮加载</pre></details>' +
+        "</div>";
+    }).join("");
+  }
+
+  function getJSON(url, opts) {
+    return fetch(url, opts).then(function (r) {
+      return r.json().catch(function () {
+        return { ok: false, error: "HTTP " + r.status };
+      });
+    }).catch(function (e) {
+      return { ok: false, error: "网络错误：" + (e && e.message ? e.message : e) };
     });
-    return;
   }
-  if (act === "stop") {
-    withBusy(async () => {
-      const d = await getJSON(`/api/stop/${name}`, { method: "POST" });
-      toast(d.message || (d.ok ? "已停止" : "停止后端口仍被占用"), d.ok ? "ok" : "err");
+
+  function refresh() {
+    return getJSON("/api/status").then(function (d) {
+      if (!d || !d.ok) {
+        toast((d && d.error) || "读取状态失败", "err");
+        return;
+      }
+      render(d.services);
+      var el = $("overall");
+      el.textContent = d.ready ? "全链路就绪 ✓" : "未就绪";
+      el.className = "pill " + (d.ready ? "ok" : "bad");
     });
-    return;
   }
-  if (act === "test") {
-    withBusy(async () => {
-      const d = await getJSON("/api/llm/test", { method: "POST" });
-      toast(d.ok ? `LLM 连通 ✓（${d.ms}ms）` : `LLM 失败：${d.error}`, d.ok ? "ok" : "err");
+
+  // ---- 启动进度 ----
+  var progressTimer = null;
+
+  function showProgress(title) {
+    $("progress").className = "show";
+    $("progress-title").textContent = title;
+    $("progress-fill").style.width = "0%";
+    $("progress-steps").textContent = "";
+    var t0 = Date.now();
+    clearInterval(progressTimer);
+    progressTimer = setInterval(function () {
+      var s = Math.floor((Date.now() - t0) / 1000);
+      $("progress-time").textContent = s + "s";
+    }, 500);
+  }
+
+  function updateProgress(steps, pct) {
+    $("progress-steps").innerHTML = steps.join("<br>");
+    if (pct != null) $("progress-fill").style.width = pct + "%";
+  }
+
+  function hideProgress() {
+    clearInterval(progressTimer);
+    $("progress").className = "";
+  }
+
+  // ---- 操作包装：置忙 → 执行 → 复位 → 刷新 ----
+  function withBusy(fn) {
+    if (busy) { toast("上一个操作还在进行，请稍候"); return; }
+    busy = true;
+    setButtonsDisabled(true);
+    return Promise.resolve()
+      .then(fn)
+      .catch(function (e) {
+        toast("操作异常：" + (e && e.message ? e.message : e), "err");
+      })
+      .then(function () {
+        busy = false;
+        setButtonsDisabled(false);
+        hideProgress();
+        return refresh();
+      });
+  }
+
+  function setButtonsDisabled(v) {
+    var bar = ["btn-start-all", "btn-stop-all", "btn-refresh"];
+    bar.forEach(function (id) { var el = $(id); if (el) el.disabled = v; });
+    // 卡片按钮交给 render 依据 busy 状态处理，这里只标记
+    Array.prototype.forEach.call(
+      document.querySelectorAll(".actions button"),
+      function (b) {
+        if (v) { b.dataset.prevDisabled = b.disabled ? "1" : ""; b.disabled = true; }
+        else if (b.dataset.log === undefined) { /* 由下一次 render 决定 */ }
+      }
+    );
+  }
+
+  // ---- 点击派发 ----
+  function handleClick(e) {
+    var btn = e.target.closest ? e.target.closest("button[data-act]") : null;
+    if (!btn) return;
+    var act = btn.dataset.act;
+    var name = btn.dataset.name;
+
+    if (act === "start") {
+      withBusy(function () {
+        showProgress("正在启动 " + name + "…");
+        updateProgress(["已发送启动请求，等待进程/端口就绪…"], 10);
+        return getJSON("/api/start/" + name, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        }).then(function (d) {
+          if (d && d.ok) {
+            updateProgress(["启动已受理：" + (d.message || "")], 30);
+            toast(d.message || "已发起启动", "ok");
+          } else {
+            updateProgress(["失败：" + ((d && d.message) || (d && d.error) || "未知")], 100);
+            toast((d && (d.message || d.error)) || "启动失败", "err");
+          }
+        });
+      });
+      return;
+    }
+
+    if (act === "stop") {
+      withBusy(function () {
+        showProgress("正在停止 " + name + "…");
+        return getJSON("/api/stop/" + name, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        }).then(function (d) {
+          toast((d && d.message) || (d && d.ok ? "已停止" : "停止后端口仍被占用"),
+                d && d.ok ? "ok" : "err");
+        });
+      });
+      return;
+    }
+
+    if (act === "test") {
+      withBusy(function () {
+        showProgress("正在测试 LLM 连通性（会走代理，失败回退直连）…");
+        return getJSON("/api/llm/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        }).then(function (d) {
+          if (d && d.ok) {
+            toast("LLM 连通 ✓ 路线=" + (d.route || "?") + "（" + (d.ms || "?") + "ms）", "ok");
+          } else {
+            toast("LLM 失败：" + ((d && d.error) || "未知"), "err");
+          }
+        });
+      });
+      return;
+    }
+
+    if (act === "log") {
+      // 单纯读日志，不需要占用 busy 状态；但仍要 async（含 await）
+      return loadLog(name);
+    }
+  }
+
+  async function loadLog(name) {
+    var pre = $("log-" + name);
+    if (pre) pre.textContent = "加载中…";
+    var d = await getJSON("/api/log/" + name + "?lines=80");
+    if (pre) {
+      pre.textContent = d && d.ok ? (d.log || "（暂无日志）") : ((d && d.error) || "读取失败");
+      var det = pre.closest ? pre.closest("details") : null;
+      if (det) det.open = true;
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }
+
+  // ---- 一键启动 / 停止 ----
+  function startAll() {
+    return withBusy(function () {
+      showProgress("正在按依赖顺序启动：tts → asr → llm → gateway（TTS 首次加载模型约 1~3 分钟）");
+      updateProgress(["已提交，服务端按顺序等待每个服务就绪…"], 5);
+
+      // 启动期间**继续轮询**状态，让卡片实时变绿（否则页面像卡死）
+      var tick = 0;
+      var poll = setInterval(function () {
+        tick += 1;
+        refresh().then(function () {
+          var steps = [
+            "已等待 " + tick * 2 + " 秒，卡片状态实时更新中…",
+            "（TTS 首次加载模型较慢，属正常）"
+          ];
+          updateProgress(steps, Math.min(90, 5 + tick * 3));
+        });
+      }, 2000);
+
+      return getJSON("/api/start-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ engine: "cosyvoice3" })
+      }).then(function (d) {
+        clearInterval(poll);
+        var r = d && d.result;
+        if (!r) {
+          toast((d && d.error) || "启动请求失败", "err");
+          return;
+        }
+        var lines = (r.results || []).map(function (x) {
+          var mark = x.ok ? "✓" : "✗";
+          return mark + " " + x.name + "：" + (x.message || x.action || "");
+        });
+        var skipped = (r.results || []).every(function (x) {
+          return x.action === "skip" || x.action === "probe";
+        });
+        updateProgress(lines, 100);
+        if (r.ok) {
+          toast(
+            skipped
+              ? "全部服务本来就健康，无需启动 ✓\n" + lines.join("\n")
+              : "全链路启动完成 ✓\n" + lines.join("\n"),
+            "ok"
+          );
+        } else {
+          toast("启动未全部成功：\n" + lines.join("\n"), "err");
+        }
+      }).finally(function () { clearInterval(poll); });
     });
-    return;
   }
-  if (act === "log") {
-    const pre = $("log-" + name);
-    const d = await getJSON(`/api/log/${name}?lines=80`);
-    pre.textContent = d.ok ? (d.log || "（暂无日志）") : (d.error || "读取失败");
-    pre.scrollTop = pre.scrollHeight;
-    pre.closest("details").open = true;
+
+  function stopAll() {
+    return withBusy(function () {
+      showProgress("正在停止全部服务…");
+      return getJSON("/api/stop-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      }).then(function (d) {
+        var r = d && d.result;
+        if (!r) { toast((d && d.error) || "停止请求失败", "err"); return; }
+        var lines = (r.results || []).map(function (x) {
+          return (x.ok ? "✓" : "✗") + " " + x.name + "：" + (x.message || "");
+        });
+        updateProgress(lines, 100);
+        toast(r.ok ? "已停止全部服务" : "部分服务端口仍被占用（见卡片）\n" + lines.join("\n"),
+              r.ok ? "ok" : "err");
+      });
+    });
   }
-});
 
-$("btn-refresh").onclick = () => refresh();
+  // ---- 绑定 ----
+  document.addEventListener("click", handleClick);
 
-$("btn-start-all").onclick = () => withBusy(async () => {
-  toast("正在按依赖顺序启动全部服务，TTS 首次加载模型可能需要 1~3 分钟…");
-  const d = await getJSON("/api/start-all", { method: "POST" });
-  const r = d.result || {};
-  const bad = (r.results || []).filter((x) => !x.ok);
-  if (r.ok) toast("全链路启动完成 ✓", "ok");
-  else toast("启动未全部成功：" + bad.map((x) => `${x.name}: ${x.message}`).join("；"), "err");
-});
+  $("btn-start-all").addEventListener("click", startAll);
+  $("btn-stop-all").addEventListener("click", stopAll);
+  $("btn-refresh").addEventListener("click", function () { refresh(); });
 
-$("btn-stop-all").onclick = () => withBusy(async () => {
-  const d = await getJSON("/api/stop-all", { method: "POST" });
-  toast(d.result && d.result.ok ? "已停止全部服务" : "部分服务端口仍被占用", d.result && d.result.ok ? "ok" : "err");
-});
+  refresh();
+  setInterval(function () { if (!busy) refresh(); }, 4000);
 
-(async function init() {
-  await loadSpecs();
-  await refresh();
-  setInterval(() => { if (!busy) refresh(); }, 4000);
+  // 标记脚本已就绪（引导脚本用它判断是否出现了语法错误）
+  window.__consoleReady = true;
 })();
 </script>
 </body>

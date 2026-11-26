@@ -174,6 +174,39 @@ curl -X POST --data-binary @some.wav -H "Content-Type: audio/wav" \
 
 ## 六、已知环境限制（重要，实测）
 
+### 6.0 踩坑记录：语法错误让所有按钮静默失效（已修）
+
+上线当晚用户反馈「点击一键启动没有用」。查下来不是启动逻辑的问题，
+而是**控制台页面的内联 JS 有语法错误**：
+
+```js
+document.addEventListener("click", (e) => {   // 非 async
+  ...
+  const d = await getJSON(`/api/log/${name}?lines=80`);   // ← SyntaxError
+});
+```
+
+浏览器**解析整段脚本失败** → 一个事件处理器都没注册 →
+页面照常打开、按钮全部点不动、屏幕上没有任何提示。
+`node --check` 一跑就报：
+
+```
+SyntaxError: await is only valid in async functions
+```
+
+修法三件事：
+
+1. 把含 `await` 的处理抽成 `async function loadLog()`，回调里不再直接写 `await`；
+2. **页面拆成「引导脚本 + 主脚本」两段**：引导脚本先装 `window.onerror`，
+   并在 1 秒后检查 `window.__consoleReady`；主脚本挂了就在页面顶部亮红条，
+   而不是让按钮静默失效；
+3. 加回归测试 `tests/test_launcher_frontend.py`：用 `node --check` 校验内联 JS
+   （WSL 里自动走 `node.exe` interop），外加「两段结构 + `__consoleReady` 必须存在」的结构断言。
+
+> 教训：**前端脚本的失效是静默的**。后端有日志、有 HTTP 状态码，
+> 而一行 JS 语法错误能让整个页面变成「看起来正常但什么都不能点」。
+> 因此必须有「页面自检」+「语法校验」两道兜底。
+
 ### 6.1 受限环境里 `wsl.exe` 可能被拒（`Wsl/E_ACCESSDENIED`）
 
 实测：**被沙箱/作业对象限制的非交互 Python 进程**里，
@@ -253,13 +286,17 @@ zjy14 历史: engine=cosyvoice3 voice=elysia dur=18.44s   ← TTS 归属证明
 
 ```bash
 cd zjy14 && source ~/cosyvoice-venv/bin/activate
-PYTHONPATH=. python -m pytest tests/test_launcher.py -v
+PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_frontend.py -v
 ```
 
-30 项，全部用替身：**不 spawn 进程、不联网**。
-覆盖服务定义自洽性（依赖顺序、端口唯一、TTS 必须是 :50001）、
-LLM 配置解析（不泄露密钥）、端口/健康探测、编排规则（失败不连坐）、
-UTF-16 日志解码、HTTP 只读端点。
+- `test_launcher.py`（30 项）：全部用替身，**不 spawn 进程、不联网**。
+  覆盖服务定义自洽性（依赖顺序、端口唯一、TTS 必须是 :50001）、
+  LLM 配置解析（不泄露密钥）、端口/健康探测、编排规则（失败不连坐）、
+  UTF-16 日志解码、HTTP 只读端点。
+- `test_launcher_frontend.py`（8 项）：控制台页面本身。
+  锁住「两段脚本结构 + `__consoleReady` 自检」，
+  并用 `node --check` 校验内联 JS 语法 —— 防的正是
+  「一个语法错误让所有按钮静默失效」这类事故（见 §6.0）。
 
 ---
 

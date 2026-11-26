@@ -40,7 +40,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -598,7 +598,8 @@ class Orchestrator:
             return (
                 "WSL 拒绝访问（Wsl/E_ACCESSDENIED）：当前进程无法启动 WSL 发行版。"
                 "请在你自己的 PowerShell 窗口里执行一次 "
-                "`wsl -d " + WSL_DISTRO + " -e bash /mnt/d/xiangmudaima/zjy14/scripts/start.sh cosyvoice3`，"
+                "`wsl -d " + WSL_DISTRO
+                + " -e bash /mnt/d/xiangmudaima/zjy14/scripts/start.sh cosyvoice3`，"
                 "再回到本控制台刷新状态即可接管。"
             )
         code = proc.popen.returncode

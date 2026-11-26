@@ -11,7 +11,7 @@
  *   因此板子走的是 zjy14 引擎，不是 zjy13 自带的 tts_server_wsl（:50000）。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   launcherApi,
   type LauncherActionResult,
@@ -62,13 +62,23 @@ export default function ServicesPage() {
     setReady(res.data.ready);
   }, []);
 
+  // 轮询：**启动期间也要继续刷新**。
+  //
+  // 早期写法是 `if (!busy) refresh()` —— 一键启动可能等 TTS 加载 1~3 分钟，
+  // 这段时间卡片一直是旧状态，用户会以为「点了没反应」。
+  // 现在改成始终轮询，用一个 ref 防止慢请求叠加。
+  const polling = useRef(false);
   useEffect(() => {
     refresh();
     const t = setInterval(() => {
-      if (!busy) refresh();
+      if (polling.current) return;
+      polling.current = true;
+      refresh().finally(() => {
+        polling.current = false;
+      });
     }, 4000);
     return () => clearInterval(t);
-  }, [refresh, busy]);
+  }, [refresh]);
 
   useEffect(() => {
     if (!toast) return;
