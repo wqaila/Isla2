@@ -1,4 +1,4 @@
-# zjy14 语音链路 · 一键启动控制台（Windows 侧）
+﻿# zjy14 语音链路 · 一键启动控制台（Windows 侧）
 #
 # 用法（在 zjy14 目录下）：
 #   .\scripts\start_launcher.ps1                  # 真模型（cosyvoice3）

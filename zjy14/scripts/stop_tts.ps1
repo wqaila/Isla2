@@ -1,4 +1,4 @@
-# 仅停止 zjy14 的 TTS（WSL 内的 uvicorn）
+﻿# 仅停止 zjy14 的 TTS（WSL 内的 uvicorn）
 #
 # 用法（在 zjy14 目录下）：
 #   .\scripts\stop_tts.ps1

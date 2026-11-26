@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       strictPort: true,
+      // 显式绑 IPv4：默认 host="localhost" 在本机会解析成 ::1，
+      // 导致 `http://127.0.0.1:5173` 连不上（实测），
+      // 而启动脚本和文档里都用 127.0.0.1。注意这只绑本机，不对外暴露。
+      host: "127.0.0.1",
       proxy: {
         "/api": { target: backend, changeOrigin: true },
         "/health": { target: backend, changeOrigin: true },

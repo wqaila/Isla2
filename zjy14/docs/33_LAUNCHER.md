@@ -33,32 +33,56 @@ cd zjy13 && .venv-asr\Scripts\python.exe -m server.ws.server --host 0.0.0.0
 
 ---
 
-## 二、两条使用路径
+## 二、三条使用路径
 
-### 路径 A：独立控制台（推荐，冷启动用这个）
+### 路径 A：网页一键启动（最省事，推荐）
 
 ```powershell
 cd D:\xiangmudaima\zjy14
+.\scripts\start_web.ps1 -OpenBrowser
+```
+
+或直接双击 `一键启动网页.bat`。这一步会：
+
+1. 起启动器（:50100，服务编排）
+2. 起前端 dev 服务器（Vite，:5173）
+3. 打开 **`http://127.0.0.1:5173/services`**
+
+然后在页面上点 **「一键启动全部」** 拉起 ASR/LLM/TTS/网关。
+想连这一步也自动化：加 `-WithServices`。停止网页与启动器：`-Stop`。
+
+> **为什么网页能冷启动**：本页是静态前端（Vite），启动器是独立进程；
+> 两者都**不依赖** zjy14 后端 :50001 —— 所以 TTS 还没起来时本页照样能打开操作。
+
+### 路径 B：独立控制台（兜底，不依赖 node）
+
+```powershell
 .\scripts\start_launcher.ps1 -OpenBrowser
 ```
 
 浏览器打开 `http://127.0.0.1:50100/`，点 **「一键启动全部」**。
 
-> **为什么冷启动必须用它**：TTS 没起来时，zjy14 自己的 Web 界面
-> （:50001 / :5173）也打不开 —— 控制台必须是**独立进程**。
+> 它是一张**自包含的 HTML**（`launcher/static/index.html`），
+> 只有 Python 标准库就能跑 —— 当 node/Vite 坏掉时用它救场。
+> 与路径 A 共用**同一套**启动器 API，不存在两套启动逻辑。
 
-### 路径 B：集成进 zjy14 现有 Web 界面
+### 路径 C：手工启动（排查时用）
 
-```powershell
-cd D:\xiangmudaima\zjy14\web
-npm run dev
+```bash
+# 启动服务
+wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/run_server.sh
 ```
 
-打开 `http://localhost:5173/services`（侧栏「语音链路启动」）。
+### 三条路径的关系
 
-> 这一页对接的是**同一个**启动器（:50100），通过 Vite 代理
-> `/launcher/*` → `:50100/*`。所以仍需先运行 `start_launcher.ps1`；
-> 未运行时页面会明确提示并给出命令，而不是白屏报错。
+| 路径 | 需要 node | 需要 zjy14 后端 | 能力 |
+|---|:-:|:-:|---|
+| A 网页一键启动 | ✅ | ❌ | 完整（卡片/进度/日志/LLM 测试） |
+| B 独立控制台 | ❌ | ❌ | 完整（同上，样式更朴素） |
+| C 手工 | ❌ | — | 需自己记命令与顺序 |
+
+**A 与 B 是同一套 API 的两个前端**：`launcher/server.py` 提供端点，
+两个页面只负责展示。改启动逻辑只需改一处。
 
 ---
 
@@ -174,7 +198,24 @@ curl -X POST --data-binary @some.wav -H "Content-Type: audio/wav" \
 
 ## 六、已知环境限制（重要，实测）
 
-### 6.0 踩坑记录：语法错误让所有按钮静默失效（已修）
+### 6.0 `.ps1` 必须带 UTF-8 BOM（实测踩过）
+
+PowerShell 5.1 读 `.ps1`：**有 BOM 按 UTF-8**，**无 BOM 按系统 ANSI（GBK）**。
+不含 BOM 的脚本里中文注释会被按 GBK 误解，字节序列凑出多余的括号，导致：
+
+```
+Unexpected token '}' in expression or statement.
+Missing closing '}' in statement block or type definition.
+```
+
+整段脚本根本不执行。新写的 `start_web.ps1` / `start_launcher.ps1` /
+`stop_tts.ps1` 一开始都没 BOM，全部踩中。
+
+> 项目里已有的 `start.ps1` / `start_tts_detached.ps1` 都是 **UTF-8 + BOM**，
+> 这就是原因。新增脚本请照此保存；`tests/test_web_integration.py`
+> 里有断言会检查 BOM。
+
+### 6.0b 语法错误让所有按钮静默失效（已修）
 
 上线当晚用户反馈「点击一键启动没有用」。查下来不是启动逻辑的问题，
 而是**控制台页面的内联 JS 有语法错误**：
@@ -286,17 +327,15 @@ zjy14 历史: engine=cosyvoice3 voice=elysia dur=18.44s   ← TTS 归属证明
 
 ```bash
 cd zjy14 && source ~/cosyvoice-venv/bin/activate
-PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_frontend.py -v
+PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_frontend.py \
+                                   tests/test_web_integration.py -v
 ```
 
-- `test_launcher.py`（30 项）：全部用替身，**不 spawn 进程、不联网**。
-  覆盖服务定义自洽性（依赖顺序、端口唯一、TTS 必须是 :50001）、
-  LLM 配置解析（不泄露密钥）、端口/健康探测、编排规则（失败不连坐）、
-  UTF-16 日志解码、HTTP 只读端点。
-- `test_launcher_frontend.py`（8 项）：控制台页面本身。
-  锁住「两段脚本结构 + `__consoleReady` 自检」，
-  并用 `node --check` 校验内联 JS 语法 —— 防的正是
-  「一个语法错误让所有按钮静默失效」这类事故（见 §6.0）。
+- `test_launcher.py`（30 项）：编排逻辑，全部替身，**不 spawn、不联网**。
+- `test_launcher_frontend.py`（8 项）：独立控制台页面结构与 JSON 语法。
+- `test_web_integration.py`（17 项）：**整合页能力对齐**（进度面板、
+  四个操作入口、离线可复制命令、轮询不被 busy 暂停）、Vite 绑 127.0.0.1
+  与代理 rewrite、以及 `.ps1` 的 UTF-8 BOM。
 
 ---
 
@@ -306,15 +345,22 @@ PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_fronten
 |---|---|
 | `launcher/orchestrator.py` | 服务定义 + 启动/停止/探活 + 编排 |
 | `launcher/server.py` | 标准库 HTTP 服务（API + 静态页） |
-| `launcher/static/index.html` | 自包含控制台页面（无构建步骤） |
+| `launcher/static/index.html` | 自包含控制台页面（兜底，无 node 也能用） |
 | `launcher/__init__.py` | 包导出 |
-| `scripts/start_launcher.ps1` | 一键启动控制台（含 Python 选择） |
+| `scripts/start_web.ps1` | **网页一键启动**：启动器 + Vite + 打开页面（`-WithServices` 连链路一起起） |
+| `scripts/start_launcher.ps1` | 只起独立控制台 |
 | `scripts/stop_tts.ps1` | 单独停止 WSL 内的 TTS |
-| `web/src/api/launcher.ts` | 前端 API 客户端（启动器不可达时不抛异常） |
-| `web/src/pages/ServicesPage.tsx` | 集成进主界面的「语音链路启动」页 |
+| `一键启动网页.bat` | 双击入口 → `start_web.ps1` |
+| `一键启动控制台.bat` | 双击入口 → `start_launcher.ps1` |
+| `web/src/api/launcher.ts` | 前端 API 客户端（离线不抛异常） |
+| `web/src/pages/ServicesPage.tsx` | **整合版**「语音链路启动」页（进度/详细状态/日志/LLM 测试） |
+| `web/src/styles-services.css` | 该页专用样式（进度条、键值对、日志块） |
+| `web/vite.config.ts` | 绑 `127.0.0.1` + 代理 `/launcher/*` → `:50100/*` |
 | `zjy13/server/asr_service.py` | 独立 ASR HTTP 服务（新增） |
 | `zjy13/server/ws/server.py` | 新增 `--asr-url` / `ASR_SERVICE_URL` 远端 ASR |
-| `tests/test_launcher.py` | 30 项单元测试 |
+| `tests/test_launcher.py` | 30 项：编排逻辑（替身，不 spawn） |
+| `tests/test_launcher_frontend.py` | 8 项：控制台页面结构 + JS 语法 |
+| `tests/test_web_integration.py` | 17 项：整合页能力对齐、Vite 绑定/代理、ps1 BOM |
 
 ---
 

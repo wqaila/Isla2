@@ -1,4 +1,4 @@
-﻿# zjy14 · Custom Voice Engine
+# zjy14 · Custom Voice Engine
 
 > CosyVoice3 角色音色与情绪表达控制引擎。
 > 目标硬件：RTX 5070 12GB（WSL2）。
@@ -21,21 +21,26 @@ zjy14 是 [zjy13](../zjy13/) 的**引擎升级**（决策 D2）：复用其已�
 
 ## 快速开始
 
-### 方式一：网页一键启动（推荐）
+### 方式一：网页一键启动（最省事，推荐）
 
 ```powershell
 cd D:\xiangmudaima\zjy14
-.\scripts\start_launcher.ps1 -OpenBrowser
+.\scripts\start_web.ps1 -OpenBrowser
 ```
 
-浏览器打开 `http://127.0.0.1:50100/`，点 **「一键启动全部」**，即可拉起
-**ASR + LLM + TTS + 网关**。其中 TTS 用的是 **zjy14 自己的 CosyVoice3**
-（WSL，:50001），**不是** zjy13 自带的 `tts_server_wsl`（:50000）。
+这一步会自动准备「启动器（:50100）+ 前端 dev 服务器（Vite :5173）」，
+并打开 **`http://127.0.0.1:5173/services`**；在页面上点
+**「一键启动全部」** 即可拉起 **ASR + LLM + TTS + 网关**。
 
-也可以直接双击 `一键启动控制台.bat`。详见 [docs/33_LAUNCHER.md](docs/33_LAUNCHER.md)。
+其中 TTS 用的是 **zjy14 自己的 CosyVoice3**（WSL，:50001），
+**不是** zjy13 自带的 `tts_server_wsl`（:50000）。
 
-> 主界面也集成了这一页：`web/` 下 `npm run dev` 后访问
-> `http://localhost:5173/services`（对接同一个启动器）。
+也可以双击 `一键启动网页.bat`。想连语音链路一起自动启动就加 `-WithServices`。
+详见 [docs/33_LAUNCHER.md](docs/33_LAUNCHER.md)。
+
+> 兜底入口：启动器自带一个**不依赖 node** 的控制台
+> `http://127.0.0.1:50100/`（`scripts/start_launcher.ps1` 起），
+> 与主界面共用同一套 API。
 
 ### 方式二：手工启动（排查时用）
 
@@ -55,7 +60,7 @@ API 文档：<http://127.0.0.1:50001/docs>
 ### 测试
 
 ```bash
-# 单元测试（555 个）
+# 单元测试（572 个）
 wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/run_tests.sh
 
 # Phase 1 端到端验收（需服务已启动）
@@ -218,7 +223,7 @@ zjy14/
 │  ├─ schemas/     # 请求/响应模型
 │  └─ server/      # FastAPI 应用与路由
 ├─ configs/        # gpu.yaml
-├─ tests/          # 555 个测试
+├─ tests/          # 572 个测试
 ├─ scripts/        # 启动、测试、验收、迁移脚本
 ├─ docs/           # 方案、决策、阶段报告
 └─ probe/          # 可复现诊断脚本（环境探测、真机联调、情绪审计）
