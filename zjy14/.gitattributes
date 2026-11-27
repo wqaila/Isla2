@@ -1,6 +1,18 @@
 # 统一换行符为 LF，避免 Windows 编辑器与 WSL 之间产生整文件 diff
 * text=auto eol=lf
 
+# ---- Windows 双击入口例外：必须是 CRLF ----
+#
+# 为什么必须例外（2026-11-27 实测）：cmd.exe **只认 CRLF**。
+# 纯 LF 的 .bat 会被拆错行，`rem` 前缀丢失 → 注释里的中文被当命令执行，
+# 屏幕上刷出「'嶅姟鍣ㄣ€嶁啋' 不是内部或外部命令」。
+# 注意：git 只管行尾，**编码**要另外保证 —— .bat 用 GBK、.ps1 用 UTF-8+BOM，
+# 由 tests/test_web_integration.py 的断言锁住。
+#
+# 这里的规则写在上面那行 catch-all **之后**，因此会覆盖它（后匹配者生效）。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # 二进制文件不做换行转换
 *.wav binary
 *.mp3 binary

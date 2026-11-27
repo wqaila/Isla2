@@ -252,6 +252,62 @@ def test_vite_proxies_launcher_with_rewrite() -> None:
 # ======================================================================
 
 
+# ======================================================================
+# 五、双击入口的 .bat：必须是 GBK + CRLF（与 .ps1 的 UTF-8+BOM 相反）
+# ======================================================================
+
+BAT_FILES = ["一键启动网页.bat", "一键启动控制台.bat"]
+
+
+@pytest.mark.parametrize("name", BAT_FILES)
+def test_bat_uses_crlf(name: str) -> None:
+    """cmd.exe 只认 CRLF。
+
+    纯 LF 的 .bat 会被拆错行，`rem` 前缀丢失 —— 注释里的中文就被当成命令
+    执行，屏幕刷出一串「'嶅姟鍣...' 不是内部或外部命令」（用户实测）。
+    """
+    p = SCRIPTS.parent / name
+    assert p.is_file(), f"缺少 {name}"
+    raw = p.read_bytes()
+    pure_lf = raw.count(b"\n") - raw.count(b"\r\n")
+    assert pure_lf == 0, f"{name} 有 {pure_lf} 个纯 LF 换行，cmd.exe 会解析错行"
+    assert raw.count(b"\r\n") > 0, f"{name} 没有 CRLF 换行"
+
+
+@pytest.mark.parametrize("name", BAT_FILES)
+def test_bat_is_gbk_without_bom(name: str) -> None:
+    """必须是 GBK 编码且**无 BOM**。
+
+    - GBK：cmd.exe 按系统 ANSI 解析字节，UTF-8 会被解成乱码；
+    - 无 BOM：BOM 字节会被 cmd 当成命令的一部分，报 '' 不是内部或外部命令。
+    """
+    p = SCRIPTS.parent / name
+    raw = p.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), f"{name} 带 UTF-8 BOM，cmd.exe 会报错"
+    try:
+        text = raw.decode("gbk")
+    except UnicodeDecodeError as exc:  # noqa: F841
+        pytest.fail(f"{name} 不是 GBK 编码，cmd.exe 下中文会乱码")
+    assert "rem" in text.lower(), f"{name} 结构异常（没有 rem 注释）"
+
+
+@pytest.mark.parametrize("name", BAT_FILES)
+def test_bat_sets_936_codepage(name: str) -> None:
+    """固定 chcp 936，并**不能**用 chcp 65001（那是 UTF-8，与 GBK 文件冲突）。"""
+    text = (SCRIPTS.parent / name).read_bytes().decode("gbk")
+    assert "chcp 936" in text, f"{name} 没有固定代码页为 936"
+    assert "chcp 65001" not in text, (
+        f"{name} 设了 65001 但文件是 GBK，输出会乱码"
+    )
+
+
+@pytest.mark.parametrize("name", BAT_FILES)
+def test_bat_cds_to_own_dir(name: str) -> None:
+    """双击时工作目录是文件所在目录，但保险起见仍要 cd 到脚本目录。"""
+    text = (SCRIPTS.parent / name).read_bytes().decode("gbk")
+    assert "cd /d" in text and "%~dp0" in text, f"{name} 没有 cd /d %~dp0"
+
+
 def test_start_web_script_exists() -> None:
     assert START_WEB.is_file(), "缺少 scripts/start_web.ps1"
 

@@ -1,15 +1,15 @@
 @echo off
-chcp 65001 >nul
-rem zjy14 è¯­éŸ³é“¾è·¯ Â· ä¸€é”®å¯åŠ¨æ§åˆ¶å°
+chcp 936 >nul
+rem zjy14 ÓïÒôÁ´Â· ¡¤ Ò»¼üÆô¶¯¿ØÖÆÌ¨
 rem
-rem åŒå‡»æœ¬æ–‡ä»¶ â†’ æ‰“å¼€æ§åˆ¶å°ç½‘é¡µ â†’ ç‚¹ã€Œä¸€é”®å¯åŠ¨å…¨éƒ¨ã€ã€‚
-rem ç­‰ä»·äº:  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_launcher.ps1 -OpenBrowser
+rem Ë«»÷±¾ÎÄ¼ş ¡ú ´ò¿ª¿ØÖÆÌ¨ÍøÒ³ ¡ú µã¡¸Ò»¼üÆô¶¯È«²¿¡¹¡£
+rem µÈ¼ÛÓÚ:  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_launcher.ps1 -OpenBrowser
 
 setlocal
 cd /d "%~dp0"
 
 if not exist "scripts\start_launcher.ps1" (
-    echo [é”™è¯¯] æ‰¾ä¸åˆ° scripts\start_launcher.ps1
+    echo [´íÎó] ÕÒ²»µ½ scripts\start_launcher.ps1
     pause
     exit /b 1
 )
@@ -19,7 +19,7 @@ set RC=%ERRORLEVEL%
 
 if not "%RC%"=="0" (
     echo.
-    echo [æç¤º] æ§åˆ¶å°é€€å‡ºç  %RC%
+    echo [ÌáÊ¾] ¿ØÖÆÌ¨ÍË³öÂë %RC%
     pause
 )
 endlocal

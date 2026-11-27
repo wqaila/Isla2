@@ -1,18 +1,18 @@
 @echo off
-chcp 65001 >nul
-rem zjy14 Â· ç½‘é¡µä¸€é”®å¯åŠ¨
+chcp 936 >nul
+rem zjy14 ¡¤ ÍøÒ³Ò»¼üÆô¶¯
 rem
-rem åŒå‡»æœ¬æ–‡ä»¶ â†’ è‡ªåŠ¨èµ·ã€Œå¯åŠ¨å™¨ + ç½‘é¡µ dev æœåŠ¡å™¨ã€â†’ æ‰“å¼€ã€Œè¯­éŸ³é“¾è·¯å¯åŠ¨ã€é¡µã€‚
-rem ç­‰ä»·äº: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_web.ps1 -OpenBrowser
+rem Ë«»÷±¾ÎÄ¼ş ¡ú ×Ô¶¯Æğ¡¸Æô¶¯Æ÷ + ÍøÒ³ dev ·şÎñÆ÷¡¹¡ú ´ò¿ª¡¸ÓïÒôÁ´Â·Æô¶¯¡¹Ò³¡£
+rem µÈ¼ÛÓÚ: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_web.ps1 -OpenBrowser
 rem
-rem æƒ³æŠŠè¯­éŸ³é“¾è·¯ï¼ˆASR/LLM/TTS/ç½‘å…³ï¼‰ä¹Ÿä¸€èµ·æ‹‰èµ·æ¥ï¼Œç”¨å‘½ä»¤è¡ŒåŠ  -WithServicesï¼š
+rem Ïë°ÑÓïÒôÁ´Â·£¨ASR/LLM/TTS/Íø¹Ø£©Ò²Ò»ÆğÀ­ÆğÀ´£¬ÓÃÃüÁîĞĞ¼Ó -WithServices£º
 rem   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_web.ps1 -WithServices
 
 setlocal
 cd /d "%~dp0"
 
 if not exist "scripts\start_web.ps1" (
-    echo [é”™è¯¯] æ‰¾ä¸åˆ° scripts\start_web.ps1
+    echo [´íÎó] ÕÒ²»µ½ scripts\start_web.ps1
     pause
     exit /b 1
 )
@@ -22,7 +22,7 @@ set RC=%ERRORLEVEL%
 
 if not "%RC%"=="0" (
     echo.
-    echo [æç¤º] é€€å‡ºç  %RC%
+    echo [ÌáÊ¾] ÍË³öÂë %RC%
     pause
 )
 endlocal
