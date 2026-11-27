@@ -404,6 +404,46 @@ Start-Process powershell.exe -WindowStyle Hidden `
 > 两套规则都有对应的测试锁着（`test_web_integration.py` 里的
 > `test_ps1_has_utf8_bom` 与 `test_bat_uses_crlf` 等）。
 
+#### 光改文件还不够：git 会把 CRLF 规范化成 LF
+
+改完文件后本机是好的，但 `git add` 之后**索引里存的是纯 LF**：
+
+```
+$ git show :zjy14/一键启动网页.bat | 统计
+CRLF=0  纯LF=29
+```
+
+也就是说 **任何人重新 `git clone` 拿到的都是坏的 `.bat`** —— 问题会在别人
+机器上重现，而本机"看着正常"只是因为工作区还是 CRLF。
+
+根因是 `zjy14/.gitattributes` 里的一行通吃规则：
+
+```gitattributes
+* text=auto eol=lf
+```
+
+修法：在该文件**之后**追加例外（gitattributes 里**后匹配者优先**）：
+
+```gitattributes
+*.bat text eol=crlf
+*.cmd text eol=crlf
+```
+
+> 曾尝试加根级 `.gitattributes`，但它会让全仓库几十个无关文件（zjy2~zjy11）
+> 一起被行尾重规范化，影响面过大，已撤回，只保留 zjy14 内的定点修复。
+
+**验证方式**（这类问题只能靠 clone 验证，不能只看工作区）：
+
+```powershell
+git clone --depth 1 file:///D:/xiangmudaima $env:TEMP\chk
+# 检查克隆出来的 .bat：CRLF>0、纯LF=0、无 BOM、GBK 可解
+# 再在该目录里实跑一次 .bat，确认只有预期的中文提示、没有乱码命令
+```
+
+实测结果：`CRLF=29 / 纯LF=0 / BOM=False / GBK 可解`，运行只输出一条
+`[错误] 找不到 scripts\start_web.ps1`（因为我故意放在没有 scripts 的目录里），
+**没有任何乱码命令**。
+
 ### 6.1 受限环境里 `wsl.exe` 可能被拒（`Wsl/E_ACCESSDENIED`）
 
 实测：**被沙箱/作业对象限制的非交互 Python 进程**里，
