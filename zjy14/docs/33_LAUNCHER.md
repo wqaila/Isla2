@@ -215,6 +215,21 @@ Missing closing '}' in statement block or type definition.
 > 这就是原因。新增脚本请照此保存；`tests/test_web_integration.py`
 > 里有断言会检查 BOM。
 
+
+**注意：光有 BOM 不够。** BOM 只解决「编码被误读」，脚本仍可能真有语法错误
+（漏括号、参数拼错）。所以测试里还加了一道**用 PowerShell 自己的解析器做静态
+校验**（`System.Management.Automation.Language.Parser.ParseFile`）——
+只解析、不执行，因此不会拉起任何进程：
+
+```powershell
+$e=$null;$t=$null
+[void][System.Management.Automation.Language.Parser]::ParseFile('scripts\start_web.ps1',[ref]$t,[ref]$e)
+if($e){$e|%{$_.Message}}
+```
+
+这两个坑合起来说明一件事：**PowerShell 脚本的失效是"静默且彻底"的** ——
+编码错或语法错都会让整个脚本一行都不执行，而调用方只看到一个莫名其妙的报错。
+
 ### 6.0b 语法错误让所有按钮静默失效（已修）
 
 上线当晚用户反馈「点击一键启动没有用」。查下来不是启动逻辑的问题，
@@ -284,6 +299,23 @@ Windows 上看到的 `:50001` 监听 PID 是 **WSL 端口转发进程**，
 `wsl.exe` 默认按 **UTF-16LE** 输出，日志文件里会全是 `\x00` 间隔的乱码。
 启动器做两件事：子进程注入 `WSL_UTF8=1`；读日志时按 BOM/零字节嗅探解码。
 
+### 6.4 把脚本输出接管道时，调用方会等到服务退出
+
+实测（2026-11-27）：
+
+| 场景 | 结果 |
+|---|---|
+| 双击 `.bat` / 直接运行 `.ps1`（stdout 是控制台或文件） | 冷启动 **2.3 秒**返回 |
+| `.\start_web.ps1 \| Tee-Object log.txt`（stdout 是管道） | 调用方等到**服务全部退出**才返回（实测 398 秒） |
+
+原因：`Start-Process` 走 `CreateProcess(bInheritHandles=TRUE)`，子进程会继承
+父进程的**可继承句柄**。即使把子进程 stdout 重定向到文件，它仍持有一份父进程
+管道的写端，管道到不了 EOF。
+
+这不是脚本缺陷，也无法用纯 PowerShell 绕开（彻底断开需要 WMI
+`Win32_Process::Create` 或 P/Invoke，代价是丢失服务日志）。
+**日常使用不受影响** —— 双击 .bat 或在终端里直接运行都没有管道。
+
 ---
 
 ## 七、验收步骤
@@ -333,7 +365,7 @@ PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_fronten
 
 - `test_launcher.py`（30 项）：编排逻辑，全部替身，**不 spawn、不联网**。
 - `test_launcher_frontend.py`（8 项）：独立控制台页面结构与 JSON 语法。
-- `test_web_integration.py`（17 项）：**整合页能力对齐**（进度面板、
+- `test_web_integration.py`（21 项）：**整合页能力对齐**（进度面板、
   四个操作入口、离线可复制命令、轮询不被 busy 暂停）、Vite 绑 127.0.0.1
   与代理 rewrite、以及 `.ps1` 的 UTF-8 BOM。
 
@@ -360,7 +392,7 @@ PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_fronten
 | `zjy13/server/ws/server.py` | 新增 `--asr-url` / `ASR_SERVICE_URL` 远端 ASR |
 | `tests/test_launcher.py` | 30 项：编排逻辑（替身，不 spawn） |
 | `tests/test_launcher_frontend.py` | 8 项：控制台页面结构 + JS 语法 |
-| `tests/test_web_integration.py` | 17 项：整合页能力对齐、Vite 绑定/代理、ps1 BOM |
+| `tests/test_web_integration.py` | 21 项：整合页能力对齐、Vite 绑定/代理、ps1 BOM 与**语法解析校验** |
 
 ---
 

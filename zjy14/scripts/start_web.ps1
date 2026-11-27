@@ -180,10 +180,23 @@ if (Test-PortListening $WebPort) {
     Write-Ok "已在运行，复用"
 } else {
     $webLog = Join-Path $root "logs\web_dev.log"
-    # 用 cmd 起，避免 PowerShell 执行策略拦截 npm.ps1
+    $webErr = Join-Path $root "logs\web_dev.err.log"
+    New-Item -ItemType Directory -Force -Path (Join-Path $root "logs") | Out-Null
+    # 用 cmd 起，避免 PowerShell 执行策略拦截 npm.ps1。
+    #
+    # 日志走 Start-Process 的 -RedirectStandardOutput/-RedirectStandardError，
+    # 而不是在命令串里写 " > log 2>&1"：后者只重定向了 cmd 内部命令的输出，
+    # 排查时容易看到「空日志」。
+    #
+    # 注意（实测）：本脚本会把服务**长驻**拉起，子进程会继承父进程的可继承
+    # 句柄。所以如果把本脚本的 stdout 接到管道（如 `| Tee-Object x.log`），
+    # 调用方会一直等到服务退出才返回 —— 这是 Windows 句柄继承的固有行为，
+    # 不是脚本缺陷。正常用 .bat 或直接运行 .ps1 不涉及管道，2.3 秒即返回。
     Start-Process -FilePath "cmd.exe" `
-        -ArgumentList @("/c", "npm run dev > `"$webLog`" 2>&1") `
+        -ArgumentList @("/c", "npm run dev") `
         -WorkingDirectory $webDir `
+        -RedirectStandardOutput $webLog `
+        -RedirectStandardError $webErr `
         -WindowStyle Hidden | Out-Null
     if (Wait-Http "$webUrl/" 40) {
         Write-Ok "已启动并可用"

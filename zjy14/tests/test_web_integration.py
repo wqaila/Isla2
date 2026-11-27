@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,41 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
+def _win_path(p: Path) -> str:
+    """把路径转成 Windows 形式（供 powershell.exe 使用）。
+
+    在 WSL 里 pytest 拿到的是 ``/mnt/d/...``，而 Windows 的 powershell.exe
+    需要 ``D:\\...``；不转换会变成 ``D:\\mnt\\d\\...`` 从而找不到文件。
+    """
+    import os
+
+    if os.name == "nt":
+        return str(p)
+    try:
+        r = subprocess.run(
+            ["wslpath", "-w", str(p)],
+            capture_output=True, text=True, timeout=20, errors="replace",
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return str(p)
+
+
+def _find_powershell() -> str | None:
+    """找 PowerShell。
+
+    WSL 里通常只有 Windows 的 ``powershell.exe``（走 interop），
+    所以除了 ``powershell``/``pwsh`` 还要探测 ``.exe`` 后缀的名字。
+    """
+    for name in ("powershell", "powershell.exe", "pwsh", "pwsh.exe"):
+        hit = shutil.which(name)
+        if hit:
+            return hit
+    return None
+
+
 # ======================================================================
 # 一、主界面与独立控制台的能力对齐
 # ======================================================================
@@ -50,6 +87,60 @@ def test_services_page_has_progress_panel() -> None:
     assert "startedAt" in src and "elapsed" in src, "进度面板没有计时"
     assert "sc-progress-fill" in src, "进度条没有填充元素"
     assert _read(STYLE).strip(), "styles-services.css 为空"
+
+
+@pytest.mark.parametrize("name", ["start_web.ps1", "start_launcher.ps1", "stop_tts.ps1"])
+def test_ps1_parses_cleanly(name: str) -> None:
+    """用 PowerShell 自己的解析器做静态语法校验（不执行脚本）。
+
+    为什么不能只查 BOM：编码正确仍可能有真实语法错误（漏括号、参数拼错）。
+    这里调用 .NET 的 Parser，只解析不运行 —— 所以不会拉起任何进程。
+
+    Windows 之外没有 powershell 时跳过。
+    """
+    ps = _find_powershell()
+    if not ps:
+        pytest.skip("本机没有 PowerShell，跳过语法校验")
+
+    script = SCRIPTS / name
+    assert script.is_file(), f"缺少 {name}"
+
+    # 用 -File 执行一个小检查器：解析目标文件，有错误就返回 1
+    win = _win_path(script)
+    checker = (
+        "$e=$null;$t=$null;"
+        f"[void][System.Management.Automation.Language.Parser]::ParseFile('{win}',[ref]$t,[ref]$e);"
+        "if($e -and $e.Count -gt 0){$e|ForEach-Object{Write-Output $_.Message};exit 1};exit 0"
+    )
+    r = subprocess.run(
+        [ps, "-NoProfile", "-NonInteractive", "-Command", checker],
+        capture_output=True,
+        text=True,
+        errors="replace",  # 中文系统下 PowerShell 输出是 GBK，不能用严格 UTF-8
+        timeout=120,
+    )
+    assert r.returncode == 0, (
+        f"{name} 存在 PowerShell 语法错误（脚本将无法执行）：\n"
+        + (r.stdout or "") + (r.stderr or "")
+    )
+
+
+def test_scripts_never_pipe_stdout_of_spawned_services() -> None:
+    """启动服务的命令串里不许写 "> log 2>&1"。
+
+    那种写法只重定向了 cmd 内部命令的输出，cmd.exe 自身的句柄仍继承父进程，
+    排查时会看到空日志。应改用 Start-Process 的 -RedirectStandardOutput。
+
+    注意：允许脚本**自身**输出到管道（那是调用方的事），这里查的是
+    「拉起子进程时」的写法。
+    """
+    src = _read(START_WEB)
+    assert "npm run dev > " not in src, (
+        "仍在用命令串重定向启动 npm —— 改用 -RedirectStandardOutput"
+    )
+    assert "-RedirectStandardOutput $webLog" in src, (
+        "npm 启动缺少 Start-Process 的日志重定向"
+    )
 
 
 def test_services_page_covers_all_operations() -> None:

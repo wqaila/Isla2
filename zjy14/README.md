@@ -60,7 +60,7 @@ API 文档：<http://127.0.0.1:50001/docs>
 ### 测试
 
 ```bash
-# 单元测试（572 个）
+# 单元测试（576 个）
 wsl -e bash /mnt/d/xiangmudaima/zjy14/scripts/run_tests.sh
 
 # Phase 1 端到端验收（需服务已启动）
@@ -223,7 +223,7 @@ zjy14/
 │  ├─ schemas/     # 请求/响应模型
 │  └─ server/      # FastAPI 应用与路由
 ├─ configs/        # gpu.yaml
-├─ tests/          # 572 个测试
+├─ tests/          # 576 个测试
 ├─ scripts/        # 启动、测试、验收、迁移脚本
 ├─ docs/           # 方案、决策、阶段报告
 └─ probe/          # 可复现诊断脚本（环境探测、真机联调、情绪审计）
