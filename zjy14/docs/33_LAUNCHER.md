@@ -263,6 +263,50 @@ SyntaxError: await is only valid in async functions
 > 而一行 JS 语法错误能让整个页面变成「看起来正常但什么都不能点」。
 > 因此必须有「页面自检」+「语法校验」两道兜底。
 
+
+### 6.5 停止 WSL 服务：绝不能用「按端口杀」（实测事故，已修）
+
+用户反馈「点停止 TTS，弹出『已终止占用端口 50001 的进程 [11180]』，但 TTS 其实没停」。
+查证后确认是**真的没停**，而且界面还给了一个假成功。
+
+**根因**：WSL2 里的服务在 Windows 侧看到的监听者并不是 uvicorn，而是
+WSL 的端口转发进程 `wslrelay`：
+
+```
+TCP  127.0.0.1:50001  LISTENING  11180   ← wslrelay.exe（不是 TTS）
+WSL 内: python -m custom_voice.server (PID 339, RSS 5.7GB)  ← 真正在跑的服务
+```
+
+旧的停止逻辑在「端口仍被占用」时走兜底：按端口找 PID 再 `taskkill /T /F`。
+对 WSL 服务这是**三步全错**：
+
+| 后果 | 说明 |
+|---|---|
+| 服务没停 | 杀的是转发进程，WSL 内 uvicorn 继续跑、继续占 5.7GB 显存 |
+| 假成功 | 界面显示「已终止占用端口 50001 的进程」，用户以为停了 |
+| 破坏环境 | 打断 WSL 的 localhost 转发（其它端口也受影响），且 WSL 会立刻重新拉起它，端口照样在监听 |
+
+**修法**：
+
+1. 新增 `NEVER_KILL_PROCESS_NAMES`（`wslrelay`/`wslhost`/`vmmem`/`lsass`… 16 项），
+   按端口兜底时先查进程名，命中就跳过并说明原因；
+2. **WSL 服务（`kind == "wsl"`）完全不走按端口杀**，只走 `pkill`；
+3. `pkill` 失败时返回 `ok=False` + `action="stop_failed"` + `needs_manual`，
+   **不再因为「端口恰好没了」而报成功**，并把可执行命令带在 `manual_command` 里。
+
+顺带修了进程名探测：受限上下文里 `tasklist` 可能**完全看不到**目标进程
+（全量列表里都没有那一行），于是「是不是系统进程」的判断失效。
+改用 `ctypes` 的 `OpenProcess` + `QueryFullProcessImageNameW` 按 PID 直查，
+tasklist 退为兜底。
+
+**另一个相关 bug**：`start_web.ps1 -Stop` 原来用 `taskkill /PID <launcher> /T /F`，
+`/T` 会把启动器的子进程（ASR/网关）一起杀掉，脚本却打印
+「语音链路服务不会被停止」—— 相反的话。已改为先用 `/api/stop-all`
+**有序停止**，再不带 `/T` 结束启动器。
+
+> 教训：**「端口没了」不等于「服务停了」**。判断服务是否真的停止，
+> 要看它的健康检查/进程，而不是端口的可达性 —— 中间可能隔着转发层。
+
 ### 6.1 受限环境里 `wsl.exe` 可能被拒（`Wsl/E_ACCESSDENIED`）
 
 实测：**被沙箱/作业对象限制的非交互 Python 进程**里，

@@ -456,3 +456,90 @@ def test_http_rejects_unknown_path(tmp_path: Path) -> None:
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ======================================================================
+# 七、停止逻辑：WSL 服务绝不能被「按端口杀」（2026-11-27 实测事故）
+# ======================================================================
+
+
+def test_never_kill_list_covers_wsl_relay() -> None:
+    """`wslrelay` 等 WSL 转发进程必须在禁杀名单里。
+
+    事故回顾：WSL 里的 TTS 在 Windows 上看到的监听者是 ``wslrelay``。
+    旧实现走「端口被占 -> 按端口杀」，把 wslrelay taskkill 了，结果：
+      1. TTS 根本没停（WSL 内 uvicorn 继续跑、继续占 5.7GB 显存）
+      2. 界面却显示「已终止占用端口 50001 的进程」——**假成功**
+      3. 破坏 WSL localhost 转发，而且 WSL 会立刻重新拉起它
+    """
+    assert "wslrelay" in orch_mod.NEVER_KILL_PROCESS_NAMES
+    assert "wslhost" in orch_mod.NEVER_KILL_PROCESS_NAMES
+    assert "system" in orch_mod.NEVER_KILL_PROCESS_NAMES
+
+
+def test_tts_stop_never_kills_port_holder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TTS（WSL 服务）停止失败时：不杀端口占用者、如实报错、给出手动命令。"""
+    o = Orchestrator(dry_run=True)
+    killed: list[int] = []
+
+    # 端口仍被 wslrelay 占着
+    monkeypatch.setattr(orch_mod, "port_listening", lambda *a, **k: True)
+    monkeypatch.setattr(o, "_port_holders", lambda port: [(11180, "wslrelay")])
+    monkeypatch.setattr(o, "_pkill_wsl", lambda: False)          # WSL 拒绝访问
+    monkeypatch.setattr(o, "_kill_tree", lambda pid: killed.append(pid))
+    monkeypatch.setattr(o, "_wait_port_released", lambda *a, **k: False)
+
+    res = o.stop("tts")
+
+    assert killed == [], (
+        f"竟然去杀端口占用者 {killed} —— 那是 wslrelay，杀了会造成假成功并破坏 WSL 转发"
+    )
+    assert res["ok"] is False, "TTS 没停掉却报成功（这正是用户遇到的假成功）"
+    assert res["action"] == "stop_failed"
+    assert res.get("needs_manual") is True
+    assert "custom_voice.server" in res.get("manual_command", "")
+    assert "wslrelay" in res["message"], "消息没有说明端口是被 WSL 转发进程占用的"
+
+
+def test_stop_kills_normal_holder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非 WSL 服务：端口被普通进程占用时，应该杀掉它（兜底是有意义的）。"""
+    o = Orchestrator(dry_run=True)
+    killed: list[int] = []
+
+    # 只有第一次调用（决定「要不要按端口兜底」）返回 True，
+    # 之后的最终判定返回 False（端口已释放）。
+    seq = {"n": 0}
+
+    def _pl(*a, **k):
+        seq["n"] += 1
+        return seq["n"] == 1
+
+    monkeypatch.setattr(orch_mod, "port_listening", _pl)
+    monkeypatch.setattr(o, "_port_holders", lambda port: [(4242, "python")])
+    monkeypatch.setattr(o, "_kill_tree", lambda pid: killed.append(pid))
+    monkeypatch.setattr(o, "_wait_port_released", lambda *a, **k: True)
+
+    res = o.stop("asr")
+    assert killed == [4242], f"应杀掉普通占用者，实际 {killed}"
+    assert res["ok"] is True
+
+
+def test_wsl_stop_success_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WSL 内 pkill 成功时不报错，并且不再需要手动介入。"""
+    o = Orchestrator(dry_run=True)
+    monkeypatch.setattr(o, "_pkill_wsl", lambda: True)
+    monkeypatch.setattr(o, "_wait_port_released", lambda *a, **k: True)
+    monkeypatch.setattr(orch_mod, "port_listening", lambda *a, **k: False)
+
+    res = o.stop("tts")
+    assert res["ok"] is True
+    assert res["action"] == "stopped"
+    assert "WSL" in res["message"]
+    assert res.get("needs_manual") is not True
+
+
+def test_describe_port_holder_shows_name() -> None:
+    """端口占用说明要带上进程名，用户才懂「为什么杀不掉」。"""
+    o = Orchestrator(dry_run=True)
+    o._port_holders = lambda port: [(11180, "wslrelay")]  # type: ignore[method-assign]
+    assert o._describe_port_holder(50001) == "wslrelay(11180)"

@@ -60,6 +60,40 @@ LOG_DIR = ZJY14_ROOT / "logs" / "launcher"
 #: WSL 发行版名（与 README / 启动脚本一致）
 WSL_DISTRO = os.environ.get("ZJY14_WSL_DISTRO", "Ubuntu-24.04")
 
+#: **绝对不能杀**的进程名（小写，去掉 .exe）。
+#:
+#: 为什么要有这个名单（2026-11-27 实测事故）：
+#: WSL 里的服务（TTS）在 Windows 上看到的监听者并不是它自己，而是 WSL2 的
+#: 端口转发进程 ``wslrelay``。当时的「按端口兜底杀」把它 taskkill 了，结果：
+#:   1. TTS **根本没停**（WSL 内 uvicorn 继续跑，继续占 5.7GB 显存）；
+#:   2. 界面却显示「已终止占用端口 50001 的进程」——**假成功**；
+#:   3. 破坏 WSL 的 localhost 转发（其它端口也可能受影响），
+#:      而且 WSL 会立刻把它重新拉起来，所以端口照样在监听。
+#:
+#: 结论：这些进程只能由 WSL 自己管理，外部 kill 一律跳过。
+NEVER_KILL_PROCESS_NAMES = frozenset(
+    {
+        # WSL 端口转发 / 虚拟化
+        "wslrelay",
+        "wslhost",
+        "wslservice",
+        "wsl",
+        "vmmem",
+        "vmmemwsl",
+        "vmwp",
+        "vmcompute",
+        "vmms",
+        # Windows 关键系统进程（防御性：万一 PID 解析错位也不至于搞坏系统）
+        "system",
+        "system idle process",
+        "services",
+        "lsass",
+        "wininit",
+        "csrss",
+        "smss",
+    }
+)
+
 
 def zjy13_python() -> Path:
     """zjy13 的 ASR 侧 Python（FunASR + websockets 都在这个环境里）。"""
@@ -718,29 +752,70 @@ class Orchestrator:
         if spec.port:
             self._wait_port_released(spec.port, timeout=2.0)
 
-        # 3) 兜底：若端口仍被占用（例如服务是用户手动起的 / 启动器重启过），
-        #    按端口找 PID 再杀一次。
-        if spec.port and port_listening(spec.port):
-            pids = self._pids_on_port(spec.port)
-            for p in pids:
-                self._kill_tree(p)
-            if pids:
-                messages.append(f"已终止占用端口 {spec.port} 的进程 {pids}")
+        # 3) 非 WSL 服务：端口兜底（用户手动起的 / 启动器重启过）
+        #
+        #    注意：这里要跳过 WSL 转发进程与系统进程。
+        #    对一个 Windows 服务来说，端口占用者本来就该是它自己；
+        #    若实际是 ``wslrelay`` 等，说明「端口号撞车」或判断失误，
+        #    杀它只会造成假成功 + 破坏 WSL 转发。
+        if (
+            spec.kind != "wsl"
+            and spec.port
+            and port_listening(spec.port)
+        ):
+            killed_pids: list[int] = []
+            skipped: list[str] = []
+            for pid, pname in self._port_holders(spec.port):
+                if pname in NEVER_KILL_PROCESS_NAMES:
+                    skipped.append(f"{pname}({pid})")
+                    continue
+                self._kill_tree(pid)
+                killed_pids.append(pid)
+            if killed_pids:
+                messages.append(f"已终止占用端口 {spec.port} 的进程 {killed_pids}")
+            if skipped:
+                messages.append(
+                    f"跳过系统/WSL 转发进程 {', '.join(skipped)}（杀它停不掉服务）"
+                )
             self._wait_port_released(spec.port, timeout=3.0)
 
-        # 4) WSL 侧进程不会被 taskkill 带到 —— Windows 上看到的监听 PID
-        #    是 WSL 的端口转发进程，杀掉它 uvicorn 仍在跑。
+        # 4) WSL 服务：**只能**从 WSL 内部停。
+        #
+        #    为什么不能走上面的「按端口杀」（2026-11-27 事故）：
+        #    Windows 侧 :50001 的监听者是 ``wslrelay``，不是 uvicorn。
+        #    杀掉它 uvicorn 仍在跑（继续占显存），端口还会被 WSL 重新转发出来，
+        #    结果就是「界面说停了，实际没停」。
+        #    所以这里**要么** pkill 成功，**要么**如实报告没停掉。
         if spec.kind == "wsl":
             killed = self._pkill_wsl()
             if killed:
-                messages.append("已清理 WSL 内 uvicorn 进程")
+                messages.append("已停止 WSL 内的 TTS 进程")
                 self._wait_port_released(spec.port, timeout=4.0)
             else:
+                holder = self._describe_port_holder(spec.port)
                 messages.append(
-                    "未能从本进程清理 WSL（WSL 对此进程拒绝访问）；"
-                    "若端口仍在，请在你自己的 PowerShell 执行 "
-                    "scripts/stop_tts.ps1"
+                    "TTS 仍在运行：本进程无法进入 WSL（wsl.exe 被系统拒绝）"
+                    + (f"；端口 {spec.port} 由 {holder} 转发，"
+                       "杀掉它既停不掉 TTS 也会破坏 WSL 转发，已跳过" if holder else "")
                 )
+                messages.append(
+                    "请在你自己的 PowerShell 窗口执行以下任一命令："
+                    f'  wsl -d {WSL_DISTRO} -e bash -lc "pkill -f custom_voice.server"'
+                    "  或  .\\scripts\\stop_tts.ps1"
+                )
+                # 关键：pkill 失败就**不能**因为端口恰好没了而报成功
+                return {
+                    "ok": False,
+                    "name": name,
+                    "action": "stop_failed",
+                    "message": "；".join(messages),
+                    "port_still_listening": port_listening(spec.port or 0),
+                    "needs_manual": True,
+                    "manual_command": (
+                        f'wsl -d {WSL_DISTRO} -e bash -lc '
+                        f'"pkill -f custom_voice.server"'
+                    ),
+                }
 
         still = port_listening(spec.port or 0)
         return {
@@ -807,6 +882,102 @@ class Orchestrator:
             if pid and pid not in pids:
                 pids.append(pid)
         return pids
+
+    def _process_name(self, pid: int) -> str:
+        """取进程名（小写、去掉 .exe）；查不到返回空串。
+
+        ## 为什么不只用 tasklist（2026-11-27 实测）
+
+        在受限上下文里（沙箱/作业对象，或与服务不同会话），`tasklist` 可能
+        **完全看不到目标进程** —— 连 `/FO CSV` 的全量列表里都没有那一行，
+        只回一句「没有运行的任务匹配指定标准」。此时 `wslrelay` 明明在监听，
+        却查不到名字，后面的「是否系统进程」判断就失效了。
+
+        所以先用 `ctypes` 按 PID 直接查（`OpenProcess` +
+        `QueryFullProcessImageNameW`）：只依赖标准库，不受进程枚举可见性影响。
+        tasklist 退为兜底（大多数正常环境里它更省事）。
+        """
+        if sys.platform != "win32":  # pragma: no cover
+            return ""
+        name = self._process_name_ctypes(pid)
+        if name:
+            return name
+        return self._process_name_tasklist(pid)
+
+    @staticmethod
+    def _process_name_ctypes(pid: int) -> str:
+        """按 PID 取进程名（Windows API，无需枚举全部进程）。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+            ]
+            kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            kernel32.QueryFullProcessImageNameW.argtypes = [
+                wintypes.HANDLE, wintypes.DWORD,
+                wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+            ]
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return ""
+            try:
+                buf = ctypes.create_unicode_buffer(32768)
+                size = wintypes.DWORD(len(buf))
+                if not kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buf, ctypes.byref(size)
+                ):
+                    return ""
+                # 只取文件名，去掉 .exe
+                return Path(buf.value).stem.lower()
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001  # pragma: no cover
+            return ""
+
+    @staticmethod
+    def _process_name_tasklist(pid: int) -> str:
+        """兜底：用 tasklist 查进程名。"""
+        try:
+            out = subprocess.run(  # noqa: S603,S607
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ).stdout
+        except OSError:  # pragma: no cover
+            return ""
+        # 形如: "wslrelay.exe","11180","Console","1","12,345 K"
+        for line in out.splitlines():
+            line = line.strip()
+            if not line.startswith('"'):
+                continue
+            return line.split('"')[1].lower().removesuffix(".exe")
+        return ""
+
+    def _port_holders(self, port: int) -> list[tuple[int, str]]:
+        """端口占用者列表 [(pid, 进程名小写)]。"""
+        return [(pid, self._process_name(pid)) for pid in self._pids_on_port(port)]
+
+    def _describe_port_holder(self, port: int | None) -> str:
+        """人类可读的端口占用说明，用于让用户明白「为什么杀不掉」。
+
+        例：``wslrelay(11180)`` —— 一看就知道是 WSL 的转发进程。
+        """
+        if not port:
+            return ""
+        holders = self._port_holders(port)
+        if not holders:
+            return ""
+        return ", ".join(f"{n or '?'}({p})" for p, n in holders)
 
     def _pkill_wsl(self) -> bool:
         """在 WSL 内结束 zjy14 的 uvicorn 进程。"""

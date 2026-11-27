@@ -69,13 +69,41 @@ function Wait-Http([string]$url, [int]$seconds) {
 if ($Stop) {
     Write-Step "停止网页与启动器"
 
-    # 启动器：按端口找 PID（它可能是任意 Python 启动的）
+    # 1) 先让启动器**有序停止**语音链路。
+    #
+    # 为什么必须先走 API 而不是直接 taskkill /T：
+    # 之前用 `taskkill /PID <launcher> /T /F`，/T 会把子进程一起杀掉 ——
+    # ASR / 网关正是启动器拉起的子进程，于是「停网页」顺手把 ASR 杀了，
+    # 脚本却还打印「语音链路服务不会被停止」（实测 2026-11-27）。
+    # 走 API 的好处：顺序正确（网关先停）、走各自的清理逻辑、结果可读。
+    if (Test-PortListening $LauncherPort) {
+        Write-Note "先有序停止语音链路（网关 → ASR → TTS）…"
+        try {
+            $r = Invoke-WebRequest -Uri "http://127.0.0.1:$LauncherPort/api/stop-all" `
+                -Method POST -ContentType "application/json" -Body "{}" `
+                -TimeoutSec 120 -UseBasicParsing -ErrorAction Stop
+            $j = $r.Content | ConvertFrom-Json
+            foreach ($item in $j.result.results) {
+                $mark = if ($item.ok) { "[OK]" } else { "[--]" }
+                $color = if ($item.ok) { "Green" } else { "Yellow" }
+                Write-Host ("  {0,-5} {1,-9} {2}" -f $mark, $item.name, $item.message) -ForegroundColor $color
+            }
+        } catch {
+            Write-Warn2 "调用停止接口失败：$($_.Exception.Message)"
+            Write-Note "（TTS 在 WSL 里，可能需要在你的 PowerShell 执行 scripts\stop_tts.ps1）"
+        }
+    }
+
+    # 2) 再杀启动器本身。
+    #
+    # 故意**不带 /T**：语音链路已在上面有序停止；这里连子进程一起杀只会
+    # 让「顺序停止」失去意义，也容易误伤。残留由各自的进程自行退出。
     if (Test-PortListening $LauncherPort) {
         $lines = netstat -ano -p TCP | Select-String ":$LauncherPort\s+\S+\s+LISTENING"
         foreach ($l in $lines) {
             $pid2 = ($l.Line -split '\s+')[-1]
             if ($pid2 -match '^\d+$') {
-                & taskkill /PID $pid2 /T /F | Out-Null
+                & taskkill /PID $pid2 /F | Out-Null
                 Write-Ok "已停止启动器（PID $pid2）"
             }
         }
@@ -98,7 +126,9 @@ if ($Stop) {
     }
 
     Write-Step "完成"
-    Write-Note "注意：语音链路服务（TTS/ASR/网关）不会被停止，需要时用页面上的「全部停止」。"
+    Write-Note "已停止：网页 dev 服务器 + 启动器 + 语音链路（含 TTS/ASR/网关，按其自身顺序）。"
+    Write-Note "若上面某项显示 [--]，说明它没能停掉（例如 TTS 在 WSL 内被系统拒绝），"
+    Write-Note "请按其提示在自己的 PowerShell 里处理。"
     exit 0
 }
 
