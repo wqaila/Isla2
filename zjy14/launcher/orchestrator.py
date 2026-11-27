@@ -60,6 +60,12 @@ LOG_DIR = ZJY14_ROOT / "logs" / "launcher"
 #: WSL 发行版名（与 README / 启动脚本一致）
 WSL_DISTRO = os.environ.get("ZJY14_WSL_DISTRO", "Ubuntu-24.04")
 
+#: 是否 Windows 平台。
+#:
+#: 抽成模块常量（而不是直接写 `sys.platform`）是为了让测试能替换它 ——
+#: 测试套件跑在 WSL 的 Linux Python 里，否则永远走不到 Windows 分支。
+IS_WINDOWS = sys.platform == "win32"
+
 #: **绝对不能杀**的进程名（小写，去掉 .exe）。
 #:
 #: 为什么要有这个名单（2026-11-27 实测事故）：
@@ -378,6 +384,8 @@ class Orchestrator:
         self._log_dir = log_dir
         self._procs: dict[str, _Proc] = {}
         self._dry_run = dry_run
+        #: WSL 可达性探测结果（None = 还没探测过）
+        self._wsl_probe: bool | None = None
 
     # ---- 只读 ----
 
@@ -461,7 +469,56 @@ class Orchestrator:
             "ready": ready,
             "services": items,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            # 环境能力：本进程能否访问 WSL。
+            # 不能时前端要**提前**告诉用户「TTS 的启停请用脚本」，
+            # 而不是等用户点了按钮再失败（实测有些环境确实禁止）。
+            "wsl_available": self.wsl_available(),
         }
+
+    def wsl_available(self) -> bool:
+        """本进程能否通过 wsl.exe 访问 WSL（带缓存）。
+
+        ## 为什么要探测
+
+        实测（2026-11-27）：某些受限环境下，**Python 及其所有子进程**调用
+        WSL 一律返回 `Wsl/E_ACCESSDENIED`，而同样的命令在用户的 PowerShell
+        里正常。已排除的可能：
+
+        | 方式 | 结果 |
+        |---|---|
+        | `wsl.exe`（管道 / 文件 / 新控制台 / 继承 stdio，四种都试） | 拒绝 |
+        | 经 `cmd.exe` 转一层 | 拒绝 |
+        | 经 `powershell.exe -Command` / `-File` | 拒绝 |
+        | `ctypes` 直调 `wslapi.dll` 的 `WslLaunch` | 拒绝（0x80070005） |
+        | `schtasks` 建一次性任务跳出进程树 | `schtasks` 本身「找不到路径」 |
+
+        结论：限制在进程令牌层面，Python 侧无法自救。
+        所以这里只做**探测**，让界面提前告知用户该用哪个脚本，
+        而不是每次点按钮都失败一次。
+        """
+        if self._wsl_probe is None:
+            self._wsl_probe = self._probe_wsl()
+        return self._wsl_probe
+
+    def _probe_wsl(self) -> bool:
+        """跑一次极轻的命令判断 WSL 是否可达。"""
+        if not IS_WINDOWS:  # pragma: no cover
+            # 非 Windows：服务直接跑在本机，不需要 WSL
+            return sys.platform.startswith("linux")
+        try:
+            res = subprocess.run(  # noqa: S603,S607
+                ["wsl.exe", "-d", WSL_DISTRO, "-e", "bash", "-lc", "echo ZJY14_OK"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=25,
+                # Linux 上 subprocess 没有 CREATE_NO_WINDOW，必须 getattr 兜底
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return "ZJY14_OK" in (res.stdout or "")
 
     # ---- 启动 ----
 

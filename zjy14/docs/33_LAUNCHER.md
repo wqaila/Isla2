@@ -307,6 +307,70 @@ tasklist 退为兜底。
 > 教训：**「端口没了」不等于「服务停了」**。判断服务是否真的停止，
 > 要看它的健康检查/进程，而不是端口的可达性 —— 中间可能隔着转发层。
 
+
+### 6.6 当启动器无法访问 WSL 时怎么办（已给出解法）
+
+有些环境下，**Python 及其整个进程树**调用 WSL 一律返回
+`Wsl/E_ACCESSDENIED`，而同样的命令在用户的 PowerShell 里正常。
+已穷举验证，全部被拒：
+
+| 尝试过的路径 | 结果 |
+|---|---|
+| `wsl.exe`（stdio：管道 / 文件 / 新控制台 / 继承，四种都试） | 拒绝 |
+| 经 `cmd.exe` 转一层 | 拒绝 |
+| 经 `powershell.exe -Command` / `-File` | 拒绝 |
+| `ctypes` 直调 `wslapi.dll` 的 `WslLaunch` | 拒绝（`0x80070005`） |
+| `schtasks` 建一次性任务跳出进程树 | `schtasks` 自身「找不到路径」 |
+| 读注册表 `HKCU\...\Lxss` 确认发行版名 | ✅ 可读（说明不是发行版名写错） |
+
+结论：限制在**进程令牌**层面，Python 侧无法自救。但**PowerShell 侧完全正常**。
+
+#### 解法：三个产物
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/start_tts.ps1` | 纯 PowerShell 启动 TTS（不经过 Python） |
+| `scripts/stop_tts.ps1` | 纯 PowerShell 停止 TTS |
+| 页面顶部横幅 | `wsl_available=false` 时**提前**提示该用这两个脚本 |
+
+页面不会再让你点一次失败一次：`/api/status` 返回 `wsl_available`，
+为 false 时页面顶部直接显示提示和命令，TTS 卡片的按钮也带 `title` 说明。
+
+#### `start_tts.ps1` 为什么要用「隐藏 powershell 持有 wsl」
+
+TTS 需要一个**常驻的 wsl.exe 会话**，否则 WSL2 会在会话结束后关掉 VM，
+把里面的 uvicorn 一起带走。实测三种写法都是秒退、日志 0 字节：
+
+| 写法 | 结果 |
+|---|---|
+| `setsid nohup ... &`（脚本立刻返回） | 秒退（会话结束 → VM 关闭） |
+| `Start-Process wsl.exe -WindowStyle Hidden` | 秒退 |
+| `Start-Process wsl.exe`（不带 Hidden） | 秒退 |
+
+可行做法：起一个**隐藏的 powershell**，在它里面**前台**跑 `wsl`：
+
+```powershell
+Start-Process powershell.exe -WindowStyle Hidden `
+  -ArgumentList @("-NoProfile","-Command","wsl.exe -d Ubuntu-24.04 -e bash /mnt/d/.../_start_tts.sh") `
+  -RedirectStandardOutput logs\tts_manual.log -RedirectStandardError logs\tts_manual.err.log
+```
+
+实测：**17 秒**冷启动完成，`engine=cosyvoice3 device=cuda load_s=9.08`。
+持有者 PID 记在 `logs\tts_holder.pid`，`stop_tts.ps1` 会一并清理。
+
+#### 两个编码踩坑
+
+1. **不要用 bash heredoc 写 WSL 脚本**：多行字符串经 `wsl.exe` 参数传递会被
+   截断，实测文件根本没创建。改为**从 Windows 侧直接写**到共享目录
+   （WSL 从 `/mnt/d` 可见）。
+2. **写出的 `.sh` 必须是 LF 换行**：bash 遇到 CRLF 会报
+   `$'\r': command not found`。用 `[System.IO.File]::WriteAllText` +
+   `-join "`n"` 显式控制。
+
+> 设计取向：**能力不足时不要假装成功**。宁可如实报告 + 给一条确定可用的命令，
+> 也不要在界面上造一个「已终止」的假象 —— 后者会让人以为服务停了，
+> 而实际上显存还占着。
+
 ### 6.1 受限环境里 `wsl.exe` 可能被拒（`Wsl/E_ACCESSDENIED`）
 
 实测：**被沙箱/作业对象限制的非交互 Python 进程**里，
@@ -425,7 +489,8 @@ PYTHONPATH=. python -m pytest tests/test_launcher.py tests/test_launcher_fronten
 | `launcher/__init__.py` | 包导出 |
 | `scripts/start_web.ps1` | **网页一键启动**：启动器 + Vite + 打开页面（`-WithServices` 连链路一起起） |
 | `scripts/start_launcher.ps1` | 只起独立控制台 |
-| `scripts/stop_tts.ps1` | 单独停止 WSL 内的 TTS |
+| `scripts/start_tts.ps1` | **纯 PowerShell 启动 TTS**（绕过 Python 的 WSL 限制） |
+| `scripts/stop_tts.ps1` | 单独停止 WSL 内的 TTS（并清理持有者进程） |
 | `一键启动网页.bat` | 双击入口 → `start_web.ps1` |
 | `一键启动控制台.bat` | 双击入口 → `start_launcher.ps1` |
 | `web/src/api/launcher.ts` | 前端 API 客户端（离线不抛异常） |

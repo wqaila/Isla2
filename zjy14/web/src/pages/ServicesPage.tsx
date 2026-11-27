@@ -78,7 +78,16 @@ function HealthDetail({ service }: { service: LauncherService }) {
     push("采样率", o.sample_rate ? `${o.sample_rate} Hz` : undefined);
     const voices = o.voices;
     if (Array.isArray(voices)) {
-      push("音色", voices.length ? voices.map((v) => String(v)).join(", ") : "无");
+      // health 里 voices 是对象数组：[{voice_id, is_builtin}]
+      // 直接 String(v) 会渲染成 "[object Object]"，这里取 voice_id，
+      // 同时兼容纯字符串数组的旧形态。
+      const names = voices.map((v) => {
+        if (v && typeof v === "object" && "voice_id" in v) {
+          return String((v as Record<string, unknown>).voice_id);
+        }
+        return String(v);
+      });
+      push("音色", names.length ? names.join(", ") : "无");
     }
   } else if (service.name === "asr") {
     push("设备", o.device);
@@ -108,6 +117,7 @@ export default function ServicesPage() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [services, setServices] = useState<LauncherService[]>([]);
   const [ready, setReady] = useState(false);
+  const [wslOk, setWslOk] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
@@ -133,6 +143,9 @@ export default function ServicesPage() {
     setError(null);
     setServices(res.data.services);
     setReady(res.data.ready);
+    if (typeof res.data.wsl_available === "boolean") {
+      setWslOk(res.data.wsl_available);
+    }
   }, []);
 
   // 轮询：**启动期间也要继续刷新**。
@@ -361,6 +374,22 @@ export default function ServicesPage() {
         desc="一键拉起 ASR / LLM / TTS / 网关。TTS 使用 zjy14 的 CosyVoice3（:50001）。"
       />
 
+      {!wslOk && (
+        <Alert kind="warn">
+          <b>本启动器无法访问 WSL</b>（当前环境禁止 Python 进程调用 wsl.exe）。
+          TTS 跑在 WSL 里，因此<b>页面上的「启动 / 停止 TTS」不会生效</b> ——
+          其余的 ASR / LLM / 网关不受影响。
+          <div className="hint" style={{ marginTop: 8 }}>
+            请在 <span className="mono">zjy14</span> 目录下用 PowerShell 执行：
+          </div>
+          <div className="sc-cmd">.\scripts\start_tts.ps1</div>
+          <div className="sc-cmd">.\scripts\stop_tts.ps1</div>
+          <div className="hint" style={{ marginTop: 8 }}>
+            执行后回到本页点「刷新状态」，页面会接管已在运行的 TTS。
+          </div>
+        </Alert>
+      )}
+
       <div
         style={{
           display: "flex",
@@ -477,6 +506,11 @@ export default function ServicesPage() {
                   className="sm"
                   onClick={() => onStart(s.name)}
                   disabled={!!busy || s.healthy}
+                  title={
+                    !wslOk && s.kind === "wsl"
+                      ? "本启动器无法访问 WSL，请用 scripts\\start_tts.ps1"
+                      : undefined
+                  }
                 >
                   启动
                 </button>
@@ -484,6 +518,11 @@ export default function ServicesPage() {
                   className="sm"
                   onClick={() => onStop(s.name)}
                   disabled={!!busy || !s.running}
+                  title={
+                    !wslOk && s.kind === "wsl"
+                      ? "本启动器无法访问 WSL，请用 scripts\\stop_tts.ps1"
+                      : undefined
+                  }
                 >
                   停止
                 </button>

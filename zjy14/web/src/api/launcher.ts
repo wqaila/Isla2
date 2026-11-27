@@ -33,6 +33,14 @@ export interface LauncherStatus {
   ready: boolean;
   services: LauncherService[];
   timestamp: string;
+  /**
+   * 启动器能否访问 WSL（启动/停止 TTS 需要）。
+   *
+   * 有些环境会禁止 Python 进程树调用 WSL（实测：wsl.exe / cmd / powershell /
+   * wslapi.dll / schtasks 全部 `E_ACCESSDENIED`）。这时页面要**提前**告诉用户
+   * 改用脚本，而不是让用户点一次失败一次。
+   */
+  wsl_available?: boolean;
 }
 
 export interface LauncherActionResult {

@@ -89,7 +89,10 @@ def test_services_page_has_progress_panel() -> None:
     assert _read(STYLE).strip(), "styles-services.css 为空"
 
 
-@pytest.mark.parametrize("name", ["start_web.ps1", "start_launcher.ps1", "stop_tts.ps1"])
+@pytest.mark.parametrize(
+    "name",
+    ["start_web.ps1", "start_launcher.ps1", "stop_tts.ps1", "start_tts.ps1"],
+)
 def test_ps1_parses_cleanly(name: str) -> None:
     """用 PowerShell 自己的解析器做静态语法校验（不执行脚本）。
 
@@ -253,7 +256,10 @@ def test_start_web_script_exists() -> None:
     assert START_WEB.is_file(), "缺少 scripts/start_web.ps1"
 
 
-@pytest.mark.parametrize("name", ["start_web.ps1", "start_launcher.ps1", "stop_tts.ps1"])
+@pytest.mark.parametrize(
+    "name",
+    ["start_web.ps1", "start_launcher.ps1", "stop_tts.ps1", "start_tts.ps1"],
+)
 def test_ps1_has_utf8_bom(name: str) -> None:
     """`.ps1` 必须是 UTF-8 **带 BOM**。
 
@@ -323,3 +329,42 @@ def test_service_specs_are_the_single_source_of_truth() -> None:
     assert "[50001" not in src and "ports = [" not in src, (
         "页面里出现了写死的端口清单"
     )
+
+
+def test_start_tts_uses_powershell_holder() -> None:
+    """start_tts.ps1 必须用「隐藏 powershell 持有 wsl」的方式启动 TTS。
+
+    实测三种写法都失败（进程秒退、日志 0 字节）：
+      - `setsid nohup ... &`（WSL2 在会话结束后关掉 VM，进程被带走）
+      - `Start-Process wsl.exe -WindowStyle Hidden`
+      - `Start-Process wsl.exe`（不带 Hidden）
+    可行的是让 powershell 前台持有 wsl。
+    """
+    # 先剥掉注释：脚本头部会**说明**为什么不用 setsid（那是文档，不是代码）
+    src = "\n".join(
+        ln for ln in _read(SCRIPTS / "start_tts.ps1").splitlines()
+        if not ln.lstrip().startswith("#")
+    )
+    assert "powershell.exe" in src, "没有用 powershell 作为持有者"
+    assert "setsid" not in src, (
+        "还在用 setsid —— WSL2 会随会话结束关掉 VM，进程会被一起带走"
+    )
+    assert 'Start-Process -FilePath "wsl.exe"' not in src, (
+        "直接用 Start-Process 起 wsl.exe 实测活不过几秒"
+    )
+
+
+def test_start_tts_writes_sh_with_lf() -> None:
+    """写到共享目录的 .sh 必须用 LF —— bash 遇到 CRLF 会报 $'\\r' 找不到命令。"""
+    src = _read(SCRIPTS / "start_tts.ps1")
+    assert "UTF8Encoding" in src, "写 .sh 时没有显式指定编码/换行"
+    assert '-join "`n"' in src, "没有用 LF 拼接脚本行"
+
+
+def test_services_page_shows_wsl_unavailable_banner() -> None:
+    """WSL 不可用时页面要提前给提示 + 可执行脚本，而不是让用户反复点失败。"""
+    src = _read(PAGE)
+    assert "wsl_available" in _read(API), "LauncherStatus 缺少 wsl_available"
+    assert "wslOk" in src, "页面没有消费 wsl_available"
+    assert "start_tts.ps1" in src, "提示里没有 start_tts.ps1"
+    assert "stop_tts.ps1" in src, "提示里没有 stop_tts.ps1"

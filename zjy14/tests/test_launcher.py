@@ -543,3 +543,77 @@ def test_describe_port_holder_shows_name() -> None:
     o = Orchestrator(dry_run=True)
     o._port_holders = lambda port: [(11180, "wslrelay")]  # type: ignore[method-assign]
     assert o._describe_port_holder(50001) == "wslrelay(11180)"
+
+
+# ======================================================================
+# 八、WSL 可达性探测（环境能力，用于提前告知用户）
+# ======================================================================
+
+
+def test_status_all_exposes_wsl_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """status_all 必须带 wsl_available —— 前端据此提前提示「TTS 请用脚本」。
+
+    实测：某些环境下 Python 进程树调用 WSL 全部被拒
+    （wsl.exe / cmd / powershell / wslapi.dll / schtasks 都不通）。
+    这时页面应该**先**告诉用户，而不是让人反复点按钮失败。
+    """
+    o = Orchestrator(dry_run=True)
+    monkeypatch.setattr(orch_mod, "port_listening", lambda *a, **k: False)
+    monkeypatch.setattr(o, "_probe_wsl", lambda: False)
+    st = o.status_all()
+    assert "wsl_available" in st, "status_all 没有暴露 wsl_available"
+    assert st["wsl_available"] is False
+
+
+def test_wsl_probe_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """探测要缓存：每次轮询都跑一遍 wsl.exe 会拖慢界面（每次至少几十毫秒）。"""
+    o = Orchestrator(dry_run=True)
+    calls = {"n": 0}
+
+    def _probe() -> bool:
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(o, "_probe_wsl", _probe)
+    for _ in range(5):
+        assert o.wsl_available() is True
+    assert calls["n"] == 1, f"探测被重复执行 {calls['n']} 次，应只跑一次"
+
+
+def test_wsl_probe_false_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """探测抛异常时按「不可用」处理，不能把整个状态接口打挂。"""
+    o = Orchestrator(dry_run=True)
+
+    def _boom() -> bool:
+        raise OSError("wsl.exe 不存在")
+
+    monkeypatch.setattr(o, "_probe_wsl", _boom)
+    with pytest.raises(OSError):
+        # _probe_wsl 本身可抛；外层 wsl_available 只做缓存，
+        # 真正兜底在 _probe_wsl 内部对 OSError 返回 False。
+        o.wsl_available()
+
+
+def test_probe_wsl_handles_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """wsl.exe 不存在/拒绝时 _probe_wsl 返回 False，不抛异常。
+
+    注意：本测试套件跑在 **WSL 的 Linux Python** 里，`sys.platform` 是 `linux`，
+    而 `_probe_wsl` 在非 Windows 上会直接返回「可用」。所以必须先把它强制成
+    `win32`，才能真正走到 subprocess 那条分支。
+    """
+    o = Orchestrator(dry_run=True)
+    monkeypatch.setattr(orch_mod, "IS_WINDOWS", True)
+
+    def _raise(*a: object, **k: object):
+        raise OSError("denied")
+
+    monkeypatch.setattr(orch_mod.subprocess, "run", _raise)
+    assert o._probe_wsl() is False
+
+
+def test_probe_wsl_non_windows_returns_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    """在 Linux 上（服务本来就直接跑在本机）应视为「WSL 可用」。"""
+    o = Orchestrator(dry_run=True)
+    monkeypatch.setattr(orch_mod, "IS_WINDOWS", False)
+    if orch_mod.sys.platform.startswith("linux"):
+        assert o._probe_wsl() is True
