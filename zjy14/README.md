@@ -321,6 +321,7 @@ wsl -e bash /mnt/d/xiangmudaima/zjy14/probe/run_device_e2e.sh
 | [18_PHASE5_REPORT.md](docs/18_PHASE5_REPORT.md) | **Phase 5 报告（设备协议桥接）** |
 | [ACCEPTANCE_REPORT.md](docs/ACCEPTANCE_REPORT.md) | **验收报告（只填实测数据）** |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维说明** |
+| [34_DAILY_SUMMARY_2026_11_26_27.md](docs/34_DAILY_SUMMARY_2026_11_26_27.md) | **2026-11-26~27 工作总结**：一键启动交付、18 个缺陷的根因与修法、环境限制、6 条经验教训、可复现验收步骤 |
 | [33_LAUNCHER.md](docs/33_LAUNCHER.md) | **语音链路一键启动控制台**：网页同时拉起 ASR/LLM/TTS/网关；TTS 钉死为 zjy14 的 :50001；ASR 独立成 :50002；含 WSL 环境限制说明 |
 | [32_HEALTH_CHECK_2026_11_25.md](docs/32_HEALTH_CHECK_2026_11_25.md) | **以 zjy13 为基准的全面体检**：7 个隐患（P0 事件循环冻结、CSV 注入、符号链接绕过、嵌套事务）+ 4 处契约漂移（`lead_sec`、`FIRMWARE_RING_MS`、`token_max_hop_len`） |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | **故障排查手册** |

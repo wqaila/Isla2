@@ -12,9 +12,9 @@
 ![CUDA](https://img.shields.io/badge/CUDA-12.8-76B900?logo=nvidia&logoColor=white)
 ![Projects](https://img.shields.io/badge/子项目-12_个-blue)
 ![Tests](https://img.shields.io/badge/单元测试-567_+_577-brightgreen)
-![Version](https://img.shields.io/badge/版本-4.13.1-e88bb5)
+![Version](https://img.shields.io/badge/版本-4.13.2-e88bb5)
 
-**当前里程碑**：[`v4.13.1`](../../releases) —— 语音链路一键启动整合进主界面 + 网页一键启动（2026-11-26）
+**当前里程碑**：[`v4.13.2`](../../releases) —— 修 18 个缺陷：一键启动「静默失效」全面收口（2026-11-27）
 
 </div>
 
@@ -372,7 +372,7 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 
 | 文档 | 内容 |
 |---|---|
-| [`版本迭代史.md`](docs/版本迭代史.md) | **项目历程与版本迭代史**：`1.0.0`（2026-07-01）→ `4.13.1`（2026-11-26），38 个版本，含版本号判定规则、全局总表、时间线与逐版本详情。**已补打 7 个里程碑 tag** |
+| [`版本迭代史.md`](docs/版本迭代史.md) | **项目历程与版本迭代史**：`1.0.0`（2026-07-01）→ `4.13.2`（2026-11-27），39 个版本，含版本号判定规则、全局总表、时间线与逐版本详情。**已补打 7 个里程碑 tag** |
 | [`30_DAILY_SUMMARY_2026-11-19.md`](docs/30_DAILY_SUMMARY_2026-11-19.md) | **最新**：真机联调闭环 + 4 个 P0 级静默失效修复 + 界面主题化；含诚实记录的失败与被推翻结论 |
 | [`代码审查报告.md`](docs/代码审查报告.md) | 静态审查 zjy2/5/6/7/8/9，正文 **106 项**（严重 2 / 高 32 / 中 52 / 低 20）。⚠️ 写于 2026-09-21，无修复状态跟踪 |
 | [`代码审查报告-zjy13-yuanma.md`](docs/代码审查报告-zjy13-yuanma.md) | zjy13 与 yuanma，**高 15 / 中 41 / 低 15 条编号**（11-05 初版 + 11-09 补充审计） |
@@ -482,6 +482,64 @@ Windows + RTX 5070 + GPT-SoVITS 的角色声线复刻与可控语音生成。
 ---
 
 ## 🗓 最近更新
+
+### 2026-11-27 — 修 18 个缺陷：一键启动「静默失效」全面收口（`v4.13.2`）
+
+**本日最重要的不是新功能，而是揪出并修掉了三类「不报错的失效」。**
+
+#### 三个 P0：都是用户实测反馈的
+
+| 用户反馈 | 实际根因 |
+|---|---|
+| 「点击一键启动没有用」 | 控制台页面 JS 语法错误（`await` 写在非 `async` 回调里）→ **整页脚本不执行**，按钮全部静默失效，屏幕无任何提示 |
+| 「停止 TTS 弹出已终止进程，但没停」 | 杀的是 WSL 转发进程 `wslrelay`，WSL 里的 uvicorn 仍在跑（继续占 5.7 GB 显存）；界面报的是**假成功** |
+| 「双击一键启动网页出现一堆乱码命令」 | `.bat` 是 UTF-8 无 BOM + 纯 LF；cmd.exe 按 GBK 解析且**只认 CRLF** → `rem` 前缀丢失，注释正文被当命令执行 |
+
+#### 三个「防静默失效」机制
+
+| 机制 | 实现 |
+|---|---|
+| **页面自检** | 页面拆成「引导脚本 + 主脚本」；引导脚本装 `window.onerror`，1 秒后检查 `__consoleReady`，主脚本挂了就在顶部亮红条 |
+| **静态校验** | `node --check` 校验内联 JS；PowerShell `Parser.ParseFile` 校验 `.ps1`；断言 `.ps1` 有 UTF-8 BOM、`.bat` 是 GBK+CRLF |
+| **能力探测** | `/api/status` 返回 `wsl_available`；为 false 时页面**提前**提示 + 给可执行命令，不再让人点一次失败一次 |
+
+#### 编码规则两套，方向相反
+
+| 文件类型 | 编码 | 换行 | 依据 |
+|---|---|---|---|
+| `.ps1` | UTF-8 **带 BOM** | 任意 | PowerShell 5.1 无 BOM 时按 GBK 解析 → 整段不执行 |
+| `.bat` | **GBK**，无 BOM | **CRLF** | cmd.exe 只认 CRLF、按 ANSI 解析；BOM 会被当命令 |
+
+**只改文件还不够**：`git add` 会把 CRLF 规范化成 LF，导致**任何人重新 clone
+拿到的都是坏的 `.bat`**。修法是在 `zjy14/.gitattributes` 里追加
+`*.bat text eol=crlf`（后匹配者优先）。
+
+> 这类问题**只能靠真实 clone 验证**——看工作区会得出错误结论。
+> 实测 clone 结果：`CRLF=29 / 纯LF=0 / 无 BOM / GBK 可解`，
+> 且在 clone 目录里实跑 `.bat` 零乱码命令。
+
+#### 环境限制（如实记录）
+
+Python 进程树无法访问 WSL（已穷举 6 条路径：`wsl.exe` 四种 stdio 模式 /
+`cmd.exe` 中转 / `powershell.exe` / `ctypes` 调 `wslapi.dll` / `schtasks`，
+全部被拒）。这是**进程令牌层面**的限制，Python 侧无法自救。
+
+解法不是"绕不过就算了"：新增 `scripts/start_tts.ps1` / 强化 `stop_tts.ps1`，
+用纯 PowerShell 承担 WSL 侧启停（用户自己的会话无此限制），
+起好后启动器按端口+健康检查**接管**（已实测接管成功）。
+
+#### 验证
+
+| 项 | 结果 |
+|---|---|
+| zjy14 测试 | 517 → **599 passed**（+82） |
+| zjy13 测试 | 566/556 → **577/567 passed**（+11） |
+| 端到端一轮 | ASR 149ms → LLM 1445ms → 音频 9.77s，`reason=playback_done` |
+| TTS 归属 | zjy14 历史 `engine=cosyvoice3 voice=elysia duration_s=9.0` |
+| 一键启动 | 全健康 1.19s；冷启动 2.3s（网页）/ 17s（TTS） |
+
+> 详见 [`zjy14/docs/34_DAILY_SUMMARY_2026_11_26_27.md`](zjy14/docs/34_DAILY_SUMMARY_2026_11_26_27.md)
+> 与 [`zjy14/docs/33_LAUNCHER.md`](zjy14/docs/33_LAUNCHER.md)。
 
 ### 2026-11-26 — 控制台整合进主界面 + 网页一键启动（`v4.13.1`）
 
